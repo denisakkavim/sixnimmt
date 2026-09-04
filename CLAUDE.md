@@ -1,4 +1,12 @@
+# Tooling
+* Use uv for Python environment and dependency management.
+
 # Style Guidance
+# Commit Style
+* Follow Conventional Commits: <type>(<scope>): <description>.
+* Use imperative, concise descriptions.
+* Use `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `build`, or `ci` as appropriate.
+
 ## Python Style
 * Optimize for clarity and explicitness, not cleverness or minimum line count.
 * Prefer straightforward, explicit code over clever Python idioms when the latter reduce readability.
