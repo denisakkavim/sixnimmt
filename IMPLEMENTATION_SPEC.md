@@ -1,4 +1,4 @@
-# 6 nimmt! Game Server — Implementation Spec (v4)
+# 6 nimmt! Game Server — Implementation Spec (v5)
 
 **Component 1 of 4.** This document specifies the game server only. The MCP server, UI, and agent harness are separate components, described here only where they constrain the server.
 
@@ -8,7 +8,31 @@ This version is intended to be implemented as written. The rules, the informatio
 
 ---
 
-## 0. What changed since v3
+## 0. What changed since v4
+
+Phases 0–2 were implemented and reviewed against this document. Everything in
+§2 came back clean: the head values, the dealing order, the §2.7 worked example
+and the §2.8 invariants all reproduce exactly. The changes below are defects in
+*this document* that the implementation exposed, plus one invariant the
+implementation proved.
+
+- **`row_choice_required` is `public`, not `player:<id>`** (§10.3). Keeping it
+  private made §9.2's `awaiting` field impossible to derive from a viewer's own
+  event stream, which would force the state-peeking §3 forbids. The event leaks
+  nothing: `cards_revealed` has already published every card in the play.
+- **`match_created` is two events** (§10.3). One event could not both carry
+  `agent_metadata` to the log (§9.1) and withhold it from other players (§5.2).
+- **Only the lowest card of a play can require a row choice** (§2.8). This is
+  provable, and worth asserting.
+- **§14's card-leak tests must be field-aware.** Scraping integers out of a
+  serialised view flags scores and counters as if they were cards.
+- **The public shadow of a re-selection must not vary with whether the card
+  changed** (§14). The original wording admitted an implementation that leaked
+  exactly that.
+- **An open question is recorded** about a player's own action count under
+  negotiation (§10.4), rather than left to be discovered mid-implementation.
+
+## 0.1 What changed since v3
 
 All five areas checked in the last review came back clean: the §2.7 arithmetic, the dealing order, the per-viewer cursor design, the `expected_view_version` semantics, and the absence of player-facing global counters. The remaining changes are implementation-boundary defects found in that review, plus four channels found alongside them.
 
@@ -23,7 +47,7 @@ All five areas checked in the last review came back clean: the §2.7 arithmetic,
 
 ---
 
-## 0.1 What changed in earlier passes
+## 0.2 What changed in earlier passes
 
 **Corrections**
 
@@ -208,6 +232,7 @@ These hold after every placement and are worth asserting in a debug mode and in 
 - Every card from 1 to 104 exists in exactly one place: a player's hand, a row, a penalty pile, or the undealt remainder. Never two, never none.
 - Total bull heads across all penalty piles plus all cards still in play equals 171.
 - When at least one row is eligible, the chosen row's end card equals the maximum end card strictly below the played card.
+- **At most one card in a play can require a row choice, and it is always the lowest.** Once the lowest card resolves, some row ends exactly on it, so every higher card in the same play is guaranteed an eligible row. An implementation that produces a second row choice within one play has broken the rule that an emptied row becomes `[played_card]`.
 
 ---
 
@@ -445,7 +470,10 @@ Returns the match ID, the fully resolved rules and protocol with defaults filled
 
 ### 9.2 Reading state
 
-**`GET /matches/{id}/state`** returns the caller's view:
+**`GET /matches/{id}/state`** returns the caller's view.
+
+> **Build this response by folding the caller's visible events, not by projecting `MatchState` and blanking private fields.** This is the §3 rule restated at the point it is most often broken. The shape below looks like a projection of match state, and copying fields across and nulling the private ones passes every obvious test while leaving each future field one oversight away from a leak. Fold the filtered stream and a fact the caller was never sent has no way to reach them.
+
 
 ```json
 {
@@ -627,7 +655,8 @@ Do not expose any global mutation version to players, in any endpoint or error.
 
 | Type | Audience | Notes |
 |---|---|---|
-| `match_created` | public | rules, protocol, players — **no seed** |
+| `match_created` | public | rules, protocol, players as id and display name — **no seed, no agent metadata** |
+| `match_created` | admin | the same, plus each player's `agent_metadata` |
 | `match_seed_assigned` | admin | the match seed |
 | `match_started` | public | |
 | `hand_started` | public | hand number — **no seed** |
@@ -647,7 +676,7 @@ Do not expose any global mutation version to players, in any endpoint or error.
 | `cards_revealed` | public | every player's card |
 | `card_placed` | public | card, row index, resulting row |
 | `row_taken` | public | player, row, captured cards, heads, reason (`sixth_card` / `too_low`) |
-| `row_choice_required` | `player:<id>` | |
+| `row_choice_required` | public | the player and the card. Public because `cards_revealed` already published the card, and because `awaiting` (§9.2) must be derivable from every viewer's stream |
 | `row_choice_made` | public | |
 | `play_ended` | public | per-player penalty this play |
 | `hand_ended` | public | hand scores and running totals |
@@ -662,6 +691,22 @@ Three rules that are easy to violate and expensive to fix:
 - `card_placed` and `row_taken` are emitted **one per card, in resolution order**, so the UI can animate a play correctly rather than snapping to the end state.
 
 Game events record what happened, not derived statistics. `match_ended` carries final scores and the winner and nothing else — see §12.
+
+---
+
+### 10.4 Open question: a player's own action count under negotiation
+
+§5.1 grants a player their own action count and remaining budget, and §9.2 puts
+both in the view. Under classic rules this folds cleanly from the player's own
+visible events. Under negotiation it does not: an explicit `commit` emits only
+the public `player_committed`, and attaching a count to a public event would
+publish an opponent's action count, which §5.2 forbids unless a budget is in
+force.
+
+Resolve this when negotiation is built (phase 6), not before. The likely answer
+is a private counterpart to `player_committed` addressed to the actor, in the
+same shape as `selection_made` alongside `selection_registered`. Whatever is
+chosen, it must not make an opponent's activity observable.
 
 ---
 
@@ -775,7 +820,8 @@ Acceptance criteria, not suggestions.
 - The §2.7 worked example reproduces exactly, **including the board after each of the four cards** and Alice's 12 heads.
 - Eligibility uses strictly-lower, not lower-or-equal.
 - Sixth card: a full row receiving a legal placement captures exactly 5 and the row becomes `[played_card]`.
-- Too low: a card under all four ends triggers a choice, and every row is a legal answer, including a one-card row.
+- Too low: a card under all four ends triggers a choice, and every row is a legal answer — parametrise over all four, including a one-card row and a full five-card row.
+- At most one row choice arises per play, and always on the play's lowest card (§2.8).
 - Resolution order: build a play where seating order and ascending order differ, and assert ascending wins.
 - Chaining, isolated: a minimal two-card play where the first card changes a row end and thereby changes the second card's eligible set. Assert the intermediate board, not just the final one.
 - All §2.8 invariants hold after every placement, checked by a property test over many random plays.
@@ -783,7 +829,7 @@ Acceptance criteria, not suggestions.
 - 10 players consume the deck exactly; 2 players leave 80 cards in the remainder, absent from every view including omniscient.
 - A hand is exactly 10 plays; all hands empty together.
 - Match ends at the end of the hand where someone reaches 66, not mid-hand; a player crossing 66 in play 3 still plays plays 4–10.
-- Lowest cumulative score wins; simultaneous lows are reported as a tie.
+- Lowest cumulative score wins; simultaneous lows are reported as a tie. Construct the tie deliberately and assert the `match_ended` payload — a test that derives the expected winners from its own inputs asserts nothing, and a tie that depends on a lucky seed is not a test of ties.
 
 **Commitment and concurrency**
 
@@ -795,7 +841,7 @@ Acceptance criteria, not suggestions.
 
 **Information contract** — one test per clause of §5.1 and §5.2
 
-- Serialise every player's view at every phase of a full match; assert no other player's hand card appears in any field.
+- Serialise every player's view at every phase of a full match; assert no other player's hand card appears in any field. **Compare card-bearing fields specifically** — the hand, penalty piles, row contents, the selection, and revealed cards. Scraping every integer out of the serialised view instead will flag scores, counters and cursors as if they were cards, and the false positives will bury the real ones.
 - Under hidden policy, no opponent card appears before `cards_revealed`.
 - A direct message's content is absent from every feed except sender, recipient, and omniscient.
 - With existence visible, others receive `private_message_occurred` with parties and no content.
@@ -808,6 +854,7 @@ Acceptance criteria, not suggestions.
 - Bob sends 20 invalid actions; Alice's `view_version` and event cursor are completely unchanged.
 - With `private_message_existence = "hidden"`, Bob messages Cara; Alice's cursor, `view_version`, event count, and response shapes are indistinguishable from the case where no message was sent.
 - Under hidden card selection, Bob changes his card five times; Alice's cursor advances only by the public shadow events, identically to a single change.
+- **The public shadow of a re-selection does not depend on what was selected.** Bob re-selecting the card he already holds and Bob switching to a different card must produce byte-identical public events. Emitting `selection_cleared` only when the card actually differs tells the table whether a hidden selection moved.
 - Every player's event stream is contiguous from 1 with no gaps, across a full match.
 - Error responses carry the caller's `view_version` and never a global one.
 - **Response-shape equivalence.** Run two executions differing only by events invisible to Alice. Every response Alice receives — success *and* error — is byte-identical after normalising transport metadata. Run this specifically with a private rejection by Bob, and with a hidden direct message between Bob and Cara.
@@ -842,6 +889,8 @@ Acceptance criteria, not suggestions.
 - Subsequent actions are rejected; the log survives on disk.
 
 **High-volume arena** — 1000 games at each of 2, 3, 5 and 10 players with random bots, asserting: no impossible states, the §2.8 invariants throughout, every player finishes each hand with zero cards, every match terminates, replay matches live state, scores non-negative and consistent, information boundaries hold.
+
+Fold the event stream independently of the engine and assert the folded board, hands, piles and scores equal the live ones after every placement. An independent fold is what proves the log is sufficient to rebuild state, which is the premise both replay and every player view rest on.
 
 **Determinism**
 
