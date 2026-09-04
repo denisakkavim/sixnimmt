@@ -111,11 +111,14 @@ def advance_resolution(state: MatchState) -> tuple[MatchState, list[Event]]:
                 "resolution": resolution.model_copy(update={"awaiting_player": player_id}),
             }
         )
+        # Public: cards_revealed already published every card, so the only new
+        # fact is who the game is now waiting for, which §9.2 requires every
+        # viewer to see as `awaiting`.
         event: Event = RowChoiceRequiredEvent(
             match_id=state.match_id,
             hand=state.hand_number,
             play=state.play_number,
-            audience=f"player:{player_id}",
+            audience="public",
             data={"player_id": player_id, "card": card},
         )
         return paused, [event]

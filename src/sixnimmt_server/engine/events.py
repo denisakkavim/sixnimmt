@@ -43,6 +43,17 @@ def audience_for_player(player_id: str) -> str:
     return f"player:{player_id}"
 
 
+def assign_sequence(events: list["Event"], first_seq: int, server_action_seq: int = 0) -> list["Event"]:
+    """Number a batch into the match's global sequence, newest batch last.
+
+    The global `seq` is admin-only (§10.2); players see their own cursor.
+    """
+    return [
+        event.model_copy(update={"seq": first_seq + offset, "server_action_seq": server_action_seq})
+        for offset, event in enumerate(events)
+    ]
+
+
 class EventEnvelope(BaseModel):
     """Fields shared by every event."""
 

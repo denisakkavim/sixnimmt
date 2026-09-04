@@ -154,7 +154,7 @@ def test_observer_sees_setup_and_all_transitions_without_changing_results() -> N
     second = run_match([RandomBot(3), RandomBot(5)], 123)
     assert first == second
     assert len(batches) == first.actions + 1
-    assert batches[0][0].type == "hand_started"
+    assert batches[0][0].type == "match_created"
     assert batches[-1][-1].type == "match_ended"
 
 

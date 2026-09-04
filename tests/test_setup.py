@@ -18,15 +18,21 @@ def test_create_match_deals_first_hand_in_selecting() -> None:
     assert len(state.undealt_remainder) == 80
 
 
-def test_setup_emits_hand_started_dealt_rows_and_play_started() -> None:
+def test_setup_emits_the_full_opening_sequence_with_seeds_kept_admin_only() -> None:
     _, events = create_match("m_01", ["alice", "bob"], match_seed=12345)
 
-    types = [event.type for event in events]
-    assert types[0] == "hand_started"
-    assert types[1] == "cards_dealt"
-    assert types[2] == "cards_dealt"
-    assert types[3] == "rows_initialised"
-    assert types[4] == "play_started"
+    assert [(event.type, event.audience) for event in events] == [
+        ("match_created", "public"),
+        ("match_created", "admin"),
+        ("match_seed_assigned", "admin"),
+        ("match_started", "public"),
+        ("hand_started", "public"),
+        ("hand_seed_assigned", "admin"),
+        ("cards_dealt", "player:alice"),
+        ("cards_dealt", "player:bob"),
+        ("rows_initialised", "public"),
+        ("play_started", "public"),
+    ]
 
 
 def test_cards_dealt_events_carry_each_hand_privately() -> None:

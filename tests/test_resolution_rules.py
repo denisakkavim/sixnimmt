@@ -85,7 +85,7 @@ def test_too_low_card_pauses_for_a_private_choice() -> None:
     assert new_state.resolution is not None and new_state.resolution.awaiting_player == "bob"
     assert new_state.resolution.next_index == 0
     assert [event.type for event in events] == ["row_choice_required"]
-    assert events[0].audience == "player:bob"
+    assert events[0].audience == "public"
 
 
 def test_choice_captures_any_length_row_and_resumes() -> None:

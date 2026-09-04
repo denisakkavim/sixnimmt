@@ -161,7 +161,7 @@ class MatchLedger:
             case "row_taken":
                 self._take_row(event)
             case "row_choice_required":
-                assert event.audience == f"player:{data['player_id']}"
+                assert event.audience == "public"
                 assert data["card"] == self.pending[0]
                 # Only the lowest card of a play can be too low for every row:
                 # once it resolves, some row ends exactly on it, so every higher

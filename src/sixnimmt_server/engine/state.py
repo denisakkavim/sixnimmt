@@ -1,6 +1,7 @@
 """Authoritative match state: players, rows, phases, and resolution progress."""
 
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,10 +14,28 @@ class Phase(StrEnum):
     FINISHED = "finished"
 
 
+class PlayerSeat(BaseModel):
+    """Who a player is, as supplied at match creation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    player_id: str
+    display_name: str = ""
+    # Opaque to the engine: never parsed, never shown to other players, always
+    # written to the log so a result can be traced back to what produced it.
+    agent_metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def name_or_id(self) -> str:
+        return self.display_name or self.player_id
+
+
 class PlayerState(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     player_id: str
+    display_name: str = ""
+    agent_metadata: dict[str, Any] = Field(default_factory=dict)
     hand: tuple[int, ...] = ()
     selection: int | None = None
     committed: bool = False
