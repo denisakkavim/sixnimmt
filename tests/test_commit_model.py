@@ -14,6 +14,7 @@ from sixnimmt_server.engine.errors import EngineRejection, ErrorCode
 from sixnimmt_server.engine.events import Event
 from sixnimmt_server.engine.rules import GameRules, MatchProtocol
 from sixnimmt_server.engine.setup import create_match
+from sixnimmt_server.engine.state import Phase
 from sixnimmt_server.engine.transition import transition
 
 ACTION_ADAPTER: TypeAdapter[Action] = TypeAdapter(Action)
@@ -95,16 +96,18 @@ def test_final_commit_reveals_all_selections_in_public() -> None:
         after_alice, "bob", _parse({"type": "select_card", "card": bob_card}), MatchProtocol(), GameRules()
     )
 
-    assert after_bob.phase.value == "resolving"
-    assert after_bob.resolution is not None
-    cards = {card for card, _ in after_bob.resolution.ordered_cards}
-    assert cards == {alice_card, bob_card}
-    assert events[0].type == "selection_made"
-    assert events[1].type == "player_committed"
-    assert events[2].type == "cards_revealed"
+    assert after_bob.phase == Phase.SELECTING
+    assert after_bob.resolution is None
+    assert after_bob.play_number == 2
+    assert after_bob.revealed_this_hand == ()
+    assert [event.type for event in events[:3]] == ["selection_made", "player_committed", "cards_revealed"]
     revealed = events[2]
     assert revealed.audience == "public"
     assert revealed.data == {"selections": {"alice": alice_card, "bob": bob_card}}
+    placed = [event for event in events if event.type == "card_placed"]
+    assert len(placed) == 2
+    ended = [event for event in events if event.type == "play_ended"]
+    assert len(ended) == 1
 
 
 def test_commit_without_selection_is_rejected() -> None:

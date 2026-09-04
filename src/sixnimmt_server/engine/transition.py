@@ -16,6 +16,7 @@ from sixnimmt_server.engine.events import (
     SelectionMadeEvent,
     audience_for_player,
 )
+from sixnimmt_server.engine.lifecycle import end_hand, end_play
 from sixnimmt_server.engine.resolution import advance_resolution
 from sixnimmt_server.engine.resolution import choose_row as resolve_row_choice
 from sixnimmt_server.engine.rules import GameRules, MatchProtocol
@@ -30,7 +31,9 @@ def _find_player(state: MatchState, player_id: str) -> int:
     raise EngineRejection(ErrorCode.UNKNOWN_PLAYER, msg)
 
 
-def _select_card(state: MatchState, player_index: int, action: SelectCardAction) -> tuple[MatchState, list[Event]]:
+def _select_card(
+    state: MatchState, player_index: int, action: SelectCardAction, target_score: int
+) -> tuple[MatchState, list[Event]]:
     player = state.players[player_index]
     if state.phase != Phase.SELECTING:
         msg = f"cannot select a card during {state.phase.value}"
@@ -83,15 +86,31 @@ def _select_card(state: MatchState, player_index: int, action: SelectCardAction)
         )
         revealed = tuple(sorted(other.selection for other in players if other.selection is not None))
         new_state = new_state.model_copy(update={"revealed_this_hand": (*new_state.revealed_this_hand, revealed)})
-        current, resolution_events = advance_resolution(new_state)
+        current, resolution_events = _resolve_fully(new_state)
         events.extend(resolution_events)
-        while current.phase == Phase.RESOLVING and current.resolution is not None:
-            if current.resolution.next_index >= len(current.resolution.ordered_cards):
-                break
-            current, more_events = advance_resolution(current)
-            events.extend(more_events)
-        return current, events
+        if current.phase != Phase.RESOLVING or (
+            current.resolution is not None and current.resolution.next_index < len(current.resolution.ordered_cards)
+        ):
+            return current, events
+        play_closed, play_events = end_play(new_state, current, ordered)
+        events.extend(play_events)
+        if any(len(player.hand) > 0 for player in play_closed.players):
+            return play_closed, events
+        handed, hand_events = end_hand(play_closed, target_score)
+        events.extend(hand_events)
+        return handed, events
     return new_state, events
+
+
+def _resolve_fully(state: MatchState) -> tuple[MatchState, list[Event]]:
+    current, first_events = advance_resolution(state)
+    events = [*first_events]
+    while current.phase == Phase.RESOLVING and current.resolution is not None:
+        if current.resolution.next_index >= len(current.resolution.ordered_cards):
+            break
+        current, more_events = advance_resolution(current)
+        events.extend(more_events)
+    return current, events
 
 
 def _commit(state: MatchState, player_index: int, _: CommitAction) -> tuple[MatchState, list[Event]]:
@@ -104,6 +123,24 @@ def _commit(state: MatchState, player_index: int, _: CommitAction) -> tuple[Matc
         raise EngineRejection(ErrorCode.NO_SELECTION_TO_COMMIT, msg)
     msg = "committing is implicit in card selection"
     raise EngineRejection(ErrorCode.NEGOTIATION_DISABLED, msg)
+
+
+def _choose_row_and_close(
+    state: MatchState, player_id: str, row_index: int, target_score: int
+) -> tuple[MatchState, list[Event]]:
+    current, events = resolve_row_choice(state, player_id, row_index)
+    if current.phase != Phase.RESOLVING or (
+        current.resolution is not None and current.resolution.next_index < len(current.resolution.ordered_cards)
+    ):
+        return current, events
+    ordered = state.resolution.ordered_cards if state.resolution is not None else ()
+    play_closed, play_events = end_play(state, current, ordered)
+    events.extend(play_events)
+    if any(len(player.hand) > 0 for player in play_closed.players):
+        return play_closed, events
+    handed, hand_events = end_hand(play_closed, target_score)
+    events.extend(hand_events)
+    return handed, events
 
 
 def _reject_negotiation(_: MatchState, __: int, ___: UncommitAction | SendMessageAction) -> None:
@@ -127,9 +164,9 @@ def transition(
         if state.phase != Phase.AWAITING_ROW_CHOICE:
             msg = f"no row choice is pending during {state.phase.value}"
             raise EngineRejection(ErrorCode.WRONG_PHASE, msg)
-        return resolve_row_choice(state, player_id, action.row_index)
+        return _choose_row_and_close(state, player_id, action.row_index, rules.target_score)
     if isinstance(action, SelectCardAction):
-        return _select_card(state, player_index, action)
+        return _select_card(state, player_index, action, rules.target_score)
     if isinstance(action, CommitAction):
         return _commit(state, player_index, action)
     if isinstance(action, UncommitAction | SendMessageAction):
