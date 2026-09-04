@@ -2,12 +2,13 @@
 * Use uv for Python environment and dependency management.
 
 # Style Guidance
-* `IMPLEMENTATION_SPEC.md` is for you to know what to implement - the code and tests must stand on their own, and you should not need to read the spec to understand what is being done.
+* `IMPLEMENTATION_SPEC.md` is for you to know what to implement - any code, tests, comments, or commit messages must stand on their own, and you should not need to read the spec to understand what is being done.
 
 # Commit Style
 * Follow Conventional Commits: <type>(<scope>): <description>.
 * Use imperative, concise descriptions.
 * Use `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `build`, or `ci` as appropriate.
+* Commit messages should be a brief one-line description of what the commit does.
 
 ## Python Style
 * Optimize for clarity and explicitness, not cleverness or minimum line count.
