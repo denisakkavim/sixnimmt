@@ -31,7 +31,7 @@ dev = [
     "pytest>=9.0.2",
     "pre-commit>=4.5.1",
     "tox-uv>=1.33.4",
-    
+
     "ty>=0.0.24",
     "pytest-cov>=7.0.0",
     "ruff>=0.15.7",
@@ -110,4 +110,3 @@ skip_empty = true
 [tool.coverage.run]
 branch = true
 source = ["src"]
-

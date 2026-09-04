@@ -105,8 +105,7 @@ def test_uncommit_rejects_an_all_committed_selecting_state() -> None:
     prepared = state.model_copy(
         update={
             "players": tuple(
-                player.model_copy(update={"selection": player.hand[0], "committed": True})
-                for player in state.players
+                player.model_copy(update={"selection": player.hand[0], "committed": True}) for player in state.players
             )
         }
     )
@@ -159,10 +158,7 @@ def test_required_row_choice_is_exempt_from_the_action_budget() -> None:
         phase=Phase.AWAITING_ROW_CHOICE,
         match_seed=1,
         players=(PlayerState(player_id="bob", actions_taken_this_play=1),),
-        rows=tuple(
-            RowState(index=index, cards=(card,))
-            for index, card in enumerate((7, 44, 52, 88))
-        ),
+        rows=tuple(RowState(index=index, cards=(card,)) for index, card in enumerate((7, 44, 52, 88))),
         resolution=ResolutionState(
             ordered_cards=((3, "bob"),),
             awaiting_player="bob",

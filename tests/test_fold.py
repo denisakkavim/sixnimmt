@@ -76,9 +76,7 @@ def _cards_in(view: MatchView) -> set[int]:
 def test_no_view_ever_contains_another_players_hand_card() -> None:
     for state, log in _played_match():
         for player in state.players:
-            hidden = {
-                card for other in state.players if other.player_id != player.player_id for card in other.hand
-            }
+            hidden = {card for other in state.players if other.player_id != player.player_id for card in other.hand}
 
             assert _cards_in(build_view(log, _player(player.player_id))).isdisjoint(hidden)
 
@@ -200,9 +198,7 @@ def test_negotiation_offers_commit_and_uncommit_in_the_right_order() -> None:
 
     assert build_view(log, _player("alice")).legal_actions == ("select_card", "send_message")
 
-    state, produced = transition(
-        state, "alice", SelectCardAction(card=state.players[0].hand[0]), protocol, GameRules()
-    )
+    state, produced = transition(state, "alice", SelectCardAction(card=state.players[0].hand[0]), protocol, GameRules())
     log.extend(produced)
     assert build_view(log, _player("alice")).legal_actions == ("select_card", "commit", "send_message")
 

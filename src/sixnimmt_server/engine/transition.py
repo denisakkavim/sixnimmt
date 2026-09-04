@@ -194,12 +194,10 @@ def _select_card(
         events.append(_public_player_event(state, SelectionClearedEvent, player.player_id))
     if player.committed:
         events.append(_public_player_event(state, PlayerUncommittedEvent, player.player_id))
-    events.extend(
-        [
-            _selection_event(state, player.player_id, action.card),
-            _public_player_event(state, SelectionRegisteredEvent, player.player_id),
-        ]
-    )
+    events.extend([
+        _selection_event(state, player.player_id, action.card),
+        _public_player_event(state, SelectionRegisteredEvent, player.player_id),
+    ])
 
     if protocol.negotiation_enabled:
         return selected, events

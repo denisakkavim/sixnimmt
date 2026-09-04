@@ -17,10 +17,7 @@ def _play_penalties(state: MatchState) -> dict[str, int]:
         msg = "cannot close a play without resolution state"
         raise ValueError(msg)
     before_scores = dict(state.resolution.scores_before_play)
-    return {
-        player.player_id: player.score_this_hand - before_scores[player.player_id]
-        for player in state.players
-    }
+    return {player.player_id: player.score_this_hand - before_scores[player.player_id] for player in state.players}
 
 
 def _reset_play_state(state: MatchState) -> tuple:
