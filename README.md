@@ -1,69 +1,85 @@
 # sixnimmt-server
 
-[![Release](https://img.shields.io/github/v/release/denisakkavim/sixnimmt-server)](https://img.shields.io/github/v/release/denisakkavim/sixnimmt-server)
-[![Build status](https://img.shields.io/github/actions/workflow/status/denisakkavim/sixnimmt-server/main.yml?branch=main)](https://github.com/denisakkavim/sixnimmt-server/actions/workflows/main.yml?query=branch%3Amain)
-[![codecov](https://codecov.io/gh/denisakkavim/sixnimmt-server/branch/main/graph/badge.svg)](https://codecov.io/gh/denisakkavim/sixnimmt-server)
-[![Commit activity](https://img.shields.io/github/commit-activity/m/denisakkavim/sixnimmt-server)](https://img.shields.io/github/commit-activity/m/denisakkavim/sixnimmt-server)
-[![License](https://img.shields.io/github/license/denisakkavim/sixnimmt-server)](https://img.shields.io/github/license/denisakkavim/sixnimmt-server)
+A deterministic 6 nimmt! rules engine and in-process arena for trusted bots.
 
-A game server and rules engine for deterministic 6 nimmt! matches.
+## Requirements
 
-- **Github repository**: <https://github.com/denisakkavim/sixnimmt-server/>
-- **Documentation** <https://denisakkavim.github.io/sixnimmt-server/>
+- Python 3.13 or newer
+- [uv](https://docs.astral.sh/uv/)
 
-## Getting started with your project
+## Setup
 
-### 1. Create a New Repository
-
-First, create a repository on GitHub with the same name as this project, and then run the following commands:
+Install the project and its development tools into a managed virtual environment:
 
 ```bash
-git init -b main
-git add .
-git commit -m "init commit"
-git remote add origin git@github.com:denisakkavim/sixnimmt-server.git
-git push -u origin main
+uv sync --all-groups
 ```
 
-### 2. Set Up Your Development Environment
-
-Then, install the environment and the pre-commit hooks with
+Run the command-line arena with two random bots:
 
 ```bash
-make install
+uv run sixnimmt arena --players random random --games 10000 --seed 1234
 ```
 
-This will also generate your `uv.lock` file
+`--players` also accepts repeated options, such as `--players random --players random`. The optional `--max-actions-per-match` limit defaults to 10,000 and stops a match whose bot decisions do not reach a terminal state within that bound.
 
-### 3. Run the pre-commit hooks
+The command reports the root seed, aggregate hand and action counts, and per-seat wins, ties, total scores, and average scores. Wins count sole winners; ties count matches in which that seat shared the lowest score. Lower scores are better. Given the same Python runtime and arguments, it produces the same results.
 
-Initially, the CI/CD pipeline might be failing due to formatting issues. To resolve those run:
+## Determinism
+
+Each game and bot gets an independent deterministic seed. The arena hashes
+
+```text
+sixnimmt-arena:{seed}:{domain}:{game_index}:{seat_index}
+```
+
+with SHA-256 and interprets the first eight digest bytes as an unsigned big-endian integer. Domain separation (`match` versus `bot`) and zero-based game and seat indices keep one random stream from depending on how many values another stream consumes. The match domain uses the literal `None` for the seat index. Each match then derives its hand shuffle seeds deterministically from its match seed.
+
+The shuffle implementation intentionally targets Python's `random.Random` behavior rather than defining a cross-language protocol. Known-answer tests protect the expected decks from accidental runtime changes.
+
+## In-process use
+
+```python
+from sixnimmt_server.arena.bots import RandomBot
+from sixnimmt_server.arena.runner import run_match
+
+result = run_match([RandomBot(11), RandomBot(22)], seed=1234)
+print(result.winners)
+print([(player.player_id, player.total_score) for player in result.final_state.players])
+```
+
+Custom trusted bots implement `act(observation)`, returning `SelectCardAction` or `ChooseRowAction` according to `observation.decision`. An optional `observer(state, events)` callback on `run_match` or `run_arena` receives setup and every transition batch for testing or instrumentation. Unlike a bot, this callback is privileged and sees authoritative state.
+
+## Bot trust boundary
+
+The arena runs bots in process. A bot receives only its own hand and public row information, but it is trusted code: the arena does not sandbox it, impose a wall-clock timeout, or protect the process from blocking, excessive resource use, or malicious behavior. Only run bot implementations you trust. The action limit bounds completed bot decisions; it cannot interrupt a bot callback that never returns.
+
+The arena currently keeps aggregate results in memory. It does not persist action logs or replay files yet.
+
+## Tests
+
+Run the default test suite, which excludes longer arena simulations:
 
 ```bash
-uv run pre-commit run -a
+uv run pytest
 ```
 
-### 4. Commit the changes
-
-Lastly, commit the changes made by the two steps above to your repository.
+Run only the CLI tests:
 
 ```bash
-git add .
-git commit -m 'Fix formatting issues'
-git push origin main
+uv run pytest tests/test_cli.py
 ```
 
-You are now ready to start development on your project!
-The CI/CD pipeline will be triggered when you open a pull request, merge to main, or when you create a new release.
+Run the high-volume suite explicitly: 1,000 games each at 2, 3, 5, and 10 players, checking intermediate placements, card conservation, score consistency, hand completion, and bot information boundaries:
 
-To finalize the set-up for publishing to PyPI, see [here](https://fpgmaas.github.io/cookiecutter-uv/features/publishing/#set-up-for-pypi).
-For activating the automatic documentation with MkDocs/Zensical, see [here](https://fpgmaas.github.io/cookiecutter-uv/features/docs_tool/#deploying-to-github-pages).
-To enable the code coverage reports, see [here](https://fpgmaas.github.io/cookiecutter-uv/features/codecov/).
+```bash
+uv run pytest -m arena_slow
+```
 
-## Releasing a new version
+Run formatting, linting, and type checks:
 
-
-
----
-
-Repository initiated with [osprey-oss/cookiecutter-uv](https://github.com/osprey-oss/cookiecutter-uv).
+```bash
+uv run ruff format --check .
+uv run ruff check .
+uv run ty check
+```

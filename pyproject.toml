@@ -15,7 +15,11 @@ classifiers = [
 ]
 dependencies = [
     "pydantic>=2.13.5",
+    "typer>=0.27.2",
 ]
+
+[project.scripts]
+sixnimmt = "sixnimmt_server.cli:app"
 
 [project.urls]
 Homepage = "https://denisakkavim.github.io/sixnimmt-server/"
@@ -46,6 +50,8 @@ python-version = "3.13"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not arena_slow'"
+markers = ["arena_slow: high-volume arena validation (run explicitly with -m arena_slow)"]
 
 [tool.ruff]
 target-version = "py313"
