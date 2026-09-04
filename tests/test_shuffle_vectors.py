@@ -7,7 +7,7 @@ that alters shuffle behaviour must fail loudly here.
 
 import pytest
 
-from sixnimmt_server.engine.cards import hand_seed_for, shuffled_deck
+from sixnimmt_server.engine.cards import deal, hand_seed_for, shuffled_deck
 
 # (match_seed, hand_number) -> (hand_seed, full shuffled deck).
 VECTORS: dict[tuple[int, int], tuple[int, list[int]]] = {
@@ -355,3 +355,58 @@ def test_different_hands_shuffle_differently() -> None:
 
 def test_seed_uses_1_based_hand_number() -> None:
     assert hand_seed_for(12345, 1) != hand_seed_for(12345, 0)
+
+
+# (match_seed, hand_number, player_count) -> (hands in deal order, four row starts).
+# Derived from the spec's dealing rule, not from the dealing code: a reimplementation
+# that deals correctly but stores hands sorted must fail here.
+DEAL_VECTORS: dict[tuple[int, int, int], tuple[list[list[int]], list[int]]] = {
+    (12345, 1, 5): (
+        [
+            [96, 5, 32, 43, 9, 44, 67, 66, 42, 34],
+            [64, 72, 97, 65, 28, 58, 75, 37, 8, 29],
+            [36, 27, 45, 19, 2, 16, 91, 102, 25, 21],
+            [59, 100, 99, 94, 81, 90, 92, 24, 26, 80],
+            [10, 35, 1, 7, 98, 30, 62, 40, 69, 38],
+        ],
+        [49, 84, 71, 14],
+    ),
+    (12345, 3, 10): (
+        [
+            [86, 36, 98, 65, 73, 1, 22, 54, 45, 17],
+            [50, 35, 53, 74, 29, 51, 104, 101, 94, 48],
+            [10, 40, 28, 11, 64, 97, 84, 82, 71, 25],
+            [55, 32, 44, 85, 33, 18, 9, 103, 77, 83],
+            [14, 46, 76, 52, 5, 21, 16, 99, 63, 93],
+            [91, 31, 15, 30, 68, 87, 75, 80, 57, 19],
+            [43, 12, 67, 92, 42, 81, 61, 6, 24, 78],
+            [88, 47, 41, 20, 49, 37, 3, 23, 90, 62],
+            [38, 34, 7, 95, 100, 2, 70, 56, 27, 59],
+            [89, 13, 79, 69, 58, 66, 102, 26, 60, 4],
+        ],
+        [72, 8, 39, 96],
+    ),
+    (999, 1, 2): (
+        [
+            [51, 92, 76, 93, 10, 94, 6, 44, 28, 14],
+            [11, 17, 34, 82, 47, 81, 79, 74, 77, 75],
+        ],
+        [26, 29, 37, 96],
+    ),
+}
+
+
+@pytest.mark.parametrize(("match_seed", "hand_number", "player_count"), sorted(DEAL_VECTORS))
+def test_deal_vectors_reproduce_hands_in_deal_order_and_row_starts(
+    match_seed: int,
+    hand_number: int,
+    player_count: int,
+) -> None:
+    expected_hands, expected_rows = DEAL_VECTORS[(match_seed, hand_number, player_count)]
+    player_ids = [f"p{seat}" for seat in range(player_count)]
+
+    hands, row_starts, remainder = deal(shuffled_deck(match_seed, hand_number), player_ids)
+
+    assert [hands[player_id] for player_id in player_ids] == expected_hands
+    assert row_starts == expected_rows
+    assert len(remainder) == 100 - 10 * player_count

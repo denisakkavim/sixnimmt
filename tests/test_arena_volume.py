@@ -29,6 +29,8 @@ class MatchLedger:
         self.placements = 0
         self.captures = 0
         self.row_choices = 0
+        self.choices_this_play = 0
+        self.revealed_ascending: list[int] = []
         self.winners: tuple[str, ...] = ()
         self.before_rows: list[list[int]] | None = None
         self.capture_row: int | None = None
@@ -140,6 +142,7 @@ class MatchLedger:
         assert set(selections) == set(self.ids)
         self.owners = {card: player for player, card in selections.items()}
         self.pending = sorted(selections.values())
+        self.revealed_ascending = list(self.pending)
         for player, card in selections.items():
             self.hands[player].remove(card)
         self._check_cards()
@@ -151,6 +154,7 @@ class MatchLedger:
                 self._deal(event)
             case "play_started":
                 assert event.play == self.completed_plays + 1
+                self.choices_this_play = 0
                 self.play_scores = {player: sum(bull_heads(card) for card in self.piles[player]) for player in self.ids}
             case "cards_revealed":
                 self._reveal(event)
@@ -159,6 +163,12 @@ class MatchLedger:
             case "row_choice_required":
                 assert event.audience == f"player:{data['player_id']}"
                 assert data["card"] == self.pending[0]
+                # Only the lowest card of a play can be too low for every row:
+                # once it resolves, some row ends exactly on it, so every higher
+                # card in the same play is guaranteed an eligible row.
+                assert data["card"] == self.revealed_ascending[0]
+                self.choices_this_play += 1
+                assert self.choices_this_play == 1
                 self.row_choices += 1
             case "card_placed":
                 self._place_card(event)
