@@ -39,6 +39,7 @@ class ResolutionState(BaseModel):
     ordered_cards: tuple[tuple[int, str], ...] = ()
     next_index: int = 0
     awaiting_player: str | None = None
+    scores_before_play: tuple[tuple[str, int], ...] = ()
 
 
 class MatchState(BaseModel):

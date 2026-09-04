@@ -59,29 +59,45 @@ def test_select_card_commits_atomically_and_reveals_nothing() -> None:
     bob = next(player for player in new_state.players if player.player_id == "bob")
     assert bob.selection is None
     assert bob.committed is False
-    assert [event.type for event in events] == ["selection_made", "player_committed"]
+    assert [event.type for event in events] == [
+        "selection_made",
+        "selection_registered",
+        "player_committed",
+    ]
     selection_made = next(event for event in events if event.type == "selection_made")
     assert selection_made.audience == "player:alice"
-    assert selection_made.data == {"player_id": "alice"}
+    assert selection_made.data == {"player_id": "alice", "card": card}
+    registered = next(event for event in events if event.type == "selection_registered")
+    assert registered.data == {"player_id": "alice"}
+    assert "card" not in registered.data
     committed = next(event for event in events if event.type == "player_committed")
     assert committed.audience == "public"
     assert "card" not in committed.data
 
 
-def test_reselecting_replaces_selection_and_stays_committed() -> None:
+def test_reselecting_replaces_selection_without_losing_a_card() -> None:
     state, _ = _two_player_match()
-    card_a, card_b = state.players[0].hand[0], state.players[0].hand[1]
+    original_hand = state.players[0].hand
+    card_a, card_b = original_hand[0], original_hand[1]
     selected, _ = transition(
         state, "alice", _parse({"type": "select_card", "card": card_a}), MatchProtocol(), GameRules()
     )
 
-    reselected, _ = transition(
+    reselected, events = transition(
         selected, "alice", _parse({"type": "select_card", "card": card_b}), MatchProtocol(), GameRules()
     )
 
     alice = next(player for player in reselected.players if player.player_id == "alice")
     assert alice.selection == card_b
     assert alice.committed is True
+    assert alice.hand == original_hand
+    assert [event.type for event in events] == [
+        "selection_cleared",
+        "player_uncommitted",
+        "selection_made",
+        "selection_registered",
+        "player_committed",
+    ]
 
 
 def test_final_commit_reveals_all_selections_in_public() -> None:
@@ -99,9 +115,15 @@ def test_final_commit_reveals_all_selections_in_public() -> None:
     assert after_bob.phase == Phase.SELECTING
     assert after_bob.resolution is None
     assert after_bob.play_number == 2
-    assert after_bob.revealed_this_hand == ()
-    assert [event.type for event in events[:3]] == ["selection_made", "player_committed", "cards_revealed"]
-    revealed = events[2]
+    assert after_bob.revealed_this_hand == (tuple(sorted((alice_card, bob_card))),)
+    assert [event.type for event in events[:5]] == [
+        "selection_made",
+        "selection_registered",
+        "player_committed",
+        "play_committed",
+        "cards_revealed",
+    ]
+    revealed = events[4]
     assert revealed.audience == "public"
     assert revealed.data == {"selections": {"alice": alice_card, "bob": bob_card}}
     placed = [event for event in events if event.type == "card_placed"]
@@ -159,7 +181,7 @@ def test_actions_and_events_round_trip_through_json() -> None:
         "audience": "player:alice",
         "hand": 1,
         "play": 1,
-        "data": {"player_id": "alice"},
+        "data": {"player_id": "alice", "card": 62},
     }
 
     assert ACTION_ADAPTER.validate_json(ACTION_ADAPTER.dump_json(action)) == action

@@ -1,7 +1,7 @@
 """Match setup and hand dealing orchestration."""
 
 from sixnimmt_server.engine.setup import create_match, start_hand
-from sixnimmt_server.engine.state import Phase
+from sixnimmt_server.engine.state import Phase, PlayerState
 
 
 def test_create_match_deals_first_hand_in_selecting() -> None:
@@ -57,12 +57,35 @@ def test_seating_order_determines_deal() -> None:
 
 def test_start_hand_deals_next_hand_with_independent_seed() -> None:
     state, _ = create_match("m_01", ["a", "b"], match_seed=12345)
+    state = state.model_copy(
+        update={
+            "players": tuple(
+                PlayerState(
+                    player_id=player.player_id,
+                    hand=player.hand,
+                    selection=player.hand[0],
+                    committed=True,
+                    score_this_hand=10,
+                    total_score=20,
+                    actions_taken_this_play=5,
+                )
+                for player in state.players
+            ),
+            "revealed_this_hand": ((1, 2),),
+        }
+    )
 
     next_state, events = start_hand(state, hand_number=3)
 
     assert next_state.hand_number == 3
     assert next_state.play_number == 1
     assert next_state.phase == Phase.SELECTING
+    assert next_state.revealed_this_hand == ()
+    assert all(player.selection is None for player in next_state.players)
+    assert all(player.committed is False for player in next_state.players)
+    assert all(player.score_this_hand == 0 for player in next_state.players)
+    assert all(player.total_score == 20 for player in next_state.players)
+    assert all(player.actions_taken_this_play == 0 for player in next_state.players)
     assert next(event.type for event in events) == "hand_started"
     third, _ = create_match("m_99", ["a", "b"], match_seed=12345)
     third_hand3, _ = start_hand(third, hand_number=3)

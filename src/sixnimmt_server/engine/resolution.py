@@ -145,8 +145,8 @@ def choose_row(state: MatchState, player_id: str, row_index: int) -> tuple[Match
         raise EngineRejection(ErrorCode.WRONG_PHASE, msg)
     resolution = _resolution_or_error(state)
     if resolution.awaiting_player != player_id:
-        msg = f"waiting for {resolution.awaiting_player}, not {player_id}"
-        raise EngineRejection(ErrorCode.NOT_AWAITING_PLAYER, msg)
+        msg = f"the game is waiting for {resolution.awaiting_player} to choose a row"
+        raise EngineRejection(ErrorCode.NOT_YOUR_TURN, msg)
     if not 0 <= row_index < len(state.rows):
         msg = f"row index {row_index} is out of range"
         raise EngineRejection(ErrorCode.INVALID_ROW_INDEX, msg)

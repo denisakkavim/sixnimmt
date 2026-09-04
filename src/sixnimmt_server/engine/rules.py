@@ -67,7 +67,14 @@ class MatchProtocol(BaseModel):
     negotiation_enabled: bool = False
     information_policy: InformationPolicy = Field(default_factory=InformationPolicy)
     allow_direct_messages: bool = True
-    max_actions_per_play: int | None = None
+    max_actions_per_play: int | None = Field(default=None, ge=1)
     max_message_length: int = 2000
     on_invalid_action: OnInvalidAction = OnInvalidAction.REJECT
     anonymise_display_names: bool = False
+
+    @model_validator(mode="after")
+    def _check_fixed_hand_count(self) -> "MatchProtocol":
+        if self.end_condition == EndCondition.FIXED_HANDS and (self.hands is None or self.hands < 1):
+            msg = "fixed-hands matches require a positive hand count"
+            raise ValueError(msg)
+        return self

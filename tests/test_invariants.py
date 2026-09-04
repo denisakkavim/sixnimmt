@@ -16,14 +16,12 @@ def _all_card_locations(state: MatchState) -> list[int]:
     locations: list[int] = []
     for player in state.players:
         locations.extend(player.hand)
-        if player.selection is not None:
-            locations.append(player.selection)
         locations.extend(player.penalty_cards)
     for row in state.rows:
         locations.extend(row.cards)
     locations.extend(state.undealt_remainder)
     if state.resolution is not None:
-        locations.extend(card for card, _ in state.resolution.ordered_cards)
+        locations.extend(card for card, _ in state.resolution.ordered_cards[state.resolution.next_index :])
     return locations
 
 

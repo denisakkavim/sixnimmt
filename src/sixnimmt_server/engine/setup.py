@@ -24,7 +24,17 @@ def _deal_hand(
         players = tuple(PlayerState(player_id=player_id, hand=tuple(hands[player_id])) for player_id in player_ids)
     else:
         players = tuple(
-            player.model_copy(update={"hand": tuple(hands[player.player_id])}) for player in previous.players
+            player.model_copy(
+                update={
+                    "hand": tuple(hands[player.player_id]),
+                    "selection": None,
+                    "committed": False,
+                    "penalty_cards": (),
+                    "score_this_hand": 0,
+                    "actions_taken_this_play": 0,
+                }
+            )
+            for player in previous.players
         )
     state = MatchState(
         match_id=match_id,

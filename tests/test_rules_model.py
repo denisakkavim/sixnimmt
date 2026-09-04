@@ -60,6 +60,12 @@ def test_game_rules_rejects_player_counts_outside_2_to_10(kwargs: dict, descript
         GameRules(**kwargs)
 
 
+@pytest.mark.parametrize("hands", [None, 0, -1])
+def test_fixed_hands_protocol_requires_a_positive_hand_count(hands: int | None) -> None:
+    with pytest.raises(ValidationError):
+        MatchProtocol(end_condition=EndCondition.FIXED_HANDS, hands=hands)
+
+
 def test_rules_models_round_trip_through_json() -> None:
     protocol = MatchProtocol(end_condition=EndCondition.FIXED_HANDS, hands=4)
 

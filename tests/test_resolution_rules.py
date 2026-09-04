@@ -3,7 +3,7 @@
 import pytest
 from pydantic import TypeAdapter
 
-from sixnimmt_server.engine.actions import Action
+from sixnimmt_server.engine.actions import Action, CommitAction
 from sixnimmt_server.engine.cards import bull_heads
 from sixnimmt_server.engine.errors import EngineRejection, ErrorCode
 from sixnimmt_server.engine.resolution import advance_resolution, choose_row, eligible_row
@@ -124,7 +124,37 @@ def test_choice_by_anyone_else_is_rejected() -> None:
     with pytest.raises(EngineRejection) as exc_info:
         choose_row(paused, "alice", 0)
 
-    assert exc_info.value.code == ErrorCode.NOT_AWAITING_PLAYER
+    assert exc_info.value.code == ErrorCode.NOT_YOUR_TURN
+
+
+@pytest.mark.parametrize(
+    ("player_id", "action"),
+    [
+        ("alice", _ACTION_ADAPTER.validate_python({"type": "choose_row", "row_index": 0})),
+        ("alice", _ACTION_ADAPTER.validate_python({"type": "select_card", "card": 45})),
+        ("bob", CommitAction()),
+    ],
+)
+def test_only_awaited_players_row_choice_is_allowed_during_pause(
+    player_id: str,
+    action: Action,
+) -> None:
+    paused = MatchState(
+        match_id="m_01",
+        phase=Phase.AWAITING_ROW_CHOICE,
+        players=(
+            PlayerState(player_id="bob", hand=(3,), selection=3, committed=True),
+            PlayerState(player_id="alice", hand=(45,)),
+        ),
+        rows=_rows([7], [44], [52], [88]),
+        resolution=ResolutionState(ordered_cards=((3, "bob"),), next_index=0, awaiting_player="bob"),
+    )
+
+    with pytest.raises(EngineRejection) as exc_info:
+        transition(paused, player_id, action, MatchProtocol(), GameRules())
+
+    assert exc_info.value.code == ErrorCode.NOT_YOUR_TURN
+    assert "bob" in str(exc_info.value)
 
 
 def test_choice_outside_row_range_is_rejected() -> None:
