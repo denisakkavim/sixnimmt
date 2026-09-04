@@ -1,4 +1,4 @@
-"""Phase 0 model tests: typed events and audience classes (§10)."""
+"""Typed events: audience classes and dispatch on the type field."""
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -15,7 +15,7 @@ def test_audience_classes_are_public_player_or_admin() -> None:
     assert audience_for_player("alice") == "player:alice"
 
 
-def test_all_spec_catalogue_types_exist() -> None:
+def test_all_event_types_exist() -> None:
     expected = {
         "match_created",
         "match_seed_assigned",

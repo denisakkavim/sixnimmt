@@ -1,4 +1,4 @@
-"""Phase 0 model tests: role-filtered view shapes (§9.2, §5.4)."""
+"""Role-filtered view shapes: what each viewer may see."""
 
 import pytest
 from pydantic import ValidationError
@@ -13,7 +13,7 @@ from sixnimmt_server.engine.views import (
 )
 
 
-def test_view_roles_match_spec_section_5_4() -> None:
+def test_view_roles_cover_all_supported_viewers() -> None:
     assert [role.value for role in ViewRole] == [
         "player",
         "public_spectator",
@@ -39,7 +39,7 @@ def test_opponent_hides_selection_card_under_hidden_policy() -> None:
     assert opponent.selection is None
 
 
-def test_player_view_matches_spec_section_9_2_example() -> None:
+def test_player_view_shows_own_hand_and_hides_opponent_selection() -> None:
     view = MatchView(
         match_id="m_01",
         view_version=87,

@@ -1,4 +1,4 @@
-"""Match and play state shapes (§7, §8)."""
+"""Authoritative match state: players, rows, phases, and resolution progress."""
 
 from enum import StrEnum
 
@@ -51,3 +51,8 @@ class MatchState(BaseModel):
     hand_number: int = 1
     play_number: int = 1
     resolution: ResolutionState | None = None
+    # Needed to deal later hands and to verify no card is lost or duplicated.
+    # Never exposed in player views.
+    match_seed: int | None = None
+    undealt_remainder: tuple[int, ...] = ()
+    revealed_this_hand: tuple[tuple[int, ...], ...] = ()

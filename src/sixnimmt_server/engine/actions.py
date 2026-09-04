@@ -1,4 +1,4 @@
-"""Typed action model (§9.3)."""
+"""Player actions: card selection, commitment, messaging, and row choice."""
 
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -26,9 +26,10 @@ class ActionEnvelope(BaseModel):
 
     # Client UUID for idempotency; None means the server assigns one.
     action_id: str | None = None
-    # Audit reference only: which observation the client acted upon (§9.3).
+    # Audit reference only: records which observation the client acted on.
+    # Never validated for freshness; a stale value never causes rejection.
     from_view: str | None = None
-    # Optional optimistic concurrency in the caller's own cursor (§9.3).
+    # Optional optimistic concurrency, expressed in the caller's own cursor.
     expected_view_version: int | None = None
 
 
@@ -71,4 +72,4 @@ Action = Annotated[
     SelectCardAction | CommitAction | UncommitAction | SendMessageAction | ChooseRowAction,
     Field(discriminator="type"),
 ]
-"""Every action the server accepts (§9.3), dispatched on the type field."""
+"""Every action the server accepts, dispatched on the type field."""

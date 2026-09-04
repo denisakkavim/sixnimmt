@@ -1,4 +1,4 @@
-"""Phase 0 model tests: typed actions (§9.3, §7.2-7.3)."""
+"""Typed actions: envelope fields and dispatch on the type field."""
 
 from typing import Literal
 
@@ -16,7 +16,7 @@ from sixnimmt_server.engine.actions import (
 )
 
 
-def test_action_types_cover_spec_section_9_3() -> None:
+def test_all_action_types_exist() -> None:
     assert Action.__doc__ is not None  # discriminated union exists
     type_names = {
         SelectCardAction.__name__,

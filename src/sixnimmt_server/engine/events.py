@@ -1,7 +1,4 @@
-"""Typed event model (§10).
-
-Every event carries an audience that is the sole information filter (§10.1).
-"""
+"""Game events. Each event names its audience, which alone decides who may see it."""
 
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -47,12 +44,13 @@ def audience_for_player(player_id: str) -> str:
 
 
 class EventEnvelope(BaseModel):
-    """Fields shared by every event in the catalogue (§10.3)."""
+    """Fields shared by every event."""
 
     model_config = ConfigDict(frozen=True)
 
     match_id: str
-    # Global sequence; admin and omniscient observers only (§10.2).
+    # Global sequence over every event in the match. Never shown to players;
+    # they see only their own gap-free cursor over the events visible to them.
     seq: int = 0
     server_action_seq: int = 0
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -201,4 +199,4 @@ Event = Annotated[
     | ActionRejectedEvent,
     Field(discriminator="type"),
 ]
-"""Every event in the catalogue (§10.3), dispatched on the type field."""
+"""Every event the engine can emit, dispatched on the type field."""

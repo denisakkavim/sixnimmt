@@ -1,7 +1,4 @@
-"""Game rules and match protocol configuration (§4, §6).
-
-Game rules describe 6 nimmt!. Match protocol describes an experiment.
-"""
+"""Game configuration: fixed rules of 6 nimmt! plus per-match experiment settings."""
 
 from enum import StrEnum
 

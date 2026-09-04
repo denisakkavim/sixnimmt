@@ -1,4 +1,4 @@
-"""Role-filtered view shapes (§9.2, §5.4)."""
+"""Per-role projections of match state. A viewer sees only their own view."""
 
 from enum import StrEnum
 
@@ -43,7 +43,8 @@ class OpponentView(BaseModel):
     cards_in_hand: int
     has_selection: bool = False
     committed: bool = False
-    # Always None in player views under the hidden policy (§9.2).
+    # Always None in another player's view: knowing that someone selected
+    # is public, knowing what they selected is not.
     selection: None = None
     penalty_cards: tuple[int, ...] = ()
     score_this_hand: int = 0
@@ -51,14 +52,15 @@ class OpponentView(BaseModel):
 
 
 class MatchView(BaseModel):
-    """The caller's view from GET /matches/{id}/state (§9.2)."""
+    """What one caller sees when reading match state."""
 
     model_config = ConfigDict(frozen=True)
 
     match_id: str
-    # The caller's own gap-free cursor, never a global counter (§10.2).
+    # The caller's own gap-free position in their visible event stream.
     view_version: int
-    # Opaque identifier for this exact projection (§9.2).
+    # Opaque identifier for this exact projection. Must not encode anything
+    # (global counters, timestamps) that would leak hidden activity.
     view_id: str
     status: str
     phase: Phase
@@ -69,6 +71,6 @@ class MatchView(BaseModel):
     players: tuple[OpponentView, ...] = ()
     revealed_this_hand: tuple[tuple[int, ...], ...] = ()
     awaiting: str | None = None
-    # Advisory presentation information; the server revalidates (§9.2).
+    # Advisory presentation hint for clients. The server revalidates everything.
     legal_actions: tuple[str, ...] = ()
     target_score: int = 66

@@ -1,4 +1,4 @@
-"""Phase 0 model tests: GameRules, MatchProtocol, InformationPolicy (§4, §6)."""
+"""GameRules, MatchProtocol, and InformationPolicy defaults and validation."""
 
 import pytest
 from pydantic import ValidationError
@@ -14,7 +14,7 @@ from sixnimmt_server.engine.rules import (
 )
 
 
-def test_game_rules_defaults_match_spec_section_6() -> None:
+def test_game_rules_defaults_describe_the_published_game() -> None:
     rules = GameRules()
 
     assert rules.min_players == 2
@@ -26,14 +26,14 @@ def test_game_rules_defaults_match_spec_section_6() -> None:
     assert rules.target_score == 66
 
 
-def test_information_policy_defaults_match_spec_section_4() -> None:
+def test_information_policy_defaults_hide_cards_and_show_message_facts() -> None:
     policy = InformationPolicy()
 
     assert policy.card_selection == CardSelectionPolicy.HIDDEN
     assert policy.private_message_existence == PrivateMessageExistence.VISIBLE
 
 
-def test_match_protocol_defaults_match_spec_section_4() -> None:
+def test_match_protocol_defaults_play_to_66_without_negotiation() -> None:
     protocol = MatchProtocol()
 
     assert protocol.end_condition == EndCondition.TARGET_SCORE

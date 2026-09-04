@@ -1,4 +1,4 @@
-"""Phase 0 model tests: match and play state shapes (§7, §8)."""
+"""Match and play state shapes."""
 
 import pytest
 from pydantic import ValidationError
@@ -12,7 +12,7 @@ from sixnimmt_server.engine.state import (
 )
 
 
-def test_phase_names_match_spec_section_7_1() -> None:
+def test_phases_cover_the_full_match_lifecycle() -> None:
     assert [phase.value for phase in Phase] == [
         "setup",
         "selecting",
@@ -37,7 +37,7 @@ def test_row_state_requires_at_least_one_card() -> None:
         RowState(index=0, cards=())
 
 
-def test_resolution_state_example_shape_from_spec_section_8() -> None:
+def test_resolution_state_holds_ordered_cards_and_next_index() -> None:
     resolution = ResolutionState(
         ordered_cards=((3, "bob"), (45, "alice"), (46, "dan"), (53, "cara")),
         next_index=2,
