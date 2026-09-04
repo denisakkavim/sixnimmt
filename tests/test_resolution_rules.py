@@ -19,9 +19,7 @@ def _rows(*ends: list[int]) -> tuple[RowState, ...]:
 
 
 def _resolving(rows: tuple[RowState, ...], ordered: tuple[tuple[int, str], ...], next_index: int = 0) -> MatchState:
-    players = tuple(
-        PlayerState(player_id=player_id, hand=(), selection=card, committed=True) for card, player_id in ordered
-    )
+    players = tuple(PlayerState(player_id=player_id, hand=()) for _, player_id in ordered)
     return MatchState(
         match_id="m_01",
         phase=Phase.RESOLVING,
@@ -61,8 +59,6 @@ def test_card_appends_to_eligible_row() -> None:
     assert [event.type for event in events] == ["card_placed"]
     placed = events[0]
     assert placed.data == {"card": 46, "row": 1, "row_cards": [45, 46]}
-    dan = next(player for player in new_state.players if player.player_id == "dan")
-    assert dan.selection is None
 
 
 def test_sixth_card_captures_the_full_row() -> None:
@@ -96,7 +92,7 @@ def test_choice_captures_any_length_row_and_resumes() -> None:
     paused = MatchState(
         match_id="m_01",
         phase=Phase.AWAITING_ROW_CHOICE,
-        players=(PlayerState(player_id="bob", hand=(), selection=3, committed=True),),
+        players=(PlayerState(player_id="bob", hand=()),),
         rows=_rows([7], [23, 25, 30, 41, 44], [52], [88]),
         resolution=ResolutionState(ordered_cards=((3, "bob"),), next_index=0, awaiting_player="bob"),
     )
@@ -108,15 +104,38 @@ def test_choice_captures_any_length_row_and_resumes() -> None:
     assert bob.score_this_hand == 12
     assert new_state.phase == Phase.RESOLVING
     assert new_state.resolution is not None and new_state.resolution.awaiting_player is None
-    assert [event.type for event in events] == ["row_taken", "row_choice_made", "card_placed"]
-    assert events[0].data["reason"] == "too_low"
+    assert [event.type for event in events] == ["row_choice_made", "row_taken", "card_placed"]
+    assert events[1].data["reason"] == "too_low"
+
+
+@pytest.mark.parametrize("chosen_row", [0, 1, 2, 3])
+def test_every_row_is_a_legal_answer_to_a_too_low_card(chosen_row: int) -> None:
+    rows = _rows([7], [23, 25, 30, 41, 44], [52], [88, 90])
+    paused = MatchState(
+        match_id="m_01",
+        phase=Phase.AWAITING_ROW_CHOICE,
+        players=(PlayerState(player_id="bob", hand=()),),
+        rows=rows,
+        resolution=ResolutionState(ordered_cards=((3, "bob"),), next_index=0, awaiting_player="bob"),
+    )
+    captured = rows[chosen_row].cards
+
+    new_state, events = choose_row(paused, "bob", chosen_row)
+
+    assert new_state.rows[chosen_row].cards == (3,)
+    assert new_state.players[0].penalty_cards == captured
+    assert new_state.players[0].score_this_hand == sum(bull_heads(card) for card in captured)
+    assert [row.cards for index, row in enumerate(new_state.rows) if index != chosen_row] == [
+        row.cards for index, row in enumerate(rows) if index != chosen_row
+    ]
+    assert [event.type for event in events] == ["row_choice_made", "row_taken", "card_placed"]
 
 
 def test_choice_by_anyone_else_is_rejected() -> None:
     paused = MatchState(
         match_id="m_01",
         phase=Phase.AWAITING_ROW_CHOICE,
-        players=(PlayerState(player_id="bob", hand=(), selection=3, committed=True),),
+        players=(PlayerState(player_id="bob", hand=()),),
         rows=_rows([7], [44], [52], [88]),
         resolution=ResolutionState(ordered_cards=((3, "bob"),), next_index=0, awaiting_player="bob"),
     )
@@ -143,7 +162,7 @@ def test_only_awaited_players_row_choice_is_allowed_during_pause(
         match_id="m_01",
         phase=Phase.AWAITING_ROW_CHOICE,
         players=(
-            PlayerState(player_id="bob", hand=(3,), selection=3, committed=True),
+            PlayerState(player_id="bob", hand=()),
             PlayerState(player_id="alice", hand=(45,)),
         ),
         rows=_rows([7], [44], [52], [88]),
@@ -161,7 +180,7 @@ def test_choice_outside_row_range_is_rejected() -> None:
     paused = MatchState(
         match_id="m_01",
         phase=Phase.AWAITING_ROW_CHOICE,
-        players=(PlayerState(player_id="bob", hand=(), selection=3, committed=True),),
+        players=(PlayerState(player_id="bob", hand=()),),
         rows=_rows([7], [44], [52], [88]),
         resolution=ResolutionState(ordered_cards=((3, "bob"),), next_index=0, awaiting_player="bob"),
     )

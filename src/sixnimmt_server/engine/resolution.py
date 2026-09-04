@@ -82,20 +82,11 @@ def _append_card(state: MatchState, card: int, player_id: str, row_index: int) -
     return state.model_copy(update={"rows": rows}), [event]
 
 
-def _clear_selection(state: MatchState, player_id: str) -> MatchState:
-    players = tuple(
-        player.model_copy(update={"selection": None, "committed": False}) if player.player_id == player_id else player
-        for player in state.players
-    )
-    return state.model_copy(update={"players": players})
-
-
 def _finish_card(state: MatchState, card: int, player_id: str, row_index: int) -> tuple[MatchState, list[Event]]:
-    cleared = _clear_selection(state, player_id)
-    row = next(row for row in cleared.rows if row.index == row_index)
-    if len(row.cards) == 5 and row.cards[-1] != card:
-        return _capture_row(cleared, card, player_id, row_index, reason="sixth_card")
-    return _append_card(cleared, card, player_id, row_index)
+    row = next(row for row in state.rows if row.index == row_index)
+    if len(row.cards) == 5:
+        return _capture_row(state, card, player_id, row_index, reason="sixth_card")
+    return _append_card(state, card, player_id, row_index)
 
 
 def _resolution_or_error(state: MatchState) -> ResolutionState:
@@ -129,13 +120,8 @@ def advance_resolution(state: MatchState) -> tuple[MatchState, list[Event]]:
         )
         return paused, [event]
     new_state, events = _finish_card(state, card, player_id, target)
-    advanced = new_state.resolution
-    next_index = resolution.next_index + 1
-    if advanced is None:
-        advanced_resolution = ResolutionState(ordered_cards=resolution.ordered_cards, next_index=next_index)
-    else:
-        advanced_resolution = advanced.model_copy(update={"next_index": next_index})
-    return new_state.model_copy(update={"resolution": advanced_resolution}), events
+    advanced = resolution.model_copy(update={"next_index": resolution.next_index + 1})
+    return new_state.model_copy(update={"resolution": advanced}), events
 
 
 def choose_row(state: MatchState, player_id: str, row_index: int) -> tuple[MatchState, list[Event]]:
@@ -160,8 +146,7 @@ def choose_row(state: MatchState, player_id: str, row_index: int) -> tuple[Match
         data={"player_id": player_id, "row": row_index},
     )
     taken, placed = capture_events
-    cleared = _clear_selection(resumed, owner)
-    continued = cleared.model_copy(
+    continued = resumed.model_copy(
         update={
             "phase": Phase.RESOLVING,
             "resolution": resolution.model_copy(
@@ -169,7 +154,9 @@ def choose_row(state: MatchState, player_id: str, row_index: int) -> tuple[Match
             ),
         }
     )
-    events: list[Event] = [taken, chosen, placed]
+    # The choice causes the capture, so it is recorded before it: clients replay
+    # this stream to animate the play, and a sweep must never precede its cause.
+    events: list[Event] = [chosen, taken, placed]
     while continued.phase == Phase.RESOLVING and continued.resolution is not None:
         if continued.resolution.next_index >= len(continued.resolution.ordered_cards):
             break

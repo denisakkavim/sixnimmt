@@ -187,7 +187,10 @@ def _select_card(
     counted = _count_action(state, player_index)
     selected = _replace_player(counted, player_index, selection=action.card, committed=False)
     events: list[Event] = []
-    if player.selection is not None and player.selection != action.card:
+    # Replacing a selection always clears the old one publicly, even when the
+    # new card is the same. Emitting different events for a changed card would
+    # tell opponents whether a hidden selection actually moved.
+    if player.selection is not None:
         events.append(_public_player_event(state, SelectionClearedEvent, player.player_id))
     if player.committed:
         events.append(_public_player_event(state, PlayerUncommittedEvent, player.player_id))

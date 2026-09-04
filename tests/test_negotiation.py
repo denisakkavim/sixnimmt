@@ -177,4 +177,18 @@ def test_required_row_choice_is_exempt_from_the_action_budget() -> None:
     assert resolved.phase == Phase.SELECTING
     assert resolved.hand_number == 2
     assert resolved.play_number == 1
-    assert [event.type for event in events[:3]] == ["row_taken", "row_choice_made", "card_placed"]
+    assert [event.type for event in events[:3]] == ["row_choice_made", "row_taken", "card_placed"]
+
+
+def test_reselecting_the_same_card_is_publicly_indistinguishable_from_a_change() -> None:
+    state, _ = create_match("m_01", ["alice", "bob"], match_seed=12345)
+    original, replacement = state.players[0].hand[:2]
+    selected, _ = transition(state, "alice", _select(original), _NEGOTIATION, GameRules())
+
+    _, repeat_events = transition(selected, "alice", _select(original), _NEGOTIATION, GameRules())
+    _, change_events = transition(selected, "alice", _select(replacement), _NEGOTIATION, GameRules())
+
+    public_repeat = [event.type for event in repeat_events if event.audience == "public"]
+    public_change = [event.type for event in change_events if event.audience == "public"]
+    assert public_repeat == public_change
+    assert public_repeat == [EventType.SELECTION_CLEARED, EventType.SELECTION_REGISTERED]
