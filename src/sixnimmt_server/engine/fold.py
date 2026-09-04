@@ -141,6 +141,10 @@ def _apply(state: _Fold, event: Event, viewer: Viewer) -> None:  # noqa: C901
             _seat(state, data["player_id"]).has_selection = True
         case "selection_cleared":
             _seat(state, data["player_id"]).has_selection = False
+            # A replacement re-sets this from the selection_made that follows;
+            # an uncommit does not, and must not leave a stale card behind.
+            if data["player_id"] == viewer.player_id:
+                state.own_selection = None
         case "player_committed":
             _seat(state, data["player_id"]).committed = True
         case "player_uncommitted":

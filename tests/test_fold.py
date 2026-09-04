@@ -2,10 +2,10 @@
 
 import pytest
 
-from sixnimmt_server.engine.actions import ChooseRowAction, SelectCardAction
+from sixnimmt_server.engine.actions import ChooseRowAction, CommitAction, SelectCardAction, UncommitAction
 from sixnimmt_server.engine.audience import Viewer
 from sixnimmt_server.engine.cards import bull_heads
-from sixnimmt_server.engine.events import Event
+from sixnimmt_server.engine.events import Event, MatchAbandonedEvent
 from sixnimmt_server.engine.fold import build_view
 from sixnimmt_server.engine.rules import GameRules, MatchProtocol
 from sixnimmt_server.engine.setup import create_match, open_match, start_match
@@ -236,3 +236,67 @@ def test_scores_folded_from_events_match_the_heads_actually_captured() -> None:
         view = build_view(log, _player("alice"))
         assert view.you.score_this_hand == sum(bull_heads(card) for card in view.you.penalty_cards)
         assert view.you.score_this_hand == state.players[0].score_this_hand
+
+
+def test_uncommitting_clears_the_public_commitment_in_every_view() -> None:
+    protocol = MatchProtocol(negotiation_enabled=True)
+    state, events = create_match("m_01", PLAYERS, match_seed=12345, protocol=protocol)
+    log = list(events)
+    state, produced = transition(state, "alice", SelectCardAction(card=state.players[0].hand[0]), protocol, GameRules())
+    log.extend(produced)
+    state, produced = transition(state, "alice", CommitAction(), protocol, GameRules())
+    log.extend(produced)
+
+    committed = build_view(log, _player("bob"))
+    alice = next(opponent for opponent in committed.players if opponent.player_id == "alice")
+    assert alice.committed is True
+
+    state, produced = transition(state, "alice", UncommitAction(), protocol, GameRules())
+    log.extend(produced)
+
+    after = build_view(log, _player("bob"))
+    alice_after = next(opponent for opponent in after.players if opponent.player_id == "alice")
+    assert alice_after.committed is False
+    assert alice_after.has_selection is False
+    assert build_view(log, _player("alice")).legal_actions == ("select_card", "send_message")
+
+
+def test_uncommit_is_offered_only_while_someone_else_is_uncommitted() -> None:
+    protocol = MatchProtocol(negotiation_enabled=True)
+    state, events = create_match("m_01", PLAYERS, match_seed=12345, protocol=protocol)
+    log = list(events)
+    for player in state.players[:2]:
+        state, produced = transition(
+            state, player.player_id, SelectCardAction(card=player.hand[0]), protocol, GameRules()
+        )
+        log.extend(produced)
+        state, produced = transition(state, player.player_id, CommitAction(), protocol, GameRules())
+        log.extend(produced)
+
+    assert "uncommit" in build_view(log, _player("alice")).legal_actions
+
+
+def test_an_action_budget_is_reported_as_remaining_actions() -> None:
+    protocol = MatchProtocol(negotiation_enabled=True, max_actions_per_play=3)
+    state, events = create_match("m_01", PLAYERS, match_seed=12345, protocol=protocol)
+    log = list(events)
+
+    assert build_view(log, _player("alice")).you.actions_remaining_this_play == 3
+
+    _, produced = transition(state, "alice", SelectCardAction(card=state.players[0].hand[0]), protocol, GameRules())
+    log.extend(produced)
+
+    view = build_view(log, _player("alice"))
+    assert view.you.actions_taken_this_play == 1
+    assert view.you.actions_remaining_this_play == 2
+
+
+def test_an_abandoned_match_folds_to_an_abandoned_status() -> None:
+    state, events = create_match("m_01", PLAYERS, match_seed=12345)
+    log = [*events, MatchAbandonedEvent(match_id=state.match_id, audience="public", data={})]
+
+    view = build_view(log, _player("alice"))
+
+    assert view.status == "abandoned"
+    assert view.phase == Phase.FINISHED
+    assert view.legal_actions == ()

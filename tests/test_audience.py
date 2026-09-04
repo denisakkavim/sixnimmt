@@ -146,3 +146,18 @@ def test_a_players_cursor_ignores_events_addressed_to_someone_else() -> None:
 def test_a_player_viewer_requires_a_player_id() -> None:
     with pytest.raises(ValueError, match="needs a player_id"):
         Viewer(role=ViewRole.PLAYER)
+
+
+def test_an_unrecognised_audience_is_withheld_rather_than_guessed_at() -> None:
+    strange = PlayStartedEvent.model_construct(match_id="m_01", audience="everyone", data={})
+
+    for viewer in (ALICE, SPECTATOR, OMNISCIENT):
+        assert visible_to(strange, viewer) is False
+    assert visible_to(strange, ADMIN) is True
+
+
+def test_events_since_rejects_a_negative_cursor() -> None:
+    _, events = create_match("m_01", ["alice", "bob"], match_seed=12345)
+
+    with pytest.raises(ValueError, match="must not be negative"):
+        events_since(events, ALICE, since=-1)
