@@ -14,8 +14,6 @@ class ErrorCode(StrEnum):
     NEGOTIATION_DISABLED = "negotiation_disabled"
     ACTION_BUDGET_EXHAUSTED = "action_budget_exhausted"
     INVALID_ROW_INDEX = "invalid_row_index"
-    ROW_ALREADY_CHOSEN = "row_already_chosen"
-    NOT_AWAITING_PLAYER = "not_awaiting_player"
     INVALID_PLAYER_COUNT = "invalid_player_count"
     DUPLICATE_PLAYER_ID = "duplicate_player_id"
     INVALID_PLAYER_ID = "invalid_player_id"

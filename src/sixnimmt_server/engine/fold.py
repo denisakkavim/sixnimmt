@@ -50,6 +50,7 @@ class _Fold:
     play_number: int = 1
     target_score: int = 66
     negotiation_enabled: bool = False
+    anonymise_display_names: bool = False
     max_actions_per_play: int | None = None
     seats: dict[str, _Seat] = field(default_factory=dict)
     order: list[str] = field(default_factory=list)
@@ -74,6 +75,7 @@ def _apply_match_created(state: _Fold, data: dict) -> None:
     protocol = data.get("protocol", {})
     state.target_score = rules.get("target_score", state.target_score)
     state.negotiation_enabled = protocol.get("negotiation_enabled", False)
+    state.anonymise_display_names = protocol.get("anonymise_display_names", False)
     state.max_actions_per_play = protocol.get("max_actions_per_play")
     for entry in data.get("players", []):
         seat = _seat(state, entry["player_id"])
@@ -202,6 +204,20 @@ def _legal_actions(state: _Fold, viewer: Viewer) -> tuple[str, ...]:
     return tuple(actions)
 
 
+def _displayed_name(state: _Fold, seat: _Seat, viewer: Viewer) -> str:
+    """The name this viewer is entitled to see for an opponent.
+
+    Anonymising hides who an agent is facing so it cannot condition its play on
+    the opponent's identity. Omniscient observers and admin keep real names:
+    they drive the development UI and the log, which exist to be readable.
+    """
+    anonymous_roles = (ViewRole.PLAYER, ViewRole.PUBLIC_SPECTATOR)
+    if not state.anonymise_display_names or viewer.role not in anonymous_roles:
+        return seat.display_name or seat.player_id
+    seat_number = state.order.index(seat.player_id) + 1
+    return f"Player {seat_number}"
+
+
 def _view_id(viewer: Viewer, view_version: int) -> str:
     """Opaque, derived only from the caller's own identity and cursor.
 
@@ -240,7 +256,7 @@ def build_view(events: Sequence[Event], viewer: Viewer) -> MatchView:
     others = tuple(
         OpponentView(
             player_id=seat.player_id,
-            display_name=seat.display_name or seat.player_id,
+            display_name=_displayed_name(state, seat, viewer),
             cards_in_hand=seat.cards_in_hand,
             has_selection=seat.has_selection,
             committed=seat.committed,

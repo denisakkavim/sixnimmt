@@ -9,7 +9,7 @@ from sixnimmt_server.engine.events import Event, MatchAbandonedEvent
 from sixnimmt_server.engine.fold import build_view
 from sixnimmt_server.engine.rules import GameRules, MatchProtocol
 from sixnimmt_server.engine.setup import create_match, open_match, start_match
-from sixnimmt_server.engine.state import MatchState, Phase
+from sixnimmt_server.engine.state import MatchState, Phase, PlayerSeat
 from sixnimmt_server.engine.transition import transition
 from sixnimmt_server.engine.views import MatchView, ViewRole
 
@@ -300,3 +300,45 @@ def test_an_abandoned_match_folds_to_an_abandoned_status() -> None:
     assert view.status == "abandoned"
     assert view.phase == Phase.FINISHED
     assert view.legal_actions == ()
+
+
+def _named_match(anonymise: bool) -> list[Event]:
+    """A started match whose players carry display names distinct from their ids."""
+    seats = [
+        PlayerSeat(player_id="alice", display_name="Ada"),
+        PlayerSeat(player_id="bob", display_name="Grace"),
+        PlayerSeat(player_id="cara", display_name="Edsger"),
+    ]
+    _, events = create_match(
+        "m_01",
+        seats,
+        match_seed=12345,
+        protocol=MatchProtocol(anonymise_display_names=anonymise),
+    )
+    return events
+
+
+def test_display_names_are_shown_when_anonymising_is_off() -> None:
+    view = build_view(_named_match(anonymise=False), _player("alice"))
+
+    assert [opponent.display_name for opponent in view.players] == ["Grace", "Edsger"]
+
+
+@pytest.mark.parametrize(
+    "viewer",
+    [pytest.param(_player("alice"), id="player"), pytest.param(SPECTATOR, id="public_spectator")],
+)
+def test_anonymising_replaces_opponent_names_with_seat_numbers(viewer: Viewer) -> None:
+    view = build_view(_named_match(anonymise=True), viewer)
+
+    assert [(opponent.player_id, opponent.display_name) for opponent in view.players] == [
+        (player_id, f"Player {seat}")
+        for player_id, seat in [("alice", 1), ("bob", 2), ("cara", 3)]
+        if player_id != viewer.player_id
+    ]
+
+
+def test_omniscient_observers_keep_real_names_while_anonymising() -> None:
+    view = build_view(_named_match(anonymise=True), OMNISCIENT)
+
+    assert [opponent.display_name for opponent in view.players] == ["Ada", "Grace", "Edsger"]
