@@ -15,8 +15,20 @@ repos:
       - id: trailing-whitespace
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: "v0.15.7"
+    rev: "v0.16.6"
     hooks:
       - id: ruff-check
         args: [--exit-non-zero-on-fix]
       - id: ruff-format
+
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty
+        # ty resolves imports against the project venv, so it runs from the
+        # locked dev environment rather than an isolated pre-commit one.
+        entry: uv run ty check
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        require_serial: true
