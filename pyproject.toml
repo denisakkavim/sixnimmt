@@ -14,8 +14,10 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+    "fastapi>=0.141.1",
     "pydantic>=2.13.5",
     "typer>=0.27.2",
+    "uvicorn>=0.52.4",
 ]
 
 [project.scripts]
@@ -31,10 +33,11 @@ dev = [
     "pytest>=9.0.2",
     "pre-commit>=4.5.1",
     "tox-uv>=1.33.4",
-
     "ty>=0.0.24",
     "pytest-cov>=7.0.0",
     "ruff>=0.15.7",
+    "anyio>=4.15.0",
+    "httpx2>=2.12.0",
 ]
 
 [build-system]
