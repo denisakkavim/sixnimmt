@@ -1,0 +1,76 @@
+"""Game rules and match protocol configuration (§4, §6).
+
+Game rules describe 6 nimmt!. Match protocol describes an experiment.
+"""
+
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class CardSelectionPolicy(StrEnum):
+    HIDDEN = "hidden"
+
+
+class PrivateMessageExistence(StrEnum):
+    VISIBLE = "visible"
+    HIDDEN = "hidden"
+
+
+class EndCondition(StrEnum):
+    TARGET_SCORE = "target_score"
+    FIXED_HANDS = "fixed_hands"
+
+
+class OnInvalidAction(StrEnum):
+    REJECT = "reject"
+
+
+class InformationPolicy(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    card_selection: CardSelectionPolicy = CardSelectionPolicy.HIDDEN
+    private_message_existence: PrivateMessageExistence = PrivateMessageExistence.VISIBLE
+
+
+class GameRules(BaseModel):
+    """The published rules of 6 nimmt!, not experimental parameters."""
+
+    model_config = ConfigDict(frozen=True)
+
+    min_players: int = 2
+    max_players: int = 10
+    cards_per_hand: int = 10
+    row_count: int = 4
+    row_capacity: int = 5
+    deck_size: int = 104
+    target_score: int = 66
+
+    @model_validator(mode="after")
+    def _check_player_bounds(self) -> "GameRules":
+        if self.min_players < 2:
+            msg = "min_players must be at least 2"
+            raise ValueError(msg)
+        if self.max_players > 10:
+            msg = "max_players must be at most 10"
+            raise ValueError(msg)
+        if self.min_players > self.max_players:
+            msg = "min_players must not exceed max_players"
+            raise ValueError(msg)
+        return self
+
+
+class MatchProtocol(BaseModel):
+    """Protocol-level overrides for controlled comparisons."""
+
+    model_config = ConfigDict(frozen=True)
+
+    end_condition: EndCondition = EndCondition.TARGET_SCORE
+    hands: int | None = None
+    negotiation_enabled: bool = False
+    information_policy: InformationPolicy = Field(default_factory=InformationPolicy)
+    allow_direct_messages: bool = True
+    max_actions_per_play: int | None = None
+    max_message_length: int = 2000
+    on_invalid_action: OnInvalidAction = OnInvalidAction.REJECT
+    anonymise_display_names: bool = False

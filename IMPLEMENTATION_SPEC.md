@@ -35,7 +35,7 @@ All five areas checked in the last review came back clean: the §2.7 arithmetic,
 
 - Exact dealing order, and `hand_number` is 1-based (§2.2).
 - Board invariants stated and testable (§2.7).
-- Vocabulary fixed: trick, hand, match (§2.3).
+- Vocabulary fixed: play, hand, match (§2.3).
 - Linearization point of the final commit stated in terms of serialization order (§7.2).
 - Explicit audience classes replacing the ambiguous `"all"` (§10.1).
 - Known-answer seed vectors for the shuffle (§11.2).
@@ -55,9 +55,9 @@ The server is the **single source of truth**. It owns the deck, the shuffle, the
 Two modes, one engine:
 
 - **Classic.** Every player secretly picks a card; picking commits it. When all have committed, cards are revealed and resolved. This is the board game, and this is what the first working version must do correctly.
-- **Negotiation.** Before commitment, players exchange messages and may change their card freely. The trick proceeds only once every player has committed.
+- **Negotiation.** Before commitment, players exchange messages and may change their card freely. The play proceeds only once every player has committed.
 
-Build classic first, on the negotiation-shaped state machine. Classic mode is negotiation mode with messaging switched off and "select implies commit" — a config flag and roughly twenty lines. Retrofitting revocable selections onto a select-and-reveal loop means rewriting the trick lifecycle. Defer the *features* of negotiation; do not defer the *shape*.
+Build classic first, on the negotiation-shaped state machine. Classic mode is negotiation mode with messaging switched off and "select implies commit" — a config flag and roughly twenty lines. Retrofitting revocable selections onto a select-and-reveal loop means rewriting the play lifecycle. Defer the *features* of negotiation; do not defer the *shape*.
 
 ### Out of scope
 
@@ -114,13 +114,13 @@ A player's hand may be held sorted for presentation, but the dealing order above
 
 Fixed terms, used consistently and never interchangeably:
 
-- A **trick** is one round of play: every player commits one card, all are revealed, all are resolved.
-- A **hand** is 10 tricks. Every player plays one card per trick, so all hands empty simultaneously.
+- A **play** is one round: every player commits one card, all are revealed, all are resolved.
+- A **hand** is 10 plays. Every player contributes one card per play, so all hands empty simultaneously.
 - A **match** is one or more hands, ending per §2.5.
 
 Do not use "round" anywhere.
 
-### 2.4 A trick
+### 2.4 A play
 
 1. Every player chooses one card from their hand and commits it (§7).
 2. All committed cards are revealed at once.
@@ -137,14 +137,14 @@ For the card currently being resolved:
   - Otherwise the card is appended.
 - **If no row is eligible** (the card is lower than every row's last card): the player **must take one entire row of their choice**, of any length. Those cards go to their penalty pile, the row is emptied, and the played card becomes its only card.
 
-Then move to the next-lowest card in the trick. Each card sees the board as left by all lower cards in the same trick.
+Then move to the next-lowest card in the play. Each card sees the board as left by all lower cards in the same play.
 
 ### 2.6 Scoring and ending
 
 - A player's hand score is the total bull heads in their penalty pile.
 - **Lower is better.**
 - Scores accumulate across hands.
-- **The match ends at the end of the first hand in which any player's cumulative score reaches 66 or more.** Check only between hands. Checking mid-hand would let the resolution order inside a single trick decide the match, which is arbitrary.
+- **The match ends at the end of the first hand in which any player's cumulative score reaches 66 or more.** Check only between hands. Checking mid-hand would let the resolution order inside a single play decide the match, which is arbitrary.
 - The winner is the player with the lowest cumulative score. Report ties as ties; do not break them.
 
 ### 2.7 Worked example
@@ -152,7 +152,7 @@ Then move to the next-lowest card in the trick. Each card sees the board as left
 Verify against this exactly, including the intermediate boards.
 
 ```
-Rows before the trick:
+Rows before the play:
   row 0: [7]
   row 1: [23, 25, 30, 41, 44]      <- already 5 cards
   row 2: [52]
@@ -242,12 +242,12 @@ The HTTP layer authenticates, builds an action, calls the engine, persists event
 | `information_policy.card_selection` | `"hidden"` | Nobody sees another's card before reveal. |
 | `information_policy.private_message_existence` | `"visible"` | Others see *that* Alice messaged Bob, never the text. |
 | `allow_direct_messages` | `true` | |
-| `max_actions_per_trick` | `null` | Unlimited. The mechanism exists; the bound is off. |
+| `max_actions_per_play` | `null` | Unlimited. The mechanism exists; the bound is off. |
 | `max_message_length` | `2000` | Characters. |
 | `on_invalid_action` | `"reject"` | Rejected, counted, retried; never costs the turn. |
 | `anonymise_display_names` | `false` | When true, players see opponents as "Player 2" etc. |
 
-Note on the action budget: because it is `null` by default and there is no clock, **the server cannot guarantee a trick terminates**. Two accommodating models can negotiate forever. This is a deliberate choice; the harness must impose its own limit and abandon stalled matches. Implement the counting and the cap check anyway so switching it on is a config change, not a redesign. The state view always reports actions taken, and reports remaining as `null` when unlimited.
+Note on the action budget: because it is `null` by default and there is no clock, **the server cannot guarantee a play terminates**. Two accommodating models can negotiate forever. This is a deliberate choice; the harness must impose its own limit and abandon stalled matches. Implement the counting and the cap check anyway so switching it on is a config change, not a redesign. The state view always reports actions taken, and reports remaining as `null` when unlimited.
 
 ---
 
@@ -260,7 +260,7 @@ This is a security specification. Every clause needs a test.
 - Their own hand.
 - Every row's full contents.
 - Every player's penalty pile and score, current and past hands.
-- Cards revealed in completed tricks of the current hand.
+- Cards revealed in completed plays of the current hand.
 - Which players have a selection, and which have committed — the fact, never the card.
 - Table-wide messages.
 - Direct messages addressed to them, or sent by them.
@@ -332,7 +332,7 @@ MatchProtocol(
     hands=None,
     negotiation_enabled=False,
     information_policy=InformationPolicy(...),
-    max_actions_per_trick=None,
+    max_actions_per_play=None,
     on_invalid_action="reject",
     anonymise_display_names=False,
 )
@@ -342,12 +342,12 @@ MatchProtocol(
 
 ---
 
-## 7. Match and trick state
+## 7. Match and play state
 
 ### 7.1 Phases
 
 ```
-SETUP -> SELECTING -> RESOLVING -> (next trick | next hand | FINISHED)
+SETUP -> SELECTING -> RESOLVING -> (next play | next hand | FINISHED)
                           ^   |
                           |   v
                     AWAITING_ROW_CHOICE
@@ -367,7 +367,7 @@ Rules:
 - `commit()` requires a selection.
 - `uncommit()` is legal only while at least one other player is uncommitted.
 
-**Linearization.** Actions are serialized per match (§9.5). Once the serialized transition that accepts the final required `commit` completes, the trick is irrevocably committed and the phase is RESOLVING. No subsequent action — `uncommit`, `select_card`, or anything else — can modify the committed selections. What matters is the server's serialization order, not packet arrival time or client timestamps.
+**Linearization.** Actions are serialized per match (§9.5). Once the serialized transition that accepts the final required `commit` completes, the play is irrevocably committed and the phase is RESOLVING. No subsequent action — `uncommit`, `select_card`, or anything else — can modify the committed selections. What matters is the server's serialization order, not packet arrival time or client timestamps.
 
 This makes committing a real commitment: you cannot commit to bait a reaction and then withdraw, unless your `uncommit` is serialized before the other player's final `commit`.
 
@@ -439,7 +439,7 @@ JSON throughout. `Authorization: Bearer <token>`. Tokens are minted at match cre
 
 Returns the match ID, the fully resolved rules and protocol with defaults filled in, the seed actually used, a player token each, a public spectator token, and an omniscient token. Seating order is the array order and determines the deal (§2.2). If `seed` is omitted, generate and return one so any match is reproducible. **The seed is returned in this admin response and nowhere else** (§10.3).
 
-**`POST /matches/{id}/start`** — deals the first hand, opens the first trick.
+**`POST /matches/{id}/start`** — deals the first hand, opens the first play.
 **`GET /matches`** — list with status and scores.
 **`DELETE /matches/{id}`** — abandon (§11.4). This is how the harness disposes of a stalled negotiation.
 
@@ -455,7 +455,7 @@ Returns the match ID, the fully resolved rules and protocol with defaults filled
   "status": "in_progress",
   "phase": "selecting",
   "hand_number": 2,
-  "trick_number": 5,
+  "play_number": 5,
   "you": {
     "player_id": "alice",
     "hand": [4, 19, 62, 77, 91, 103],
@@ -464,8 +464,8 @@ Returns the match ID, the fully resolved rules and protocol with defaults filled
     "penalty_cards": [23, 25, 30, 41, 44],
     "score_this_hand": 12,
     "total_score": 27,
-    "actions_taken_this_trick": 6,
-    "actions_remaining_this_trick": null
+    "actions_taken_this_play": 6,
+    "actions_remaining_this_play": null
   },
   "rows": [
     {"index": 0, "cards": [3]},
@@ -490,7 +490,7 @@ Returns the match ID, the fully resolved rules and protocol with defaults filled
 - Penalty piles are public. Agents may legitimately track which cards have left play.
 - `view_version` is the caller's own gap-free cursor (§10.2), never a global counter. No global `version` field is exposed to players.
 - `view_id` is an opaque identifier for this exact projection (§9.3). It must be genuinely opaque: a random token, or a value derived only from the caller's own cursor. **Never derive it from the global `seq`, a global version, or a timestamp** — a `view_id` that encodes global state reintroduces exactly the leak the per-viewer cursor exists to close, in a field an implementer is likely to treat as cosmetic.
-- `actions_remaining_this_trick` is `null` when no budget is in force.
+- `actions_remaining_this_play` is `null` when no budget is in force.
 - `awaiting` names the player the game is blocked on, or `null`.
 - `legal_actions` is **advisory presentation information**. MCP and UI clients may use it to hide unavailable actions, but the server independently validates every action and remains authoritative. The MCP layer must never become part of the rules engine.
 
@@ -556,7 +556,7 @@ Minimum codes: `MATCH_NOT_FOUND`, `NOT_AUTHORIZED`, `MATCH_NOT_STARTED`, `MATCH_
 
 `MATCH_NOT_FOUND` and `NOT_AUTHORIZED` must be **indistinguishable** when a token is used against a match it has no rights to: same code, same shape, same latency class. Otherwise a token becomes a probe for which match IDs exist. Return `MATCH_NOT_FOUND` for both.
 
-Always include current `legal_actions`. It is the single most useful thing to hand a confused agent. Write messages that state the problem and the correct alternative: "the trick is resolving and the game is waiting for bob to choose a row" beats "invalid action". Respect §5.5 in every message and in the `view_version` carried.
+Always include current `legal_actions`. It is the single most useful thing to hand a confused agent. Write messages that state the problem and the correct alternative: "the play is resolving and the game is waiting for bob to choose a row" beats "invalid action". Respect §5.5 in every message and in the `view_version` carried.
 
 A rejected action changes no game state. It emits an `action_rejected` event visible only to the offending player, which advances only that player's cursor. Rejections are counted per player and available to analytics. Never swallow them silently.
 
@@ -619,7 +619,7 @@ Do not expose any global mutation version to players, in any endpoint or error.
   "server_action_seq": 207,
   "timestamp": "2026-09-04T10:31:02.145Z",
   "hand": 2,
-  "trick": 5,
+  "play": 5,
   "audience": "public",
   "data": {"player_id": "bob"}
 }
@@ -634,7 +634,7 @@ Do not expose any global mutation version to players, in any endpoint or error.
 | `hand_seed_assigned` | admin | the derived hand seed |
 | `cards_dealt` | `player:<id>` | one event per player, their hand only |
 | `rows_initialised` | public | the four starting cards |
-| `trick_started` | public | trick number |
+| `play_started` | public | play number |
 | `selection_made` | `player:<id>` under hidden policy; public under public policy | the card |
 | `selection_registered` | public | that a selection exists, no card |
 | `selection_cleared` | public | on change or uncommit |
@@ -643,13 +643,13 @@ Do not expose any global mutation version to players, in any endpoint or error.
 | `message_sent` (table) | public | content |
 | `message_sent` (direct) | two events: one `player:<sender>`, one `player:<recipient>` | each carries the content |
 | `private_message_occurred` | public | parties only, no content; emitted only when existence is visible |
-| `trick_committed` | public | the moment unanimity was reached |
+| `play_committed` | public | the moment unanimity was reached |
 | `cards_revealed` | public | every player's card |
 | `card_placed` | public | card, row index, resulting row |
 | `row_taken` | public | player, row, captured cards, heads, reason (`sixth_card` / `too_low`) |
 | `row_choice_required` | `player:<id>` | |
 | `row_choice_made` | public | |
-| `trick_ended` | public | per-player penalty this trick |
+| `play_ended` | public | per-player penalty this play |
 | `hand_ended` | public | hand scores and running totals |
 | `match_ended` | public | final scores, winner or winners |
 | `match_abandoned` | public | |
@@ -659,7 +659,7 @@ Three rules that are easy to violate and expensive to fix:
 
 - Never put hidden data in a `public` event assuming the API layer will strip it. The audience field is the only filter.
 - Seeds appear only in `admin` events and the admin creation response. A player holding the match seed can reproduce every shuffle and read every hand; this is a total break of the information contract, not a minor leak.
-- `card_placed` and `row_taken` are emitted **one per card, in resolution order**, so the UI can animate a trick correctly rather than snapping to the end state.
+- `card_placed` and `row_taken` are emitted **one per card, in resolution order**, so the UI can animate a play correctly rather than snapping to the end state.
 
 Game events record what happened, not derived statistics. `match_ended` carries final scores and the winner and nothing else — see §12.
 
@@ -776,18 +776,18 @@ Acceptance criteria, not suggestions.
 - Eligibility uses strictly-lower, not lower-or-equal.
 - Sixth card: a full row receiving a legal placement captures exactly 5 and the row becomes `[played_card]`.
 - Too low: a card under all four ends triggers a choice, and every row is a legal answer, including a one-card row.
-- Resolution order: build a trick where seating order and ascending order differ, and assert ascending wins.
-- Chaining, isolated: a minimal two-card trick where the first card changes a row end and thereby changes the second card's eligible set. Assert the intermediate board, not just the final one.
-- All §2.8 invariants hold after every placement, checked by a property test over many random tricks.
+- Resolution order: build a play where seating order and ascending order differ, and assert ascending wins.
+- Chaining, isolated: a minimal two-card play where the first card changes a row end and thereby changes the second card's eligible set. Assert the intermediate board, not just the final one.
+- All §2.8 invariants hold after every placement, checked by a property test over many random plays.
 - Dealing order matches §2.2 exactly for 2, 5 and 10 players, from a known deck.
 - 10 players consume the deck exactly; 2 players leave 80 cards in the remainder, absent from every view including omniscient.
-- A hand is exactly 10 tricks; all hands empty together.
-- Match ends at the end of the hand where someone reaches 66, not mid-hand; a player crossing 66 in trick 3 still plays tricks 4–10.
+- A hand is exactly 10 plays; all hands empty together.
+- Match ends at the end of the hand where someone reaches 66, not mid-hand; a player crossing 66 in play 3 still plays plays 4–10.
 - Lowest cumulative score wins; simultaneous lows are reported as a tie.
 
 **Commitment and concurrency**
 
-- The trick commits at the exact moment the last player commits, and not before.
+- The play commits at the exact moment the last player commits, and not before.
 - `select_card` clears the caller's committed flag and nobody else's.
 - `uncommit` succeeds while another player is uncommitted and fails when the caller is the last one.
 - Classic mode: `select_card` commits implicitly and `uncommit` returns `NEGOTIATION_DISABLED`.

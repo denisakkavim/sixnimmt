@@ -13,6 +13,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+dependencies = [
+    "pydantic>=2.13.5",
+]
 
 [project.urls]
 Homepage = "https://denisakkavim.github.io/sixnimmt-server/"

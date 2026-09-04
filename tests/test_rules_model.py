@@ -1,0 +1,76 @@
+"""Phase 0 model tests: GameRules, MatchProtocol, InformationPolicy (§4, §6)."""
+
+import pytest
+from pydantic import ValidationError
+
+from sixnimmt_server.engine.rules import (
+    CardSelectionPolicy,
+    EndCondition,
+    GameRules,
+    InformationPolicy,
+    MatchProtocol,
+    OnInvalidAction,
+    PrivateMessageExistence,
+)
+
+
+def test_game_rules_defaults_match_spec_section_6() -> None:
+    rules = GameRules()
+
+    assert rules.min_players == 2
+    assert rules.max_players == 10
+    assert rules.cards_per_hand == 10
+    assert rules.row_count == 4
+    assert rules.row_capacity == 5
+    assert rules.deck_size == 104
+    assert rules.target_score == 66
+
+
+def test_information_policy_defaults_match_spec_section_4() -> None:
+    policy = InformationPolicy()
+
+    assert policy.card_selection == CardSelectionPolicy.HIDDEN
+    assert policy.private_message_existence == PrivateMessageExistence.VISIBLE
+
+
+def test_match_protocol_defaults_match_spec_section_4() -> None:
+    protocol = MatchProtocol()
+
+    assert protocol.end_condition == EndCondition.TARGET_SCORE
+    assert protocol.hands is None
+    assert protocol.negotiation_enabled is False
+    assert protocol.information_policy == InformationPolicy()
+    assert protocol.allow_direct_messages is True
+    assert protocol.max_actions_per_play is None
+    assert protocol.max_message_length == 2000
+    assert protocol.on_invalid_action == OnInvalidAction.REJECT
+    assert protocol.anonymise_display_names is False
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "description"),
+    [
+        ({"min_players": 1}, "fewer than 2 players"),
+        ({"max_players": 11}, "more than 10 players"),
+        ({"min_players": 6, "max_players": 4}, "min above max"),
+    ],
+)
+def test_game_rules_rejects_player_counts_outside_2_to_10(kwargs: dict, description: str) -> None:
+    with pytest.raises(ValidationError):
+        GameRules(**kwargs)
+
+
+def test_rules_models_round_trip_through_json() -> None:
+    protocol = MatchProtocol(end_condition=EndCondition.FIXED_HANDS, hands=4)
+
+    restored = MatchProtocol.model_validate_json(protocol.model_dump_json())
+
+    assert restored == protocol
+    assert restored.hands == 4
+
+
+def test_rules_models_are_immutable() -> None:
+    rules = GameRules()
+
+    with pytest.raises(ValidationError):
+        rules.target_score = 100  # ty: ignore[invalid-assignment]
