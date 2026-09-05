@@ -1,6 +1,7 @@
 """Concurrent actions against one match: one serialized order, one consistent outcome."""
 
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,6 +10,8 @@ import httpx2
 import pytest
 from conftest import ADMIN_TOKEN
 from fastapi import FastAPI
+
+from sixnimmt_server.server.sink import NullEventSink
 
 pytestmark = pytest.mark.anyio
 
@@ -194,3 +197,82 @@ async def test_a_visible_action_landing_first_turns_the_guard_into_a_conflict(ne
         # Bob's selection_registered is public, so Alice's cursor had moved.
         assert guarded.json()["error"]["code"] == "VERSION_CONFLICT"
         assert (await negotiating.state("alice"))["you"]["selection"] is None
+
+
+class SlowSink:
+    """A sink whose durable write takes real time, as a loaded disk would."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+
+    def append(self, events: Sequence[Any]) -> None:
+        time.sleep(self.seconds)
+
+    def record_action(self, record: Any) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+
+async def test_one_matchs_slow_disk_does_not_hold_up_another_match(app: FastAPI) -> None:
+    """Waiting for a write must not stop the server serving everyone else."""
+    write_seconds = 0.3
+    transport = httpx2.ASGITransport(app=app)
+    async with httpx2.AsyncClient(transport=transport, base_url="http://server") as client:
+        admin = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+        matches = []
+        for _ in range(2):
+            created = await client.post(
+                "/matches",
+                json={"players": [{"id": "alice"}, {"id": "bob"}], "seed": 12345},
+                headers=admin,
+            )
+            body = created.json()
+            match = AsyncMatch(client=client, match_id=body["match_id"], player_tokens=body["player_tokens"])
+            await client.post(f"/matches/{match.match_id}/start", headers=admin)
+            app.state.store.record_for(match.match_id).sink = SlowSink(write_seconds)
+            matches.append(match)
+
+        cards = [(await match.state("alice"))["you"]["hand"][0] for match in matches]
+        started = time.perf_counter()
+        responses = await _run_together(
+            lambda: matches[0].act("alice", type="select_card", card=cards[0]),
+            lambda: matches[1].act("alice", type="select_card", card=cards[1]),
+        )
+        elapsed = time.perf_counter() - started
+
+    assert [response.status_code for response in responses] == [200, 200]
+    # Overlapped they cost about one write; serialised on the event loop they
+    # would cost both, so the margin has to sit clearly between the two.
+    assert elapsed < write_seconds * 1.8
+
+
+async def test_a_caller_that_gives_up_mid_write_still_completes_its_transition(app: FastAPI) -> None:
+    """A dispatched durable write cannot be recalled, so the match must not be left behind it.
+
+    Abandoning the transition here would leave the log holding a batch the
+    match never committed, and the next action reusing its sequence numbers.
+    """
+    write_seconds = 0.3
+    transport = httpx2.ASGITransport(app=app)
+    async with httpx2.AsyncClient(transport=transport, base_url="http://server") as client:
+        admin = {"Authorization": f"Bearer {ADMIN_TOKEN}"}
+        created = await client.post(
+            "/matches",
+            json={"players": [{"id": "alice"}, {"id": "bob"}], "seed": 12345},
+            headers=admin,
+        )
+        body = created.json()
+        match = AsyncMatch(client=client, match_id=body["match_id"], player_tokens=body["player_tokens"])
+        await client.post(f"/matches/{match.match_id}/start", headers=admin)
+        record = app.state.store.record_for(match.match_id)
+        card = (await match.state("alice"))["you"]["hand"][0]
+        record.sink = SlowSink(write_seconds)
+
+        with anyio.move_on_after(write_seconds / 4):
+            await match.act("alice", type="select_card", card=card)
+
+        record.sink = NullEventSink()
+        await anyio.sleep(write_seconds)
+        assert (await match.state("alice"))["you"]["selection"] == card

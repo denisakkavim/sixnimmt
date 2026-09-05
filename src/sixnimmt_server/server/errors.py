@@ -35,6 +35,10 @@ class ApiErrorCode(StrEnum):
     VERSION_CONFLICT = "VERSION_CONFLICT"
     IDEMPOTENCY_KEY_REUSED = "IDEMPOTENCY_KEY_REUSED"
     MALFORMED_REQUEST = "MALFORMED_REQUEST"
+    # Beyond §9.4's minimum set: a match whose durable log could not be written.
+    # The request was well formed and the match still exists, so it is neither a
+    # client error nor a conflict — the server cannot serve the match right now.
+    MATCH_UNAVAILABLE = "MATCH_UNAVAILABLE"
     UNKNOWN_ACTION_TYPE = "UNKNOWN_ACTION_TYPE"
     UNKNOWN_PLAYER = "UNKNOWN_PLAYER"
     INVALID_PLAYER_COUNT = "INVALID_PLAYER_COUNT"
@@ -62,6 +66,7 @@ _STATUSES: dict[ApiErrorCode, HTTPStatus] = {
     ApiErrorCode.MATCH_NOT_FOUND: HTTPStatus.NOT_FOUND,
     ApiErrorCode.NOT_AUTHORIZED: HTTPStatus.UNAUTHORIZED,
     ApiErrorCode.MALFORMED_REQUEST: HTTPStatus.BAD_REQUEST,
+    ApiErrorCode.MATCH_UNAVAILABLE: HTTPStatus.SERVICE_UNAVAILABLE,
     ApiErrorCode.UNKNOWN_ACTION_TYPE: HTTPStatus.BAD_REQUEST,
     ApiErrorCode.INVALID_PLAYER_COUNT: HTTPStatus.BAD_REQUEST,
     ApiErrorCode.DUPLICATE_PLAYER_ID: HTTPStatus.BAD_REQUEST,

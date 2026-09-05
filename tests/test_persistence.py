@@ -1,20 +1,26 @@
 """The durable match log: written as it happens, and sufficient to rebuild the match."""
 
 import json
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 from conftest import ADMIN_TOKEN, Match, open_match, play_to_completion
 from fastapi import FastAPI
+from pydantic import ValidationError
 from starlette.testclient import TestClient
 
+from sixnimmt_server.engine.events import Event
 from sixnimmt_server.engine.replay import replay_events
 from sixnimmt_server.server.app import create_app
 from sixnimmt_server.server.sink import (
+    ActionRecord,
+    JsonlEventSink,
+    NullEventSink,
     action_log_path,
     event_log_path,
+    pending_path,
     read_action_log,
     read_event_log,
 )
@@ -209,3 +215,152 @@ def test_the_same_seed_and_actions_produce_identical_logs(tmp_path: Path) -> Non
             paths.append(_events_file(match, directory))
 
     assert _comparable_log(paths[0]) == _comparable_log(paths[1])
+
+
+class FailingSink:
+    """A sink whose writes start failing partway through, to force a partial log."""
+
+    def __init__(self, writes_before_failure: int) -> None:
+        self.writes_before_failure = writes_before_failure
+        self.events: list[Event] = []
+
+    def append(self, events: Sequence[Event]) -> None:
+        if self.writes_before_failure <= 0:
+            msg = "no space left on device"
+            raise OSError(msg)
+        self.writes_before_failure -= 1
+        self.events.extend(events)
+
+    def record_action(self, record: ActionRecord) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+
+def test_a_transition_the_log_refused_leaves_the_match_where_it_was(logged: Match) -> None:
+    """Persistence is the commit point: an unwritten transition never happened."""
+    record = _record(logged)
+    record.sink = FailingSink(writes_before_failure=0)
+    before_state = record.state
+    before_version = logged.state("alice")["view_version"]
+    card = logged.state("alice")["you"]["hand"][0]
+
+    with pytest.raises(OSError, match="no space left on device"):
+        logged.act("alice", type="select_card", card=card)
+
+    assert record.state is before_state
+    assert logged.state("alice")["view_version"] == before_version
+    assert logged.state("alice")["you"]["selection"] is None
+
+
+def test_an_abandonment_the_log_refused_leaves_the_match_playable(logged: Match) -> None:
+    """Nobody may be told a match ended on a `match_abandoned` that was never written."""
+    record = _record(logged)
+    record.sink = FailingSink(writes_before_failure=0)
+
+    with pytest.raises(OSError, match="no space left on device"):
+        logged.abandon()
+
+    assert record.abandoned is False
+    assert "match_abandoned" not in {event["type"] for event in logged.events("alice")}
+
+
+def test_a_log_torn_by_a_crash_replays_up_to_the_last_whole_line(logged: Match, tmp_path: Path) -> None:
+    """Only the final line can be half-written, and losing it must not lose the log."""
+    play_to_completion(logged)
+    path = _events_file(logged, tmp_path)
+    whole = read_event_log(path)
+
+    torn = path.read_text() + '{"type": "card_pla'
+    path.write_text(torn)
+
+    assert read_event_log(path) == whole
+
+
+def test_a_log_damaged_before_its_final_line_is_refused(logged: Match, tmp_path: Path) -> None:
+    """A hole in the middle is corruption, not a torn tail, and must not be papered over."""
+    path = _events_file(logged, tmp_path)
+    lines = path.read_text().splitlines()
+    lines[0] = "{not json at all"
+    path.write_text("\n".join(lines) + "\n")
+
+    with pytest.raises(ValidationError):
+        read_event_log(path)
+
+
+def test_a_match_whose_log_failed_accepts_nothing_further(logged: Match) -> None:
+    """The log's contents are no longer certainly known, so the match stops taking actions."""
+    record = _record(logged)
+    record.sink = FailingSink(writes_before_failure=0)
+    card = logged.state("alice")["you"]["hand"][0]
+
+    with pytest.raises(OSError, match="no space left on device"):
+        logged.act("alice", type="select_card", card=card)
+
+    record.sink = NullEventSink()  # the disk recovering does not un-fence the match
+    refused = logged.act("alice", type="select_card", card=card)
+
+    assert refused.status_code == 503
+    assert refused.json()["error"]["code"] == "MATCH_UNAVAILABLE"
+
+
+def test_a_fenced_match_can_still_be_read(logged: Match) -> None:
+    """Fencing stops writes, not the record of what already happened."""
+    record = _record(logged)
+    record.sink = FailingSink(writes_before_failure=0)
+    with pytest.raises(OSError, match="no space left on device"):
+        logged.act("alice", type="select_card", card=logged.state("alice")["you"]["hand"][0])
+
+    assert logged.state("alice")["you"]["selection"] is None
+    assert len(logged.events("alice")) > 0
+
+
+def test_a_batch_that_was_never_acknowledged_is_discarded_whole(logged: Match, tmp_path: Path) -> None:
+    """A crash between writing a transition and committing it must lose all of it.
+
+    Half a transition folded back into a match is worse than none of it: the
+    live match never committed the batch, so neither may its log.
+    """
+    path = _events_file(logged, tmp_path)
+    committed = read_event_log(path)
+    length_before = path.stat().st_size
+
+    # A batch that reached the file but whose write was never acknowledged.
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"type": "card_placed", "match_id": "m", "audience": "public", "data": {}}) + "\n")
+        handle.write(json.dumps({"type": "row_taken", "match_id": "m", "audience": "public", "data": {}}) + "\n")
+    pending_path(path).write_text(json.dumps({"committed_length": length_before, "bytes": 2}))
+
+    assert read_event_log(path) == committed
+
+    # Reopening the log makes the recovery permanent rather than a read-time rule.
+    JsonlEventSink(tmp_path, logged.match_id).close()
+    assert pending_path(path).exists() is False
+    assert path.stat().st_size == length_before
+
+
+def test_a_fenced_match_stops_growing_its_action_log(logged: Match) -> None:
+    """A match that cannot be written to must not keep writing anything at all."""
+    record = _record(logged)
+    record.sink = FailingSink(writes_before_failure=0)
+    card = logged.state("alice")["you"]["hand"][0]
+    with pytest.raises(OSError, match="no space left on device"):
+        logged.act("alice", type="select_card", card=card)
+    recorded = len(record.action_records)
+
+    for _ in range(5):
+        assert logged.act("alice", type="select_card", card=card).status_code == 503
+
+    assert len(record.action_records) == recorded
+
+
+def test_an_abandoned_match_records_no_further_actions(logged: Match, tmp_path: Path) -> None:
+    """The sealed log stays sealed, in both journals."""
+    card = logged.state("alice")["you"]["hand"][0]
+    logged.abandon()
+    before = read_action_log(action_log_path(tmp_path, logged.match_id))
+
+    assert logged.act("alice", type="select_card", card=card).status_code == 409
+
+    assert read_action_log(action_log_path(tmp_path, logged.match_id)) == before

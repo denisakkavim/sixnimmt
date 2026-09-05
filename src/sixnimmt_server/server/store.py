@@ -11,10 +11,11 @@ import asyncio
 import json
 import secrets
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from sixnimmt_server.engine.actions import (
     Action,
@@ -91,6 +92,30 @@ class IdempotencyCache:
             entries.popitem(last=False)
 
 
+async def _uninterrupted[T](work: Coroutine[Any, Any, T]) -> T:
+    """Run a transition to completion even if the caller stops waiting for it.
+
+    A durable write cannot be recalled once dispatched: a worker thread will
+    finish it whatever the request that asked for it does. If cancellation were
+    allowed to unwind the caller mid-transition, the log would keep a batch the
+    match never committed, and the next action would reuse its sequence numbers
+    against pre-transition state. Shielded, a disconnecting client loses its
+    response and nothing else.
+    """
+    return await asyncio.shield(work)
+
+
+def _conflict_key(action_id: str, action: Action) -> str:
+    """What makes two refused attempts the same attempt.
+
+    The cursor is part of the identity here, unlike in `_fingerprint`: two
+    submissions naming different `expected_view_version` values are the same
+    action being retried against different states of the world, and only the
+    one that was already refused may be answered from the cache.
+    """
+    return f"{action_id}@{action.expected_view_version}"
+
+
 @dataclass
 class MatchRecord:
     """One match: its state, its log, and the lock that serialises changes."""
@@ -105,10 +130,17 @@ class MatchRecord:
     sink: EventSink = field(default_factory=NullEventSink)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     idempotency: IdempotencyCache = field(default_factory=IdempotencyCache)
+    # Refused optimistic-concurrency attempts, keyed by the cursor they named as
+    # well as their action id. Kept apart from `idempotency` so that neither the
+    # keys nor the eviction of one can disturb the other.
+    conflicts: IdempotencyCache = field(default_factory=IdempotencyCache)
     action_records: list[ActionRecord] = field(default_factory=list)
     next_seq: int = 1
     next_server_action_seq: int = 1
     abandoned: bool = False
+    # Set when a durable write failed. The match is left exactly as its log
+    # describes it, and stays readable, but nothing further may be applied.
+    unavailable: bool = False
 
     @property
     def status(self) -> str:
@@ -120,16 +152,40 @@ class MatchRecord:
             return "finished"
         return "in_progress"
 
-    def append(self, events: Sequence[Event], server_action_seq: int) -> None:
+    async def append(self, events: Sequence[Event], server_action_seq: int) -> None:
+        """Persist a batch, then publish it. Never the other way round.
+
+        The durable log is what a match is rebuilt from, so nothing may become
+        visible to a caller before it is safely on disk. A sink that raises
+        leaves the sequence unmoved and the batch undelivered, which is what
+        lets the caller abandon the whole transition and keep the match
+        consistent with its log.
+        """
         numbered = assign_sequence(list(events), self.next_seq, server_action_seq)
+        await self._persist(self.sink.append, numbered)
         self.next_seq += len(numbered)
         self.stream.append(numbered)
-        self.sink.append(numbered)
 
-    def record_action(self, action_record: ActionRecord) -> None:
-        """Keep the canonical processing order, in memory and on disk."""
+    async def record_action(self, action_record: ActionRecord) -> None:
+        """Keep the canonical processing order, on disk and then in memory."""
+        await self._persist(self.sink.record_action, action_record)
         self.action_records.append(action_record)
-        self.sink.record_action(action_record)
+
+    async def _persist(self, write: Callable[[Any], None], payload: Any) -> None:
+        """Wait for a durable write without stopping the server to do it.
+
+        Forcing a batch to disk is a blocking syscall, and one match's disk must
+        not hold up every other match's reads, polls and streams, so it happens
+        on a worker thread. Ordering is unaffected: each match's writes are
+        already serialised behind its own lock, and this call is awaited inside
+        it. A failure fences the match — the log's state is no longer certainly
+        known, and guessing is worse than refusing.
+        """
+        try:
+            await asyncio.to_thread(write, payload)
+        except Exception:
+            self.unavailable = True
+            raise
 
     def view_for(self, viewer: Viewer) -> MatchView:
         """Fold the caller's own filtered stream. The only projection there is."""
@@ -164,7 +220,25 @@ class MatchStore:
             raise match_not_found(match_id)
         return record, viewer
 
-    def create(
+    async def create(
+        self,
+        players: Sequence[PlayerSeat],
+        seed: int | None = None,
+        rules: GameRules | None = None,
+        protocol: MatchProtocol | None = None,
+    ) -> tuple[MatchRecord, MatchTokens, int]:
+        return await _uninterrupted(self._create(players, seed, rules, protocol))
+
+    async def start(self, record: MatchRecord) -> None:
+        await _uninterrupted(self._start(record))
+
+    async def abandon(self, record: MatchRecord) -> None:
+        await _uninterrupted(self._abandon(record))
+
+    async def apply_action(self, record: MatchRecord, viewer: Viewer, action: Action) -> MatchView:
+        return await _uninterrupted(self._apply_action(record, viewer, action))
+
+    async def _create(
         self,
         players: Sequence[PlayerSeat],
         seed: int | None = None,
@@ -188,7 +262,7 @@ class MatchStore:
             protocol=protocol,
             sink=self._sink_for(match_id),
         )
-        record.append(events, server_action_seq=0)
+        await record.append(events, server_action_seq=0)
         self._matches[match_id] = record
         tokens = self._registry.mint_for_match(match_id, [seat.player_id for seat in players])
         return record, tokens, match_seed
@@ -199,7 +273,7 @@ class MatchStore:
             return NullEventSink()
         return JsonlEventSink(self._log_directory, match_id)
 
-    async def start(self, record: MatchRecord) -> None:
+    async def _start(self, record: MatchRecord) -> None:
         """Deal the first hand and open the first play."""
         async with record.lock:
             self._check_playable(record)
@@ -207,10 +281,10 @@ class MatchStore:
                 raise ApiError(ApiErrorCode.MATCH_ALREADY_STARTED, f"match {record.match_id} has already started")
             server_action_seq = self._next_action_seq(record)
             state, events = start_match(record.state)
+            await record.append(events, server_action_seq)
             record.state = state
-            record.append(events, server_action_seq)
 
-    async def abandon(self, record: MatchRecord) -> None:
+    async def _abandon(self, record: MatchRecord) -> None:
         """Append `match_abandoned`, then release the match's live resources.
 
         A server lifecycle concern, not a game rule, so it is emitted here and
@@ -228,18 +302,19 @@ class MatchStore:
                 audience="public",
                 data={},
             )
-            record.append([abandoned], server_action_seq)
+            await record.append([abandoned], server_action_seq)
             record.abandoned = True
             # Nothing can be applied to this match again, so the cached results
             # have nothing left to deduplicate.
             record.idempotency = IdempotencyCache()
+            record.conflicts = IdempotencyCache()
         # Outside the lock: waiters wake to a closed stream and return
         # MATCH_ABANDONED rather than hanging until their timeout expires.
         record.stream.close()
         # The handles go with them; §11.4 keeps the log itself on disk.
         record.sink.close()
 
-    async def apply_action(
+    async def _apply_action(
         self,
         record: MatchRecord,
         viewer: Viewer,
@@ -250,12 +325,28 @@ class MatchStore:
         action_id = action.action_id or secrets.token_hex(16)
 
         async with record.lock:
+            # First inside the boundary, before a sequence is spent or either
+            # journal is touched. A match that is finished with — abandoned, or
+            # fenced by a failed write — must not be able to grow its logs, and
+            # an action queued behind an abandonment finds the door already shut.
+            self._check_playable(record)
+
             cached = record.idempotency.get(player_id, action_id)
             if cached is not None:
                 return self._replay(cached, action)
 
+            # Replaying an identical refused attempt rather than refusing it
+            # again: without this one action id could append a rejection event
+            # per retry, which every other refusal is protected from by the
+            # cache above. Keying on the cursor keeps the corrected retry — the
+            # same action id with a fresh `expected_view_version` — a new
+            # attempt, which is the whole point of optimistic concurrency.
+            conflicted = record.conflicts.get(player_id, _conflict_key(action_id, action))
+            if conflicted is not None and self._still_conflicts(record, viewer, action):
+                return self._replay_conflict(record, viewer, conflicted, action)
+
             server_action_seq = self._next_action_seq(record)
-            record.record_action(
+            await record.record_action(
                 ActionRecord(
                     server_action_seq=server_action_seq,
                     action_id=action_id,
@@ -268,11 +359,26 @@ class MatchStore:
                 )
             )
 
-            self._check_playable(record)
-            self._check_expected_version(record, viewer, action)
-            return self._apply_inside_boundary(record, viewer, player_id, action, action_id, server_action_seq)
+            try:
+                self._check_expected_version(record, viewer, action)
+            except ApiError as refusal:
+                # A refusal like any other (§9.4): the offender gets a private
+                # event, their own cursor moves, and the result is cached so a
+                # repeat replays instead of being refused twice. It cannot go in
+                # the idempotency cache, whose fingerprint ignores
+                # `expected_view_version` (§9.3): a hit there would answer the
+                # corrected retry with this stale conflict forever.
+                await self._emit_rejection(record, viewer, player_id, action, refusal, server_action_seq)
+                record.conflicts.put(
+                    player_id,
+                    _conflict_key(action_id, action),
+                    CacheEntry(_fingerprint(action), None, refusal),
+                )
+                raise
 
-    def _apply_inside_boundary(
+            return await self._apply_inside_boundary(record, viewer, player_id, action, action_id, server_action_seq)
+
+    async def _apply_inside_boundary(
         self,
         record: MatchRecord,
         viewer: Viewer,
@@ -285,20 +391,22 @@ class MatchStore:
             self._check_message_envelope(record, action)
             state, events = transition(record.state, player_id, action, record.protocol, record.rules)
         except ApiError as refusal:
-            self._reject(record, viewer, player_id, action_id, action, refusal, server_action_seq)
+            await self._reject(record, viewer, player_id, action_id, action, refusal, server_action_seq)
             raise
         except EngineRejection as rejection:
             refusal = self._refusal_for(record, player_id, action, rejection)
-            self._reject(record, viewer, player_id, action_id, action, refusal, server_action_seq)
+            await self._reject(record, viewer, player_id, action_id, action, refusal, server_action_seq)
             raise refusal from rejection
 
+        # The log first: if persistence fails the transition is abandoned whole,
+        # leaving the match on the state its log still describes.
+        await record.append(events, server_action_seq)
         record.state = state
-        record.append(events, server_action_seq)
         view = record.view_for(viewer)
         record.idempotency.put(player_id, action_id, CacheEntry(_fingerprint(action), view, None))
         return view
 
-    def _reject(
+    async def _reject(
         self,
         record: MatchRecord,
         viewer: Viewer,
@@ -308,7 +416,22 @@ class MatchStore:
         refusal: ApiError,
         server_action_seq: int,
     ) -> None:
-        """Record a refused action: private event, caller's own cursor, cached.
+        """Record a refused action: private event, caller's own cursor, cached."""
+        await self._emit_rejection(record, viewer, player_id, action, refusal, server_action_seq)
+        # Cached because it emitted an event and moved the caller's cursor;
+        # replaying it on retry is what stops one mistake being counted twice.
+        record.idempotency.put(player_id, action_id, CacheEntry(_fingerprint(action), None, refusal))
+
+    async def _emit_rejection(
+        self,
+        record: MatchRecord,
+        viewer: Viewer,
+        player_id: str,
+        action: Action,
+        refusal: ApiError,
+        server_action_seq: int,
+    ) -> None:
+        """Announce a refusal to the offender alone, then answer with their fresh view.
 
         `on_invalid_action` governs this path. Only `reject` exists today, and
         matching on it keeps a future value a visible gap rather than a silent
@@ -323,14 +446,43 @@ class MatchStore:
                     audience=audience_for_player(player_id),
                     data={"code": refusal.code.value, "message": refusal.message, "action_type": action.type.value},
                 )
-                record.append([rejected], server_action_seq)
+                await record.append([rejected], server_action_seq)
 
+        # Read after the event, so the caller is told the cursor they must
+        # actually retry against rather than the one they were refused on.
         view = record.view_for(viewer)
         refusal.legal_actions = view.legal_actions
         refusal.view_version = view.view_version
-        # Cached because it emitted an event and moved the caller's cursor;
-        # replaying it on retry is what stops one mistake being counted twice.
-        record.idempotency.put(player_id, action_id, CacheEntry(_fingerprint(action), None, refusal))
+
+    def _still_conflicts(self, record: MatchRecord, viewer: Viewer, action: Action) -> bool:
+        """Whether the refusal held in the cache is still the right answer.
+
+        A cursor that has merely moved on leaves a stale attempt stale, since it
+        only ever advances. A caller who named a version ahead of their own
+        cursor is the case that matters: once the match reaches it the request
+        has become valid, and answering it from the cache would refuse an action
+        that should now be applied.
+        """
+        return action.expected_view_version != record.stream.view_version(viewer)
+
+    def _replay_conflict(
+        self,
+        record: MatchRecord,
+        viewer: Viewer,
+        cached: CacheEntry,
+        action: Action,
+    ) -> MatchView:
+        """Answer a repeated conflict from the cache, but with a current cursor.
+
+        The refusal is the one already emitted — no second event, no second
+        entry in the log — while the version and legal actions it carries are
+        read fresh, because they are what the caller needs to retry against.
+        """
+        if cached.error is not None:
+            view = record.view_for(viewer)
+            cached.error.view_version = view.view_version
+            cached.error.legal_actions = view.legal_actions
+        return self._replay(cached, action)
 
     def _replay(self, cached: CacheEntry, action: Action) -> MatchView:
         if cached.fingerprint != _fingerprint(action):
@@ -356,8 +508,20 @@ class MatchStore:
         return viewer.player_id
 
     def _check_playable(self, record: MatchRecord) -> None:
+        """Whether the match can still be acted on at all.
+
+        Neither refusal emits an event. Abandonment has already closed the sink,
+        so one would reach the live stream and never the log; a fenced match
+        cannot be written to by definition. Both are terminal, so there is no
+        later action for a rejection record to inform.
+        """
         if record.abandoned:
             raise ApiError(ApiErrorCode.MATCH_ABANDONED, f"match {record.match_id} has been abandoned")
+        if record.unavailable:
+            raise ApiError(
+                ApiErrorCode.MATCH_UNAVAILABLE,
+                f"match {record.match_id} could not be written to its log and accepts no further actions",
+            )
 
     def _check_expected_version(self, record: MatchRecord, viewer: Viewer, action: Action) -> None:
         """Optimistic concurrency in the caller's own cursor, evaluated here.
@@ -371,11 +535,13 @@ class MatchStore:
         current = record.stream.view_version(viewer)
         if expected == current:
             return
+        # The version to retry against is not named here: refusing this action
+        # emits an event of its own, which moves the cursor again. The caller
+        # reads the settled figure from the refusal's `view_version`, which is
+        # filled in once that event has been appended.
         raise ApiError(
             ApiErrorCode.VERSION_CONFLICT,
-            f"you acted on view_version {expected} but your view is now at {current}; read the match again",
-            view_version=current,
-            legal_actions=record.view_for(viewer).legal_actions,
+            f"you acted on view_version {expected} but your view has moved on; read the match again",
         )
 
     def _check_message_envelope(self, record: MatchRecord, action: Action) -> None:

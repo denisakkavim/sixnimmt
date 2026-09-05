@@ -101,3 +101,56 @@ def test_the_cache_evicts_a_players_oldest_entries_and_nobody_elses() -> None:
     assert cache.get("alice", "keep-me") is alice_entry
     assert cache.get("bob", "bob-0") is None
     assert cache.get("bob", "bob-9") is not None
+
+
+def test_retrying_a_version_conflict_with_a_fresh_cursor_applies_the_action(match: Match) -> None:
+    """A conflict is not cached, so the corrected retry runs instead of replaying.
+
+    The fingerprint deliberately ignores `expected_view_version`, so caching the
+    refusal would leave the same `action_id` conflicting forever.
+    """
+    card = match.state("alice")["you"]["hand"][0]
+    stale = match.state("alice")["view_version"] - 1
+
+    refused = match.act("alice", type="select_card", card=card, action_id="retried", expected_view_version=stale)
+    current = match.state("alice")["view_version"]
+    retried = match.act("alice", type="select_card", card=card, action_id="retried", expected_view_version=current)
+
+    assert refused.status_code == 409
+    assert retried.status_code == 200
+    assert match.state("alice")["you"]["selection"] == card
+
+
+def test_repeating_an_identical_version_conflict_is_refused_once(match: Match) -> None:
+    """A conflict deduplicates like every other refusal, or one key could flood the log."""
+    card = match.state("alice")["you"]["hand"][0]
+    stale = match.state("alice")["view_version"] - 1
+    before = len(match.events("alice"))
+
+    for _ in range(5):
+        response = match.act("alice", type="select_card", card=card, action_id="same", expected_view_version=stale)
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "VERSION_CONFLICT"
+
+    assert len(match.events("alice")) == before + 1
+
+
+def test_a_conflict_on_a_future_cursor_is_applied_once_the_match_reaches_it(match: Match) -> None:
+    """A cached refusal must not outlive the reason it was given.
+
+    Naming a version the caller has not reached yet is refused like any other
+    conflict, but that version is one the match will arrive at, and the same
+    request is valid when it does.
+    """
+    card = match.state("alice")["you"]["hand"][0]
+    # One past her cursor, which is exactly where refusing this attempt will
+    # leave her: the rejection is private to her and advances her by one.
+    ahead = match.state("alice")["view_version"] + 1
+
+    refused = match.act("alice", type="select_card", card=card, action_id="ahead", expected_view_version=ahead)
+    assert match.state("alice")["view_version"] == ahead
+    retried = match.act("alice", type="select_card", card=card, action_id="ahead", expected_view_version=ahead)
+
+    assert refused.status_code == 409
+    assert retried.status_code == 200
+    assert match.state("alice")["you"]["selection"] == card

@@ -112,7 +112,7 @@ async def create_match(request: Request, body: CreateMatchRequest) -> CreateMatc
         PlayerSeat(player_id=player.id, display_name=player.display_name, agent_metadata=player.agent_metadata)
         for player in body.players
     ]
-    record, tokens, seed = _store(request).create(seats, body.seed, body.rules, body.protocol)
+    record, tokens, seed = await _store(request).create(seats, body.seed, body.rules, body.protocol)
     return CreateMatchResponse(
         match_id=record.match_id,
         rules=record.rules,

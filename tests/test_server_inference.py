@@ -55,6 +55,31 @@ def test_a_rejected_action_advances_only_the_offending_players_cursor(match: Mat
     assert match.events("bob")[-1]["type"] == "action_rejected"
 
 
+def test_a_version_conflict_is_announced_to_the_offender_alone(match: Match) -> None:
+    """A stale-cursor refusal is a rejection like any other (§9.4)."""
+    alice_before = match.state("alice")["view_version"]
+    bob_before = match.state("bob")["view_version"]
+    card = match.state("bob")["you"]["hand"][0]
+
+    refused = match.act("bob", type="select_card", card=card, expected_view_version=bob_before - 1)
+
+    assert refused.status_code == 409
+    assert refused.json()["error"]["code"] == "VERSION_CONFLICT"
+    assert match.events("bob")[-1]["type"] == "action_rejected"
+    assert match.events("bob")[-1]["data"]["code"] == "VERSION_CONFLICT"
+    assert match.state("alice")["view_version"] == alice_before
+
+
+def test_a_version_conflict_reports_the_cursor_the_caller_must_retry_against(match: Match) -> None:
+    """Refusing the action emits an event, so the version to retry on is the later one."""
+    bob_before = match.state("bob")["view_version"]
+    card = match.state("bob")["you"]["hand"][0]
+
+    refused = match.act("bob", type="select_card", card=card, expected_view_version=bob_before - 1)
+
+    assert refused.json()["error"]["view_version"] == match.state("bob")["view_version"]
+
+
 def test_a_rejection_is_visible_to_nobody_but_the_offender(match: Match) -> None:
     match.act("bob", type="commit")
 
