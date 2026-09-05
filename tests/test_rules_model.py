@@ -80,3 +80,28 @@ def test_rules_models_are_immutable() -> None:
 
     with pytest.raises(ValidationError):
         rules.target_score = 100  # ty: ignore[invalid-assignment]
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("cards_per_hand", 1),
+        ("row_count", 6),
+        ("row_capacity", 3),
+        ("deck_size", 60),
+    ],
+)
+def test_game_rules_rejects_a_shape_the_engine_does_not_play(field_name: str, value: int) -> None:
+    """Dealing, row layout and row closure are built to the published numbers.
+
+    Accepting a different value would report a ruleset the match never plays.
+    """
+    with pytest.raises(ValidationError):
+        GameRules(**{field_name: value})
+
+
+def test_game_rules_allows_a_target_score_the_engine_honours() -> None:
+    """Unlike the table's shape, the winning threshold is read from the rules."""
+    rules = GameRules(target_score=30)
+
+    assert rules.target_score == 30

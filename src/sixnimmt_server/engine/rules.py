@@ -30,6 +30,19 @@ class InformationPolicy(BaseModel):
     private_message_existence: PrivateMessageExistence = PrivateMessageExistence.VISIBLE
 
 
+# The engine builds the game to these numbers directly: `deal` lays out ten
+# cards each from a 104-card deck and turns up four rows, and resolution closes
+# a row at five cards. Accepting any other value would report a ruleset the
+# match does not actually play. Parameterising the engine is what would relax
+# this; until then the published shape is the only shape.
+PUBLISHED_SHAPE: dict[str, int] = {
+    "cards_per_hand": 10,
+    "row_count": 4,
+    "row_capacity": 5,
+    "deck_size": 104,
+}
+
+
 class GameRules(BaseModel):
     """The published rules of 6 nimmt!, not experimental parameters."""
 
@@ -42,6 +55,15 @@ class GameRules(BaseModel):
     row_capacity: int = 5
     deck_size: int = 104
     target_score: int = 66
+
+    @model_validator(mode="after")
+    def _check_published_shape(self) -> "GameRules":
+        for field_name, published in PUBLISHED_SHAPE.items():
+            supplied = getattr(self, field_name)
+            if supplied != published:
+                msg = f"{field_name} is fixed at {published} by the rules of 6 nimmt!, got {supplied}"
+                raise ValueError(msg)
+        return self
 
     @model_validator(mode="after")
     def _check_player_bounds(self) -> "GameRules":
