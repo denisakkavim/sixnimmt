@@ -236,3 +236,31 @@ def test_a_pathological_agent_leaves_the_match_playable(match: Match) -> None:
 
     play_to_completion(match)
     assert match.state("alice")["status"] == "finished"
+
+
+def test_a_bot_that_flips_between_commit_and_uncommit_cannot_stall_the_server(client: TestClient) -> None:
+    flipping = open_match(client, ["alice", "bob"], protocol={"negotiation_enabled": True})
+    flipping.start()
+    card = flipping.state("bob")["you"]["hand"][0]
+
+    # Uncommitting clears the selection too, so a flip-flop is really a cycle of
+    # three actions rather than two.
+    for _ in range(100):
+        assert flipping.act("bob", type="select_card", card=card).status_code == 200
+        assert flipping.act("bob", type="commit").status_code == 200
+        assert flipping.act("bob", type="uncommit").status_code == 200
+
+    table = flipping.state("alice")
+    assert table["phase"] == "selecting"
+    assert table["revealed_this_hand"] == []
+    assert len(flipping.state("bob")["you"]["hand"]) == 10
+
+
+def test_a_stale_from_view_never_costs_the_caller_anything(match: Match) -> None:
+    """It is an audit reference, not a concurrency token (§9.3)."""
+    card = match.state("alice")["you"]["hand"][0]
+
+    response = match.act("alice", type="select_card", card=card, from_view="v_from_a_previous_match")
+
+    assert response.status_code == 200
+    assert response.json()["you"]["selection"] == card
