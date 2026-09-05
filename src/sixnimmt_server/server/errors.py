@@ -91,10 +91,20 @@ class ApiError(Exception):
     which knows the caller and can therefore read their own view safely.
     """
 
-    def __init__(self, code: ApiErrorCode, message: str) -> None:
+    def __init__(
+        self,
+        code: ApiErrorCode,
+        message: str,
+        legal_actions: tuple[str, ...] = (),
+        view_version: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
+        self.legal_actions = legal_actions
+        # The caller's own cursor, never a global one (§5.5). None where the
+        # caller is not yet identified, as for an unparseable request.
+        self.view_version = view_version
 
     @property
     def status(self) -> HTTPStatus:
