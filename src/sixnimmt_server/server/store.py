@@ -20,8 +20,6 @@ from typing import Any
 from sixnimmt_server.engine.actions import (
     Action,
     ChooseRowAction,
-    MessageVisibility,
-    SendMessageAction,
     UncommitAction,
 )
 from sixnimmt_server.engine.audience import Viewer
@@ -388,7 +386,6 @@ class MatchStore:
         server_action_seq: int,
     ) -> MatchView:
         try:
-            self._check_message_envelope(record, action)
             state, events = transition(record.state, player_id, action, record.protocol, record.rules)
         except ApiError as refusal:
             await self._reject(record, viewer, player_id, action_id, action, refusal, server_action_seq)
@@ -543,27 +540,6 @@ class MatchStore:
             ApiErrorCode.VERSION_CONFLICT,
             f"you acted on view_version {expected} but your view has moved on; read the match again",
         )
-
-    def _check_message_envelope(self, record: MatchRecord, action: Action) -> None:
-        """Envelope checks a message must pass before the engine sees it.
-
-        Only meaningful once negotiation is on; with messaging switched off the
-        engine's NEGOTIATION_DISABLED is the truthful answer to any message.
-        """
-        if not isinstance(action, SendMessageAction) or not record.protocol.negotiation_enabled:
-            return
-        if len(action.body) > record.protocol.max_message_length:
-            raise ApiError(
-                ApiErrorCode.MESSAGE_TOO_LONG,
-                f"your message is {len(action.body)} characters; the limit is {record.protocol.max_message_length}",
-            )
-        if action.visibility != MessageVisibility.DIRECT:
-            return
-        if not record.protocol.allow_direct_messages:
-            raise ApiError(ApiErrorCode.DIRECT_MESSAGES_DISABLED, "this match allows table messages only")
-        seated = [player.player_id for player in record.state.players]
-        if action.to_player not in seated:
-            raise ApiError(ApiErrorCode.RECIPIENT_NOT_FOUND, f"there is no player {action.to_player} in this match")
 
     def _refusal_for(self, record: MatchRecord, player_id: str, action: Action, rejection: EngineRejection) -> ApiError:
         code = api_code_for(rejection.code)

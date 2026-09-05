@@ -18,6 +18,7 @@ from sixnimmt_server.engine.actions import (
     UncommitAction,
 )
 from sixnimmt_server.engine.audience import Viewer
+from sixnimmt_server.engine.events import Event
 from sixnimmt_server.engine.state import Phase, PlayerSeat
 from sixnimmt_server.engine.views import MatchView
 from sixnimmt_server.server.errors import ApiError, ApiErrorCode
@@ -345,8 +346,13 @@ async def choose_row(request: Request, match_id: str, body: ChooseRowAction) -> 
 
 @router.get("/schemas")
 async def json_schemas() -> dict[str, Any]:
-    """JSON Schema for every action and event, so clients generate their types."""
+    """Export action/view schemas and the internal event union.
+
+    Event data remains untyped; this describes envelopes and discriminators,
+    not the role-dependent wire output with its viewer cursor.
+    """
     return {
         "action": _ACTION_ADAPTER.json_schema(),
+        "event": TypeAdapter(Event).json_schema(),
         "view": MatchView.model_json_schema(),
     }

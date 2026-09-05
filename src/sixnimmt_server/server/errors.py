@@ -47,6 +47,10 @@ class ApiErrorCode(StrEnum):
 
 
 _ENGINE_TO_API: dict[ErrorCode, ApiErrorCode] = {
+    ErrorCode.MESSAGE_TOO_LONG: ApiErrorCode.MESSAGE_TOO_LONG,
+    ErrorCode.DIRECT_MESSAGES_DISABLED: ApiErrorCode.DIRECT_MESSAGES_DISABLED,
+    ErrorCode.RECIPIENT_NOT_FOUND: ApiErrorCode.RECIPIENT_NOT_FOUND,
+    ErrorCode.MALFORMED_REQUEST: ApiErrorCode.MALFORMED_REQUEST,
     ErrorCode.UNKNOWN_PLAYER: ApiErrorCode.UNKNOWN_PLAYER,
     ErrorCode.MATCH_FINISHED: ApiErrorCode.MATCH_FINISHED,
     ErrorCode.WRONG_PHASE: ApiErrorCode.WRONG_PHASE,
