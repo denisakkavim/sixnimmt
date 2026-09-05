@@ -1,10 +1,13 @@
 """Shared fixtures for the HTTP server tests."""
 
+import threading
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
+import uvicorn
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
@@ -137,3 +140,24 @@ def play_to_completion(match: Match, limit: int = 5000) -> None:
             return
     msg = "match did not finish within the decision limit"
     raise AssertionError(msg)
+
+
+@pytest.fixture
+def served(app: FastAPI) -> Iterator[str]:
+    """The app behind a real HTTP server, for tests that need genuine streaming.
+
+    The in-process ASGI transports buffer a response until it completes, which
+    an SSE stream never does; only a real socket shows what a client sees.
+    """
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    while not server.started:
+        time.sleep(0.01)
+    port = server.servers[0].sockets[0].getsockname()[1]
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)

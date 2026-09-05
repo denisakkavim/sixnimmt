@@ -18,7 +18,7 @@ from sixnimmt_server.engine.actions import (
     UncommitAction,
 )
 from sixnimmt_server.engine.audience import Viewer
-from sixnimmt_server.engine.state import PlayerSeat
+from sixnimmt_server.engine.state import Phase, PlayerSeat
 from sixnimmt_server.engine.views import MatchView
 from sixnimmt_server.server.errors import ApiError, ApiErrorCode
 from sixnimmt_server.server.schemas import (
@@ -35,6 +35,8 @@ from sixnimmt_server.server.store import MatchRecord, MatchStore
 
 DEFAULT_WAIT_SECONDS = 30.0
 MAX_WAIT_SECONDS = 60.0
+# How long a quiet stream goes before a comment reassures the client it is alive.
+STREAM_KEEPALIVE_SECONDS = 15.0
 
 _ACTION_ADAPTER: TypeAdapter[Action] = TypeAdapter(Action)
 
@@ -200,18 +202,49 @@ async def wait_for_events(
     """
     record, viewer = _authorise(request, match_id)
     subscription = record.sink.subscribe(viewer)
+    deadline = min(timeout, MAX_WAIT_SECONDS)
     try:
-        deadline = min(timeout, MAX_WAIT_SECONDS)
-        # Subscribed first, so an event landing between this check and the wait
+        # Subscribed before the first check, so an event landing between the two
         # is delivered to the subscription rather than missed.
-        while not record.sink.events_since(viewer, since) and not record.view_for(viewer).legal_actions:
+        while True:
+            if record.abandoned:
+                # §11.4: an outstanding poll ends here rather than hanging on a
+                # match that will never produce another event.
+                raise ApiError(ApiErrorCode.MATCH_ABANDONED, f"match {match_id} has been abandoned")
+            if _should_return_now(record, viewer, since):
+                return _wait_response(record, viewer, since, timed_out=False)
             if await subscription.next_event(deadline) is None:
                 return _wait_response(record, viewer, since, timed_out=True)
     except SinkClosed:
         raise ApiError(ApiErrorCode.MATCH_ABANDONED, f"match {match_id} has been abandoned") from None
     finally:
         record.sink.unsubscribe(subscription)
-    return _wait_response(record, viewer, since, timed_out=False)
+
+
+def _should_return_now(record: MatchRecord, viewer: Viewer, since: int) -> bool:
+    if record.sink.events_since(viewer, since):
+        return True
+    view = record.view_for(viewer)
+    if view.status != "in_progress":
+        return True
+    return _match_awaits(view, viewer)
+
+
+def _match_awaits(view: MatchView, viewer: Viewer) -> bool:
+    """Whether the match is blocked on this caller.
+
+    Narrower than "has legal actions": classic mode keeps offering select_card
+    to a player who has already committed, and treating that as a reason to
+    return would make the long poll return instantly and always. What an agent
+    wants to know is whether the game is waiting for them.
+    """
+    if not view.legal_actions:
+        return False
+    if view.phase == Phase.AWAITING_ROW_CHOICE:
+        return view.awaiting == viewer.player_id
+    if view.phase == Phase.SELECTING:
+        return not view.you.committed
+    return False
 
 
 def _wait_response(record: MatchRecord, viewer: Viewer, since: int, timed_out: bool) -> WaitResponse:
@@ -253,7 +286,7 @@ async def _stream_body(record: MatchRecord, viewer: Viewer, since: int) -> Async
                 yield _sse_message(cursor, serialise_event(cursor, event, viewer.role), event.type.value)
         while True:
             try:
-                delivered = await subscription.next_event(MAX_WAIT_SECONDS)
+                delivered = await subscription.next_event(STREAM_KEEPALIVE_SECONDS)
             except SinkClosed:
                 yield _sse_message(subscription.cursor, {"code": ApiErrorCode.MATCH_ABANDONED.value}, "match_closed")
                 return

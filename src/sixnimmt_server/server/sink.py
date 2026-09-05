@@ -7,6 +7,7 @@ this module rather than by a check someone has to remember.
 """
 
 import asyncio
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
@@ -32,23 +33,38 @@ class Subscription:
 
     viewer: Viewer
     cursor: int
-    queue: asyncio.Queue[tuple[int, Event]] = field(default_factory=asyncio.Queue)
-    closed: asyncio.Event = field(default_factory=asyncio.Event)
+    pending: deque[tuple[int, Event]] = field(default_factory=deque)
+    signal: asyncio.Event = field(default_factory=asyncio.Event)
+    closed: bool = False
+
+    def deliver(self, cursor: int, event: Event) -> None:
+        self.pending.append((cursor, event))
+        self.signal.set()
+
+    def close(self) -> None:
+        self.closed = True
+        self.signal.set()
 
     async def next_event(self, timeout: float) -> tuple[int, Event] | None:
-        """The next visible event, or None on timeout. Raises when the sink closes."""
-        waits = [asyncio.ensure_future(self.queue.get()), asyncio.ensure_future(self.closed.wait())]
-        try:
-            done, _ = await asyncio.wait(waits, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
-        finally:
-            for wait in waits:
-                wait.cancel()
-        if self.closed.is_set():
+        """The next visible event, or None on timeout.
+
+        Everything already published is handed over before the closed flag is
+        honoured, so abandoning a match cannot swallow the `match_abandoned`
+        event that explains why the stream ended.
+        """
+        if self.pending:
+            return self.pending.popleft()
+        if self.closed:
             raise SinkClosed
-        for finished in done:
-            result = finished.result()
-            if isinstance(result, tuple):
-                return result
+        self.signal.clear()
+        try:
+            await asyncio.wait_for(self.signal.wait(), timeout)
+        except TimeoutError:
+            return None
+        if self.pending:
+            return self.pending.popleft()
+        if self.closed:
+            raise SinkClosed
         return None
 
 
@@ -87,7 +103,7 @@ class InMemoryEventSink:
             if not visible_to(event, subscription.viewer):
                 continue
             subscription.cursor += 1
-            subscription.queue.put_nowait((subscription.cursor, event))
+            subscription.deliver(subscription.cursor, event)
 
     def visible_stream(self, viewer: Viewer) -> list[Event]:
         """The viewer's filtered subsequence, cached and extended as events arrive."""
@@ -112,7 +128,7 @@ class InMemoryEventSink:
         """Start delivering this viewer's future events, numbered from where they are."""
         subscription = Subscription(viewer=viewer, cursor=self.view_version(viewer))
         if self._closed:
-            subscription.closed.set()
+            subscription.close()
         self._subscriptions.append(subscription)
         return subscription
 
@@ -124,5 +140,5 @@ class InMemoryEventSink:
         """Release the match's subscribers; the log itself is retained (§11.4)."""
         self._closed = True
         for subscription in self._subscriptions:
-            subscription.closed.set()
+            subscription.close()
         self._subscriptions = []
