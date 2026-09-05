@@ -110,3 +110,14 @@ def test_admin_token_reads_any_match(client: TestClient) -> None:
     response = client.get(f"/matches/{created.match_id}/state", headers={"Authorization": f"Bearer {ADMIN_TOKEN}"})
 
     assert response.status_code == 200
+
+
+def test_the_api_publishes_schemas_for_generated_clients(client: TestClient) -> None:
+    """§13: MCP and UI clients generate types rather than duplicating them."""
+    assert client.get("/openapi.json").status_code == 200
+
+    schemas = client.get("/schemas").json()
+
+    variants = schemas["action"].get("oneOf") or schemas["action"]["anyOf"]
+    assert len(variants) == 5
+    assert "view_version" in schemas["view"]["properties"]

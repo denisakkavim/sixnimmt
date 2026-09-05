@@ -6,7 +6,7 @@ activity the caller is not entitled to observe.
 
 from typing import Any
 
-from conftest import Match, open_match, play_to_completion
+from conftest import Match, advance_one_decision, open_match, play_to_completion
 from starlette.testclient import TestClient
 
 
@@ -165,3 +165,20 @@ def test_view_ids_across_a_match_never_track_the_global_sequence(match: Match) -
         seen[str(event["seq"])] = alice["view_id"]
 
     assert len(set(seen.values())) == 1  # Alice's view stopped moving; the log did not
+
+
+def test_any_change_in_what_a_player_may_do_arrives_with_an_event_they_can_see(match: Match) -> None:
+    """The §5.3 corollary, as a test rather than a claim.
+
+    A gap-free per-viewer cursor only works if nothing that matters to a viewer
+    can change without an event reaching them.
+    """
+    watched = {player_id: match.state(player_id) for player_id in match.players}
+
+    while advance_one_decision(match):
+        for player_id in match.players:
+            before = watched[player_id]
+            after = match.state(player_id)
+            if after["legal_actions"] != before["legal_actions"]:
+                assert after["view_version"] > before["view_version"], player_id
+            watched[player_id] = after

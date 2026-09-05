@@ -3,10 +3,13 @@
 from typing import Annotated
 
 import typer
+import uvicorn
 from typer._click.core import Context
 from typer.core import TyperCommand
 
 from sixnimmt_server.arena.runner import ArenaError, ArenaResult, run_arena
+from sixnimmt_server.server.app import create_app
+from sixnimmt_server.server.auth import mint_token
 
 
 class PlayersCommand(TyperCommand):
@@ -86,3 +89,21 @@ def arena(
         raise typer.Exit(code=1) from error
 
     _print_result(result)
+
+
+@app.command()
+def serve(
+    host: Annotated[str, typer.Option("--host", help="Interface to bind.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="Port to listen on.")] = 8000,
+    admin_token: Annotated[
+        str | None,
+        typer.Option("--admin-token", help="Admin bearer token. Generated and printed when omitted."),
+    ] = None,
+) -> None:
+    """Run the HTTP game server."""
+    token = admin_token or mint_token()
+    if admin_token is None:
+        # Match creation needs this before any match exists, so it cannot be
+        # minted per match and has to be told to the operator once.
+        typer.echo(f"admin token: {token}")
+    uvicorn.run(create_app(admin_token=token), host=host, port=port)
