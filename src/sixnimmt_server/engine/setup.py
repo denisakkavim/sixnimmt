@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from sixnimmt_server.engine.cards import deal, hand_seed_for, shuffled_deck
 from sixnimmt_server.engine.errors import EngineRejection, ErrorCode
 from sixnimmt_server.engine.events import (
+    PLAYER_ID_PATTERN,
     CardsDealtEvent,
     Event,
     HandSeedAssignedEvent,
@@ -28,14 +29,21 @@ def _check_seats(seats: tuple[PlayerSeat, ...], rules: GameRules) -> None:
     if not rules.min_players <= len(seats) <= rules.max_players:
         msg = f"a match needs between {rules.min_players} and {rules.max_players} players, got {len(seats)}"
         raise EngineRejection(ErrorCode.INVALID_PLAYER_COUNT, msg)
+    # The grammar is checked before anything else quotes an id back to the
+    # caller. An id has to survive an event audience, a token map key and a
+    # UTF-8 log, and a lone surrogate is a legal JSON string that cannot be
+    # encoded at all — including into the very refusal that names it.
+    unusable = sorted({seat.player_id for seat in seats if not PLAYER_ID_PATTERN.match(seat.player_id)})
+    if unusable:
+        # `ascii` so that an id which cannot be encoded is still reportable.
+        rejected = ", ".join(ascii(player_id) for player_id in unusable)
+        msg = f"player ids must be 1-64 characters of letters, digits, '_' or '-', rejected: {rejected}"
+        raise EngineRejection(ErrorCode.INVALID_PLAYER_ID, msg)
     identifiers = [seat.player_id for seat in seats]
     duplicates = sorted({name for name in identifiers if identifiers.count(name) > 1})
     if duplicates:
         msg = f"player ids must be unique, repeated: {', '.join(duplicates)}"
         raise EngineRejection(ErrorCode.DUPLICATE_PLAYER_ID, msg)
-    if any(not seat.player_id for seat in seats):
-        msg = "player ids must not be empty"
-        raise EngineRejection(ErrorCode.INVALID_PLAYER_ID, msg)
 
 
 def open_match(

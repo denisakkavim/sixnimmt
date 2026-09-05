@@ -1,5 +1,6 @@
 """Game events. Each event names its audience, which alone decides who may see it."""
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Literal
@@ -39,8 +40,21 @@ class EventType(StrEnum):
 EVENT_TYPES: tuple[str, ...] = tuple(event_type.value for event_type in EventType)
 
 
+# An event addresses one player as `player:<id>`, so the id itself may not
+# contain the separator; match creation refuses ids that would be unaddressable.
+AUDIENCE_SEPARATOR = ":"
+
+# A player id travels further than any other client-supplied string: into an
+# event audience, a token map key, a JSONL log encoded as UTF-8, and back out
+# through replay. Rather than defend each of those in turn, ids are held to one
+# bounded ASCII grammar at the door. A lone surrogate, for instance, is a legal
+# JSON string that cannot be encoded to UTF-8 at all, and would otherwise fail
+# somewhere deep in the first deal rather than at the request that introduced it.
+PLAYER_ID_PATTERN = re.compile(r"\A[A-Za-z0-9_-]{1,64}\Z")
+
+
 def audience_for_player(player_id: str) -> str:
-    return f"player:{player_id}"
+    return f"player{AUDIENCE_SEPARATOR}{player_id}"
 
 
 def assign_sequence(events: list["Event"], first_seq: int, server_action_seq: int = 0) -> list["Event"]:

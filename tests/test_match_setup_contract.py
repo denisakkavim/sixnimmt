@@ -101,3 +101,21 @@ def test_assign_sequence_numbers_a_batch_contiguously() -> None:
     assert all(event.server_action_seq == 3 for event in numbered)
     assert [event.type for event in numbered] == [event.type for event in events]
     assert all(event.seq == 0 for event in events), "numbering must not mutate the batch"
+
+
+@pytest.mark.parametrize(
+    ("player_id", "description"),
+    [
+        ("alice:bot", "a colon the event audience cannot carry"),
+        ("\ud800", "a lone surrogate that cannot be encoded as UTF-8"),
+        ("alice bob", "a space"),
+        ("a" * 65, "longer than the grammar allows"),
+        ("", "empty"),
+    ],
+)
+def test_a_player_id_outside_the_wire_safe_grammar_is_rejected(player_id: str, description: str) -> None:
+    """An id must survive an audience, a token map key and a UTF-8 log."""
+    with pytest.raises(EngineRejection) as caught:
+        open_match("m_01", [player_id, "bob"], match_seed=1)
+
+    assert caught.value.code == ErrorCode.INVALID_PLAYER_ID
