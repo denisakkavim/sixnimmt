@@ -83,3 +83,39 @@ uv run ruff format --check .
 uv run ruff check .
 uv run ty check
 ```
+
+## Negotiation messaging
+
+Set `protocol.negotiation_enabled` to `true` when creating an HTTP match to enable
+explicit commitment, uncommit, table messages, and direct messages. Send a message
+through `/matches/{id}/message` (or `/actions` with `type: "send_message"`):
+
+```json
+{"visibility": "direct", "to_player": "bob", "body": "Which row would you take?", "action_id": "message-1"}
+```
+
+For a table message, use `visibility: "table"` and omit `to_player`. Messages are
+accepted only during selection. Self-directed messages are refused. Empty bodies
+are allowed; `max_message_length` counts Unicode characters (default 2000), and
+text must be representable as UTF-8.
+
+The state view includes `messages`, `private_messages_observed`, and
+`messages_omitted`. Together the first two lists retain the latest 100 eligible
+messages from the current play and reset when the next play starts. Direct-message
+content appears once for each participant or privileged observer. Other viewers
+see only the parties when `information_policy.private_message_existence` is
+`"visible"`; with `"hidden"`, their views and cursors do not change. Use `/events`
+for cross-play history and ordering between content and occurrence entries.
+
+Selections, commits, uncommits, and messages each consume one action when
+`max_actions_per_play` is set. Required row choices remain available at zero
+budget. Counts and remaining budgets are private to the actor, including with a
+finite budget, because public budgets would expose hidden messages. New logs
+record every count; older logs retain their historical selection-only accounting.
+
+The message cap bounds response size, not server resource use: live event history
+and subscriber queues remain unbounded, and views fold the full visible history.
+A 500-message regression test checks finite-load behavior; sustained-spam health
+is not yet guaranteed. Harnesses must bound experiments and abandon stalled
+matches. Negotiation is available through HTTP and the pure engine; the arena
+runner still drives classic matches.
