@@ -105,6 +105,24 @@ def _start_play(state: _Fold, play_number: int) -> None:
         seat.committed = False
 
 
+def _bank_hand(state: _Fold, totals: dict[str, int]) -> None:
+    """Bank the hand exactly as the engine does: totals up, everything else down.
+
+    The piles empty so a folded score never carries a finished hand into the
+    next one, and the per-play fields go with them. A later hand would reset
+    those anyway, but the last hand of a match is followed by nothing, and a
+    finished view must not still be reporting the final play's selection.
+    """
+    state.own_selection = None
+    state.own_actions = 0
+    for player_id, total in totals.items():
+        seat = _seat(state, player_id)
+        seat.total_score = total
+        seat.penalty_cards = []
+        seat.has_selection = False
+        seat.committed = False
+
+
 def _apply_reveal(state: _Fold, data: dict) -> None:
     selections = data["selections"]
     state.phase = Phase.RESOLVING
@@ -163,15 +181,8 @@ def _apply(state: _Fold, event: Event, viewer: Viewer) -> None:  # noqa: C901
         case "row_choice_made":
             state.phase = Phase.RESOLVING
             state.awaiting = None
-            if data["player_id"] == viewer.player_id:
-                state.own_actions += 1
         case "hand_ended":
-            # Banking a hand empties the penalty piles, exactly as the engine does,
-            # so a folded score never carries a finished hand into the next one.
-            for player_id, total in data["totals"].items():
-                seat = _seat(state, player_id)
-                seat.total_score = total
-                seat.penalty_cards = []
+            _bank_hand(state, data["totals"])
         case "match_ended":
             state.status = "finished"
             state.phase = Phase.FINISHED

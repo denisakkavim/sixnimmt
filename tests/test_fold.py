@@ -342,3 +342,24 @@ def test_omniscient_observers_keep_real_names_while_anonymising() -> None:
     view = build_view(_named_match(anonymise=True), OMNISCIENT)
 
     assert [opponent.display_name for opponent in view.players] == ["Ada", "Grace", "Edsger"]
+
+
+def test_a_players_own_action_count_matches_the_engine_at_every_point_of_a_match() -> None:
+    for state, log in _played_match():
+        for player in state.players:
+            view = build_view(log, _player(player.player_id))
+
+            assert view.you.actions_taken_this_play == player.actions_taken_this_play
+
+
+def test_a_finished_view_reports_no_outstanding_selection_or_actions() -> None:
+    """Banking the last hand clears the play in progress, so nothing lingers."""
+    state, log = _played_match()[-1]
+
+    for player in state.players:
+        view = build_view(log, _player(player.player_id))
+
+        assert view.you.selection is None
+        assert view.you.actions_taken_this_play == 0
+        assert all(not opponent.has_selection for opponent in view.players)
+        assert all(not opponent.committed for opponent in view.players)
