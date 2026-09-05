@@ -11,13 +11,9 @@ The input is a whole match log, admin events included. Folding a filtered
 stream instead gives a viewer's view, which is `fold.build_view`'s job, not
 this one.
 
-One field is not yet reconstructible under negotiation. An explicit `commit` or
-`uncommit` counts towards the actor's own action count but emits only a public
-event, which cannot carry that count without publishing an opponent's activity.
-§10.4 leaves the private counterpart to be designed with the rest of
-negotiation, so until then a replayed `actions_taken_this_play` is exact for
-classic matches and low by the number of explicit commits for negotiated ones.
-Every other field replays exactly either way.
+Action counts are assigned from private count events. Older logs without those
+markers retain their selection-only counting semantics; mixed writer versions
+are not supported because matches cannot be resumed by another server version.
 """
 
 from collections.abc import Sequence
@@ -63,6 +59,7 @@ class _Seat:
 
 @dataclass
 class _Replay:
+    explicit_counts: bool = False
     match_id: str = ""
     phase: Phase = Phase.SETUP
     hand_number: int = 1
@@ -205,10 +202,10 @@ def _apply(replay: _Replay, event: Event) -> None:  # noqa: C901
         case "selection_made":
             seat = _seat(replay, data["player_id"])
             seat.selection = data["card"]
-            # The only action the engine counts that has a private event of its
-            # own. Commits and uncommits get one when negotiation arrives
-            # (§10.4); until then selecting is the only action there is.
-            seat.actions_taken_this_play += 1
+            if not replay.explicit_counts:
+                seat.actions_taken_this_play += 1
+        case "action_counted":
+            _seat(replay, data["player_id"]).actions_taken_this_play = data["actions_taken_this_play"]
         case "selection_cleared":
             _seat(replay, data["player_id"]).selection = None
         case "player_committed":
@@ -276,7 +273,7 @@ def _to_state(replay: _Replay) -> MatchState:
 
 def replay_events(events: Sequence[Event]) -> ReplayedMatch:
     """Fold a whole match log back into the state that produced it."""
-    replay = _Replay()
+    replay = _Replay(explicit_counts=any(event.type == "action_counted" for event in events))
     for event in events:
         _apply(replay, event)
     return ReplayedMatch(

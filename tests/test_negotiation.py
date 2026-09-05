@@ -30,7 +30,7 @@ def test_negotiation_selection_stays_uncommitted_and_in_hand() -> None:
     assert alice.committed is False
     assert card in alice.hand
     assert alice.actions_taken_this_play == 1
-    assert [event.type for event in events] == ["selection_made", "selection_registered"]
+    assert [event.type for event in events] == ["action_counted", "selection_made", "selection_registered"]
 
 
 def test_reselection_clears_only_the_callers_commitment() -> None:
@@ -59,6 +59,7 @@ def test_reselection_clears_only_the_callers_commitment() -> None:
     assert selected.players[1].selection == bob_card
     assert selected.players[1].committed is True
     assert [event.type for event in events] == [
+        "action_counted",
         "selection_cleared",
         "player_uncommitted",
         "selection_made",
@@ -77,7 +78,7 @@ def test_final_explicit_commit_emits_commitment_before_reveal() -> None:
     committed, events = transition(state, "bob", CommitAction(), _NEGOTIATION, GameRules())
 
     event_types = [event.type for event in events]
-    assert event_types[:3] == ["player_committed", "play_committed", "cards_revealed"]
+    assert event_types[:4] == ["action_counted", "player_committed", "play_committed", "cards_revealed"]
     assert event_types.count(EventType.PLAY_COMMITTED) == 1
     assert committed.play_number == 2
     assert alice_card not in committed.players[0].hand
@@ -97,7 +98,7 @@ def test_uncommit_clears_selection_while_another_player_is_uncommitted() -> None
     assert alice.committed is False
     assert card in alice.hand
     assert alice.actions_taken_this_play == 3
-    assert [event.type for event in events] == ["player_uncommitted", "selection_cleared"]
+    assert [event.type for event in events] == ["action_counted", "player_uncommitted", "selection_cleared"]
 
 
 def test_uncommit_rejects_an_all_committed_selecting_state() -> None:

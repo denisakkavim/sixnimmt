@@ -2,8 +2,9 @@
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
+from sixnimmt_server.engine.actions import MessageVisibility
 from sixnimmt_server.engine.state import Phase
 
 
@@ -51,6 +52,20 @@ class OpponentView(BaseModel):
     total_score: int = 0
 
 
+class MessageView(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    from_player: str
+    visibility: MessageVisibility
+    to_player: str | None = None
+    body: str
+
+
+class PrivateMessageView(BaseModel):
+    model_config = ConfigDict(frozen=True)
+    from_player: str
+    to_player: str
+
+
 class MatchView(BaseModel):
     """What one caller sees when reading match state."""
 
@@ -74,3 +89,6 @@ class MatchView(BaseModel):
     # Advisory presentation hint for clients. The server revalidates everything.
     legal_actions: tuple[str, ...] = ()
     target_score: int = 66
+    messages: tuple[MessageView, ...] = ()
+    private_messages_observed: tuple[PrivateMessageView, ...] = ()
+    messages_omitted: int = Field(default=0, ge=0)

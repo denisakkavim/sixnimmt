@@ -4,6 +4,10 @@ from enum import StrEnum
 
 
 class ErrorCode(StrEnum):
+    MESSAGE_TOO_LONG = "message_too_long"
+    DIRECT_MESSAGES_DISABLED = "direct_messages_disabled"
+    RECIPIENT_NOT_FOUND = "recipient_not_found"
+    MALFORMED_REQUEST = "malformed_request"
     UNKNOWN_PLAYER = "unknown_player"
     MATCH_FINISHED = "match_finished"
     WRONG_PHASE = "wrong_phase"

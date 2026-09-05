@@ -155,19 +155,6 @@ def test_replay_carries_the_agent_metadata_the_admin_log_recorded() -> None:
     assert replayed.state.players == state.players
 
 
-def test_everything_but_the_action_count_replays_exactly_under_negotiation() -> None:
-    """§10.4: an explicit commit counts for the actor but emits no private event.
-
-    Publishing the count on the public `player_committed` would publish an
-    opponent's activity, so the private counterpart is designed with the rest of
-    negotiation. Until then a negotiated match replays exactly everywhere else.
-    """
-    live, log = _checkpoints(["alice", "bob"], seed=77, protocol=NEGOTIATED)[-1]
-
-    replayed = replay_events(log)
-
-    ignored = {"actions_taken_this_play"}
-    for live_player, replayed_player in zip(live.players, replayed.state.players, strict=True):
-        live_fields = live_player.model_dump(exclude=ignored)
-        replayed_fields = replayed_player.model_dump(exclude=ignored)
-        assert replayed_fields == live_fields
+def test_every_field_replays_after_each_negotiation_transition() -> None:
+    for live, log in _checkpoints(["alice", "bob"], seed=77, protocol=NEGOTIATED):
+        assert _comparable(replay_events(log).state) == _comparable(live)

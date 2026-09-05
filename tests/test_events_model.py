@@ -42,6 +42,7 @@ def test_all_event_types_exist() -> None:
         "hand_ended",
         "match_ended",
         "match_abandoned",
+        "action_counted",
         "action_rejected",
     }
 

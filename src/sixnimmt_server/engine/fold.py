@@ -6,22 +6,26 @@ the filter upstream rather than by remembering to blank a field here.
 """
 
 import hashlib
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from sixnimmt_server.engine.audience import Viewer, visible_events
+from sixnimmt_server.engine.audience import Viewer, addressed_player, visible_events
 from sixnimmt_server.engine.cards import bull_heads
 from sixnimmt_server.engine.events import Event
 from sixnimmt_server.engine.state import Phase
 from sixnimmt_server.engine.views import (
     MatchView,
+    MessageView,
     OpponentView,
     PlayerSelfView,
+    PrivateMessageView,
     RowView,
     ViewRole,
 )
 
 CARDS_PER_HAND = 10
+MAX_VIEW_MESSAGES = 100
 
 
 @dataclass
@@ -58,6 +62,10 @@ class _Fold:
     own_hand: list[int] = field(default_factory=list)
     own_selection: int | None = None
     own_actions: int = 0
+    own_remaining: int | None = None
+    explicit_counts: bool = False
+    messages: deque[MessageView | PrivateMessageView] = field(default_factory=lambda: deque(maxlen=MAX_VIEW_MESSAGES))
+    message_count: int = 0
     revealed_this_hand: list[tuple[int, ...]] = field(default_factory=list)
     awaiting: str | None = None
     winners: list[str] = field(default_factory=list)
@@ -99,7 +107,10 @@ def _start_play(state: _Fold, play_number: int) -> None:
     state.play_number = play_number
     state.own_selection = None
     state.own_actions = 0
+    state.own_remaining = state.max_actions_per_play
     state.awaiting = None
+    state.messages.clear()
+    state.message_count = 0
     for seat in state.seats.values():
         seat.has_selection = False
         seat.committed = False
@@ -115,6 +126,7 @@ def _bank_hand(state: _Fold, totals: dict[str, int]) -> None:
     """
     state.own_selection = None
     state.own_actions = 0
+    state.own_remaining = state.max_actions_per_play
     for player_id, total in totals.items():
         seat = _seat(state, player_id)
         seat.total_score = total
@@ -137,6 +149,27 @@ def _apply_reveal(state: _Fold, data: dict) -> None:
     state.own_selection = None
 
 
+def _apply_message(state: _Fold, event: Event, viewer: Viewer) -> None:
+    data = event.data
+    omniscient = viewer.role in (ViewRole.ADMIN, ViewRole.OMNISCIENT_OBSERVER)
+    entry: MessageView | PrivateMessageView
+    if event.type == "message_sent":
+        if data["visibility"] == "direct":
+            # Self-DMs are rejected by the engine so only one copy matches.
+            recipient = data["from"] if omniscient else viewer.player_id
+            if addressed_player(event) != recipient:
+                return
+        entry = MessageView(
+            from_player=data["from"], to_player=data.get("to"), visibility=data["visibility"], body=data["body"]
+        )
+    else:
+        if omniscient or (viewer.role == ViewRole.PLAYER and viewer.player_id in (data["from"], data["to"])):
+            return
+        entry = PrivateMessageView(from_player=data["from"], to_player=data["to"])
+    state.messages.append(entry)
+    state.message_count += 1
+
+
 def _apply(state: _Fold, event: Event, viewer: Viewer) -> None:  # noqa: C901
     data = event.data
     match event.type:
@@ -156,7 +189,14 @@ def _apply(state: _Fold, event: Event, viewer: Viewer) -> None:  # noqa: C901
             _start_play(state, data["play"])
         case "selection_made":
             state.own_selection = data["card"]
-            state.own_actions += 1
+            if not state.explicit_counts:
+                state.own_actions += 1
+        case "action_counted":
+            if data["player_id"] == viewer.player_id:
+                state.own_actions = data["actions_taken_this_play"]
+                state.own_remaining = data["actions_remaining_this_play"]
+        case "message_sent" | "private_message_occurred":
+            _apply_message(state, event, viewer)
         case "selection_registered":
             _seat(state, data["player_id"]).has_selection = True
         case "selection_cleared":
@@ -205,6 +245,8 @@ def _legal_actions(state: _Fold, viewer: Viewer) -> tuple[str, ...]:
     seat = state.seats.get(viewer.player_id or "")
     if seat is None:
         return ()
+    if state.max_actions_per_play is not None and state.own_actions >= state.max_actions_per_play:
+        return ()
     actions = ["select_card"]
     if state.negotiation_enabled:
         if state.own_selection is not None and not seat.committed:
@@ -241,8 +283,8 @@ def _view_id(viewer: Viewer, view_version: int) -> str:
 
 def _self_view(state: _Fold, viewer: Viewer) -> PlayerSelfView:
     seat = state.seats.get(viewer.player_id or "") if viewer.player_id else None
-    remaining = None
-    if state.max_actions_per_play is not None:
+    remaining = state.own_remaining
+    if not state.explicit_counts and state.max_actions_per_play is not None:
         remaining = max(0, state.max_actions_per_play - state.own_actions)
     return PlayerSelfView(
         player_id=viewer.player_id or "",
@@ -260,7 +302,8 @@ def _self_view(state: _Fold, viewer: Viewer) -> PlayerSelfView:
 def build_view(events: Sequence[Event], viewer: Viewer) -> MatchView:
     """Fold the viewer's visible events into the view they are entitled to."""
     visible = visible_events(events, viewer)
-    state = _Fold()
+    # Whole logs come from one writer version; old logs counted selections only.
+    state = _Fold(explicit_counts=any(event.type == "action_counted" for event in visible))
     for event in visible:
         _apply(state, event, viewer)
 
@@ -295,4 +338,7 @@ def build_view(events: Sequence[Event], viewer: Viewer) -> MatchView:
         awaiting=state.awaiting,
         legal_actions=_legal_actions(state, viewer),
         target_score=state.target_score,
+        messages=tuple(entry for entry in state.messages if isinstance(entry, MessageView)),
+        private_messages_observed=tuple(entry for entry in state.messages if isinstance(entry, PrivateMessageView)),
+        messages_omitted=state.message_count - len(state.messages),
     )

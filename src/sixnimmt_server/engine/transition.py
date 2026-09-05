@@ -4,17 +4,21 @@ from sixnimmt_server.engine.actions import (
     Action,
     ChooseRowAction,
     CommitAction,
+    MessageVisibility,
     SelectCardAction,
     SendMessageAction,
     UncommitAction,
 )
 from sixnimmt_server.engine.errors import EngineRejection, ErrorCode
 from sixnimmt_server.engine.events import (
+    ActionCountedEvent,
     CardsRevealedEvent,
     Event,
+    MessageSentEvent,
     PlayCommittedEvent,
     PlayerCommittedEvent,
     PlayerUncommittedEvent,
+    PrivateMessageOccurredEvent,
     SelectionClearedEvent,
     SelectionMadeEvent,
     SelectionRegisteredEvent,
@@ -23,7 +27,7 @@ from sixnimmt_server.engine.events import (
 from sixnimmt_server.engine.lifecycle import end_play
 from sixnimmt_server.engine.resolution import advance_resolution
 from sixnimmt_server.engine.resolution import choose_row as resolve_row_choice
-from sixnimmt_server.engine.rules import GameRules, MatchProtocol
+from sixnimmt_server.engine.rules import GameRules, MatchProtocol, PrivateMessageExistence
 from sixnimmt_server.engine.state import MatchState, Phase, ResolutionState
 
 
@@ -52,13 +56,27 @@ def _check_action_budget(state: MatchState, player_index: int, protocol: MatchPr
     raise EngineRejection(ErrorCode.ACTION_BUDGET_EXHAUSTED, msg)
 
 
-def _count_action(state: MatchState, player_index: int) -> MatchState:
+def _count_action(
+    state: MatchState, player_index: int, protocol: MatchProtocol
+) -> tuple[MatchState, ActionCountedEvent]:
     player = state.players[player_index]
-    return _replace_player(
-        state,
-        player_index,
-        actions_taken_this_play=player.actions_taken_this_play + 1,
+    count = player.actions_taken_this_play + 1
+    counted = _replace_player(state, player_index, actions_taken_this_play=count)
+    remaining = None if protocol.max_actions_per_play is None else protocol.max_actions_per_play - count
+    # Counts stay private even with a budget: publishing remaining actions would
+    # reveal hidden messages. This resolves the conflicting public-budget rule.
+    event = ActionCountedEvent(
+        match_id=state.match_id,
+        hand=state.hand_number,
+        play=state.play_number,
+        audience=audience_for_player(player.player_id),
+        data={
+            "player_id": player.player_id,
+            "actions_taken_this_play": count,
+            "actions_remaining_this_play": remaining,
+        },
     )
+    return counted, event
 
 
 def _selection_event(state: MatchState, player_id: str, card: int) -> Event:
@@ -184,9 +202,9 @@ def _select_card(
         raise EngineRejection(ErrorCode.CARD_NOT_IN_HAND, msg)
     _check_action_budget(state, player_index, protocol)
 
-    counted = _count_action(state, player_index)
+    counted, count_event = _count_action(state, player_index, protocol)
     selected = _replace_player(counted, player_index, selection=action.card, committed=False)
-    events: list[Event] = []
+    events: list[Event] = [count_event]
     # Replacing a selection always clears the old one publicly, even when the
     # new card is the same. Emitting different events for a changed card would
     # tell opponents whether a hidden selection actually moved.
@@ -228,9 +246,9 @@ def _commit(
         raise EngineRejection(ErrorCode.WRONG_PHASE, msg)
     _check_action_budget(state, player_index, protocol)
 
-    counted = _count_action(state, player_index)
+    counted, count_event = _count_action(state, player_index, protocol)
     committed = _replace_player(counted, player_index, committed=True)
-    events = [_public_player_event(state, PlayerCommittedEvent, player.player_id)]
+    events = [count_event, _public_player_event(state, PlayerCommittedEvent, player.player_id)]
     return _finish_commitment(committed, events, rules, protocol)
 
 
@@ -254,9 +272,10 @@ def _uncommit(
         raise EngineRejection(ErrorCode.CANNOT_UNCOMMIT_WHEN_ALL_COMMITTED, msg)
     _check_action_budget(state, player_index, protocol)
 
-    counted = _count_action(state, player_index)
+    counted, count_event = _count_action(state, player_index, protocol)
     uncommitted = _replace_player(counted, player_index, selection=None, committed=False)
     events = [
+        count_event,
         _public_player_event(state, PlayerUncommittedEvent, player.player_id),
         _public_player_event(state, SelectionClearedEvent, player.player_id),
     ]
@@ -279,12 +298,73 @@ def _choose_row_and_continue(
     return closed, [*events, *closing_events]
 
 
-def _reject_message(protocol: MatchProtocol) -> None:
+def _check_message_recipient(
+    state: MatchState, sender: str, action: SendMessageAction, protocol: MatchProtocol
+) -> None:
+    if action.visibility != MessageVisibility.DIRECT:
+        return
+    if action.to_player not in [player.player_id for player in state.players]:
+        msg = f"there is no player {action.to_player!a} in this match"
+        raise EngineRejection(ErrorCode.RECIPIENT_NOT_FOUND, msg)
+    # The view fold deduplicates direct copies by addressee; distinct parties
+    # are required for that rule to yield exactly one entry per message.
+    if action.to_player == sender:
+        msg = "direct messages must address another player"
+        raise EngineRejection(ErrorCode.MALFORMED_REQUEST, msg)
+    if not protocol.allow_direct_messages:
+        msg = "this match allows table messages only"
+        raise EngineRejection(ErrorCode.DIRECT_MESSAGES_DISABLED, msg)
+
+
+def _send_message(
+    state: MatchState, player_index: int, action: SendMessageAction, protocol: MatchProtocol
+) -> tuple[MatchState, list[Event]]:
     if not protocol.negotiation_enabled:
         msg = "messaging needs negotiation, which is disabled"
-    else:
-        msg = "messaging is not implemented by the classic engine"
-    raise EngineRejection(ErrorCode.NEGOTIATION_DISABLED, msg)
+        raise EngineRejection(ErrorCode.NEGOTIATION_DISABLED, msg)
+    if state.phase != Phase.SELECTING:
+        msg = f"cannot send messages during {state.phase.value}"
+        raise EngineRejection(ErrorCode.WRONG_PHASE, msg)
+    sender = state.players[player_index].player_id
+    _check_message_recipient(state, sender, action, protocol)
+    if len(action.body) > protocol.max_message_length:
+        msg = f"your message is {len(action.body)} characters; the limit is {protocol.max_message_length}"
+        raise EngineRejection(ErrorCode.MESSAGE_TOO_LONG, msg)
+    _check_action_budget(state, player_index, protocol)
+    counted, count_event = _count_action(state, player_index, protocol)
+    data = {"from": sender, "visibility": action.visibility.value, "body": action.body}
+    events: list[Event] = [count_event]
+    if action.visibility == MessageVisibility.TABLE:
+        events.append(
+            MessageSentEvent(
+                match_id=state.match_id, hand=state.hand_number, play=state.play_number, audience="public", data=data
+            )
+        )
+        return counted, events
+    recipient = action.to_player
+    assert recipient is not None  # noqa: S101 — validated by SendMessageAction.
+    data["to"] = recipient
+    for party in (sender, recipient):
+        events.append(
+            MessageSentEvent(
+                match_id=state.match_id,
+                hand=state.hand_number,
+                play=state.play_number,
+                audience=audience_for_player(party),
+                data=dict(data),
+            )
+        )
+    if protocol.information_policy.private_message_existence == PrivateMessageExistence.VISIBLE:
+        events.append(
+            PrivateMessageOccurredEvent(
+                match_id=state.match_id,
+                hand=state.hand_number,
+                play=state.play_number,
+                audience="public",
+                data={"from": sender, "to": recipient},
+            )
+        )
+    return counted, events
 
 
 def _awaited_player(state: MatchState) -> str:
@@ -325,6 +405,6 @@ def transition(
     if isinstance(action, UncommitAction):
         return _uncommit(state, player_index, protocol)
     if isinstance(action, SendMessageAction):
-        _reject_message(protocol)
+        return _send_message(state, player_index, action, protocol)
     msg = f"unsupported action {action.type}"
     raise EngineRejection(ErrorCode.WRONG_PHASE, msg)

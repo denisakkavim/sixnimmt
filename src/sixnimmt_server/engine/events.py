@@ -34,6 +34,7 @@ class EventType(StrEnum):
     HAND_ENDED = "hand_ended"
     MATCH_ENDED = "match_ended"
     MATCH_ABANDONED = "match_abandoned"
+    ACTION_COUNTED = "action_counted"
     ACTION_REJECTED = "action_rejected"
 
 
@@ -191,6 +192,10 @@ class MatchAbandonedEvent(EventBase):
     type: Literal[EventType.MATCH_ABANDONED] = EventType.MATCH_ABANDONED
 
 
+class ActionCountedEvent(EventBase):
+    type: Literal[EventType.ACTION_COUNTED] = EventType.ACTION_COUNTED
+
+
 class ActionRejectedEvent(EventBase):
     type: Literal[EventType.ACTION_REJECTED] = EventType.ACTION_REJECTED
 
@@ -221,6 +226,7 @@ Event = Annotated[
     | HandEndedEvent
     | MatchEndedEvent
     | MatchAbandonedEvent
+    | ActionCountedEvent
     | ActionRejectedEvent,
     Field(discriminator="type"),
 ]

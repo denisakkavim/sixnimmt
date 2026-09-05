@@ -77,6 +77,7 @@ def test_each_action_extends_the_log_as_it_is_applied(logged: Match, tmp_path: P
     written = _lines(_events_file(logged, tmp_path))
     assert len(written) > before
     assert [entry["type"] for entry in written[before:]] == [
+        "action_counted",
         "selection_made",
         "selection_registered",
         "player_committed",

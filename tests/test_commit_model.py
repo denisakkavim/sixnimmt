@@ -60,6 +60,7 @@ def test_select_card_commits_atomically_and_reveals_nothing() -> None:
     assert bob.selection is None
     assert bob.committed is False
     assert [event.type for event in events] == [
+        "action_counted",
         "selection_made",
         "selection_registered",
         "player_committed",
@@ -92,6 +93,7 @@ def test_reselecting_replaces_selection_without_losing_a_card() -> None:
     assert alice.committed is True
     assert alice.hand == original_hand
     assert [event.type for event in events] == [
+        "action_counted",
         "selection_cleared",
         "player_uncommitted",
         "selection_made",
@@ -116,14 +118,15 @@ def test_final_commit_reveals_all_selections_in_public() -> None:
     assert after_bob.resolution is None
     assert after_bob.play_number == 2
     assert after_bob.revealed_this_hand == (tuple(sorted((alice_card, bob_card))),)
-    assert [event.type for event in events[:5]] == [
+    assert [event.type for event in events[:6]] == [
+        "action_counted",
         "selection_made",
         "selection_registered",
         "player_committed",
         "play_committed",
         "cards_revealed",
     ]
-    revealed = events[4]
+    revealed = next(event for event in events if event.type == "cards_revealed")
     assert revealed.audience == "public"
     assert revealed.data == {"selections": {"alice": alice_card, "bob": bob_card}}
     placed = [event for event in events if event.type == "card_placed"]

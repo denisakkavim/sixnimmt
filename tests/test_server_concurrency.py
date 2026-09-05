@@ -137,7 +137,7 @@ async def test_a_final_commit_racing_a_selection_yields_one_consistent_outcome(n
 
 
 async def test_a_final_commit_racing_a_message_leaves_the_match_consistent(negotiating: AsyncMatch) -> None:
-    """Messaging is refused until phase 6; the race must still resolve cleanly."""
+    """A message belongs to the selecting play at its serialization point."""
     await _select_all(negotiating)
     await _commit_all_but(negotiating, held_back=["cara"])
 
@@ -147,7 +147,10 @@ async def test_a_final_commit_racing_a_message_leaves_the_match_consistent(negot
     )
 
     assert commit.status_code == 200
-    assert message.status_code == 409
+    if message.status_code != 200:
+        assert message.json()["error"]["code"] in {"NOT_YOUR_TURN", "MATCH_FINISHED"}
+    else:
+        assert message.json()["messages"][-1]["body"] == "please take row 2"
     table = await negotiating.state("bob")
     assert len(table["revealed_this_hand"]) == 1
 
@@ -276,3 +279,24 @@ async def test_a_caller_that_gives_up_mid_write_still_completes_its_transition(a
         record.sink = NullEventSink()
         await anyio.sleep(write_seconds)
         assert (await match.state("alice"))["you"]["selection"] == card
+
+
+@pytest.mark.parametrize("message_first", [True, False])
+async def test_guarded_message_and_final_commit_have_one_serialized_winner(
+    negotiating: AsyncMatch, message_first: bool
+) -> None:
+    await _select_all(negotiating)
+    await _commit_all_but(negotiating, held_back=["cara"])
+    version = (await negotiating.state("cara"))["view_version"]
+    message = lambda: negotiating.act(
+        "cara", type="send_message", visibility="table", body="wait", expected_view_version=version
+    )
+    commit = lambda: negotiating.act("cara", type="commit", expected_view_version=version)
+    calls = (message, commit) if message_first else (commit, message)
+    results = await _run_together(*calls)
+    assert sorted(response.status_code for response in results) == [200, 409]
+    rejected = next(response for response in results if response.status_code == 409)
+    assert rejected.json()["error"]["code"] == "VERSION_CONFLICT"
+    message_result = results[0 if message_first else 1]
+    table = await negotiating.state("alice")
+    assert len(table["revealed_this_hand"]) == (0 if message_result.status_code == 200 else 1)
