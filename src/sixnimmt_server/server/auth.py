@@ -80,8 +80,3 @@ class TokenRegistry:
         if grant is None or grant.match_id != match_id:
             return None
         return grant.viewer
-
-    def release_match(self, match_id: str) -> None:
-        """Forget an abandoned match's tokens once its record is gone."""
-        for token in [token for token, grant in self._grants.items() if grant.match_id == match_id]:
-            del self._grants[token]

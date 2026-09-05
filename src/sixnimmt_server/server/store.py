@@ -182,7 +182,7 @@ class MatchStore:
         tokens = self._registry.mint_for_match(match_id, [seat.player_id for seat in players])
         return record, tokens, match_seed
 
-    async def start(self, record: MatchRecord) -> MatchView:
+    async def start(self, record: MatchRecord) -> None:
         """Deal the first hand and open the first play."""
         async with record.lock:
             self._check_playable(record)
@@ -192,7 +192,6 @@ class MatchStore:
             state, events = start_match(record.state)
             record.state = state
             record.append(events, server_action_seq)
-        return record.view_for(Viewer(role=ViewRole.ADMIN))
 
     async def abandon(self, record: MatchRecord) -> None:
         """Append `match_abandoned`, then release the match's live resources.
@@ -214,6 +213,9 @@ class MatchStore:
             )
             record.append([abandoned], server_action_seq)
             record.abandoned = True
+            # Nothing can be applied to this match again, so the cached results
+            # have nothing left to deduplicate.
+            record.idempotency = IdempotencyCache()
         # Outside the lock: waiters wake to a closed sink and return
         # MATCH_ABANDONED rather than hanging until their timeout expires.
         record.sink.close()

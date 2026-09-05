@@ -280,15 +280,21 @@ async def stream_events(
 async def _stream_body(record: MatchRecord, viewer: Viewer, since: int) -> AsyncIterator[str]:
     """Replay from the caller's cursor, then follow their filtered stream live."""
     subscription = record.sink.subscribe(viewer)
+    # Fixed here, before any delivery moves it: everything up to this point is
+    # replayed, everything past it arrives through the subscription, and nothing
+    # is sent twice.
+    replay_through = subscription.cursor
     try:
         for cursor, event in record.sink.events_since(viewer, since):
-            if cursor <= subscription.cursor:
+            if cursor <= replay_through:
                 yield _sse_message(cursor, serialise_event(cursor, event, viewer.role), event.type.value)
         while True:
             try:
                 delivered = await subscription.next_event(STREAM_KEEPALIVE_SECONDS)
             except SinkClosed:
-                yield _sse_message(subscription.cursor, {"code": ApiErrorCode.MATCH_ABANDONED.value}, "match_closed")
+                # No id: this is the server explaining why the stream ended, not
+                # a match event, and it must not look like a cursor position.
+                yield _sse_message(None, {"code": ApiErrorCode.MATCH_ABANDONED.value}, "match_closed")
                 return
             if delivered is None:
                 # A comment keeps the connection alive without inventing an
@@ -301,8 +307,9 @@ async def _stream_body(record: MatchRecord, viewer: Viewer, since: int) -> Async
         record.sink.unsubscribe(subscription)
 
 
-def _sse_message(cursor: int, payload: dict[str, Any], event_type: str) -> str:
-    return f"id: {cursor}\nevent: {event_type}\ndata: {json.dumps(payload)}\n\n"
+def _sse_message(cursor: int | None, payload: dict[str, Any], event_type: str) -> str:
+    identifier = f"id: {cursor}\n" if cursor is not None else ""
+    return f"{identifier}event: {event_type}\ndata: {json.dumps(payload)}\n\n"
 
 
 @router.post("/matches/{match_id}/actions", response_model=MatchView)
