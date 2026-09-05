@@ -13,14 +13,15 @@ this module rather than by a check someone has to remember.
 
 import asyncio
 import json
+import os
 from collections import deque
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import IO, Any, Protocol
+from typing import Any, Protocol
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter
+from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from sixnimmt_server.engine.audience import Viewer, visible_to
 from sixnimmt_server.engine.events import Event
@@ -190,6 +191,119 @@ class NullEventSink:
         return
 
 
+class AtomicJsonlWriter:
+    """An append-only JSONL file whose batches land whole or not at all.
+
+    A batch is staged in a sidecar alongside the log, carrying the log's length
+    before the batch, and forced to disk before the log itself is touched. A
+    crash in between leaves the sidecar behind, and the next open truncates the
+    log back to that recorded length. An unacknowledged batch is therefore
+    discarded entire, rather than replayed as a fraction of a transition that
+    the live match never committed.
+
+    Readers apply the same rule without writing anything: `committed_text`
+    stops at the staged length, so a log recovered by a later process and one
+    merely read in place fold to the same events.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self._pending = pending_path(path)
+        self._recover()
+        # Appending, never truncating: an existing log is history, and §11.4
+        # requires it to survive everything that happens to the match.
+        self._handle = path.open("a", encoding="utf-8")
+
+    def _recover(self) -> None:
+        """Undo a batch that was staged but never acknowledged."""
+        staged = _staged_length(self._path)
+        if staged is not None and self._path.exists():
+            with self._path.open("r+", encoding="utf-8") as handle:
+                handle.truncate(staged)
+        self._pending.unlink(missing_ok=True)
+        _sync_directory(self._pending)
+
+    def write(self, payloads: list[dict[str, Any]]) -> None:
+        lines = "".join(json.dumps(payload, sort_keys=True) + "\n" for payload in payloads)
+        self._stage(lines)
+        # One call for the whole batch, then forced to the platter before the
+        # caller is told it was written: flushing alone leaves the tail of a
+        # match to the operating system's discretion (§11.3).
+        self._handle.write(lines)
+        self._handle.flush()
+        os.fsync(self._handle.fileno())
+        # Only now is the batch committed, and the intent to write it spent.
+        # Its removal has to outlive a crash too, or recovery would undo a
+        # batch this call is about to report as durable.
+        self._pending.unlink(missing_ok=True)
+        _sync_directory(self._pending)
+
+    def _stage(self, lines: str) -> None:
+        """Record where the log ends and what is about to be added to it."""
+        with self._pending.open("w", encoding="utf-8") as handle:
+            # The file's size on disk, not the handle's position: a text handle
+            # in append mode reports an offset that is not a byte count.
+            committed_length = self._path.stat().st_size
+            json.dump({"committed_length": committed_length, "bytes": len(lines)}, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _sync_directory(self._pending)
+
+    def close(self) -> None:
+        self._handle.close()
+
+
+def pending_path(path: Path) -> Path:
+    return path.with_name(path.name + ".pending")
+
+
+def _sync_directory(path: Path) -> None:
+    """Make the creation or removal of a file's directory entry durable.
+
+    Unlinking a file is not itself on disk until its parent directory is
+    synced. Without this a crash could resurrect a sidecar that had already
+    been spent, and recovery would then roll back a batch that the match had
+    committed and published. Platforms that cannot sync a directory simply do
+    not gain the guarantee; nothing else depends on it.
+    """
+    try:
+        handle = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(handle)
+    finally:
+        os.close(handle)
+
+
+def _staged_length(path: Path) -> int | None:
+    """How long the log was before an unacknowledged batch, if there was one.
+
+    A sidecar too damaged to read is one that a crash caught mid-stage, before
+    the log itself was touched, so there is nothing to undo and no length to
+    report.
+    """
+    pending = pending_path(path)
+    if not pending.exists():
+        return None
+    try:
+        staged = json.loads(pending.read_text(encoding="utf-8"))
+        return int(staged["committed_length"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def committed_text(path: Path) -> str:
+    """The log as far as its last acknowledged batch."""
+    text = path.read_text(encoding="utf-8")
+    staged = _staged_length(path)
+    if staged is None:
+        return text
+    # Byte length on disk, character offset in memory: the log is written as
+    # ASCII-safe JSON, so encoding once is cheaper than reasoning about both.
+    return text.encode("utf-8")[:staged].decode("utf-8")
+
+
 class JsonlEventSink:
     """One JSONL file per match, with its action records beside it.
 
@@ -200,28 +314,25 @@ class JsonlEventSink:
 
     def __init__(self, directory: Path, match_id: str) -> None:
         directory.mkdir(parents=True, exist_ok=True)
-        # Appending, never truncating: an existing log is history, and §11.4
-        # requires it to survive everything that happens to the match.
-        self._events = event_log_path(directory, match_id).open("a", encoding="utf-8")
-        self._actions = action_log_path(directory, match_id).open("a", encoding="utf-8")
+        self._events = AtomicJsonlWriter(event_log_path(directory, match_id))
+        self._actions = AtomicJsonlWriter(action_log_path(directory, match_id))
         self._closed = False
 
     def append(self, events: Sequence[Event]) -> None:
-        for event in events:
-            self._write(self._events, event.model_dump(mode="json"))
+        if not events:
+            return
+        self._write(self._events, [event.model_dump(mode="json") for event in events])
 
     def record_action(self, record: ActionRecord) -> None:
-        self._write(self._actions, record.model_dump(mode="json"))
+        self._write(self._actions, [record.model_dump(mode="json")])
 
-    def _write(self, handle: IO[str], payload: dict[str, Any]) -> None:
+    def _write(self, writer: AtomicJsonlWriter, payloads: list[dict[str, Any]]) -> None:
         if self._closed:
             # Abandonment releases the match's handles while its log stays on
             # disk. Nothing can be applied to the match afterwards, so a late
             # write has nothing left to record.
             return
-        handle.write(json.dumps(payload, sort_keys=True) + "\n")
-        # Flushed as written (§11.3): a crash must not cost the tail of a match.
-        handle.flush()
+        writer.write(payloads)
 
     def close(self) -> None:
         if self._closed:
@@ -240,15 +351,36 @@ def action_log_path(directory: Path, match_id: str) -> Path:
 
 
 def _lines(path: Path) -> Iterator[str]:
-    with path.open(encoding="utf-8") as handle:
-        for line in handle:
-            if line.strip():
-                yield line
+    for line in committed_text(path).splitlines():
+        if line.strip():
+            yield line
+
+
+def _parse_log(path: Path, parse: Callable[[str], Any]) -> list[Any]:
+    """Every record in a log, discarding a final line a crash left half-written.
+
+    A batch is written and forced to disk in one call, so the only line that can
+    be incomplete is the last, left by a crash mid-write. Dropping that one is
+    recovery. An unreadable line anywhere earlier is real corruption, and a file
+    whose every line is unreadable is not a match log at all; both still raise,
+    because a reader that silently returns nothing is worse than one that stops.
+    """
+    lines = list(_lines(path))
+    records: list[Any] = []
+    for index, line in enumerate(lines):
+        try:
+            records.append(parse(line))
+        except ValidationError:
+            is_final_line = index == len(lines) - 1
+            if is_final_line and records:
+                break
+            raise
+    return records
 
 
 def read_event_log(path: Path) -> list[Event]:
     """Every event in a match log, in the order the server wrote it."""
-    return [_EVENT_ADAPTER.validate_json(line) for line in _lines(path)]
+    return _parse_log(path, _EVENT_ADAPTER.validate_json)
 
 
 def read_action_log(path: Path) -> list[ActionRecord]:
@@ -257,4 +389,4 @@ def read_action_log(path: Path) -> list[ActionRecord]:
     Records are written inside the per-match serialisation boundary, so the file
     order is the processing order §11.1 makes canonical.
     """
-    return [ActionRecord.model_validate_json(line) for line in _lines(path)]
+    return _parse_log(path, ActionRecord.model_validate_json)
