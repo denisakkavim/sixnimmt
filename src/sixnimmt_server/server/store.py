@@ -14,6 +14,7 @@ from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sixnimmt_server.engine.actions import (
     Action,
@@ -40,7 +41,13 @@ from sixnimmt_server.engine.transition import transition
 from sixnimmt_server.engine.views import MatchView, ViewRole
 from sixnimmt_server.server.auth import MatchTokens, TokenRegistry
 from sixnimmt_server.server.errors import ApiError, ApiErrorCode, api_code_for, match_not_found
-from sixnimmt_server.server.sink import InMemoryEventSink
+from sixnimmt_server.server.sink import (
+    ActionRecord,
+    EventSink,
+    JsonlEventSink,
+    LiveEventStream,
+    NullEventSink,
+)
 
 # Retained per player, never per match: a shared bound would let one player's
 # traffic evict another's entries, and the change in dedup behaviour that
@@ -56,18 +63,6 @@ def _fingerprint(action: Action) -> str:
     """
     payload = action.model_dump(mode="json", exclude={"action_id", "from_view", "expected_view_version"})
     return json.dumps(payload, sort_keys=True)
-
-
-@dataclass(frozen=True)
-class ActionRecord:
-    """The canonical order actions were processed in (§11.1)."""
-
-    server_action_seq: int
-    action_id: str
-    player_id: str
-    type: str
-    from_view: str | None
-    received_at: datetime
 
 
 @dataclass
@@ -104,7 +99,10 @@ class MatchRecord:
     state: MatchState
     rules: GameRules
     protocol: MatchProtocol
-    sink: InMemoryEventSink = field(default_factory=InMemoryEventSink)
+    # The live copy, which serves cursors and subscribers, and the durable one,
+    # which the match can be rebuilt from long after this process is gone.
+    stream: LiveEventStream = field(default_factory=LiveEventStream)
+    sink: EventSink = field(default_factory=NullEventSink)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     idempotency: IdempotencyCache = field(default_factory=IdempotencyCache)
     action_records: list[ActionRecord] = field(default_factory=list)
@@ -125,18 +123,25 @@ class MatchRecord:
     def append(self, events: Sequence[Event], server_action_seq: int) -> None:
         numbered = assign_sequence(list(events), self.next_seq, server_action_seq)
         self.next_seq += len(numbered)
+        self.stream.append(numbered)
         self.sink.append(numbered)
+
+    def record_action(self, action_record: ActionRecord) -> None:
+        """Keep the canonical processing order, in memory and on disk."""
+        self.action_records.append(action_record)
+        self.sink.record_action(action_record)
 
     def view_for(self, viewer: Viewer) -> MatchView:
         """Fold the caller's own filtered stream. The only projection there is."""
-        return build_view(self.sink.visible_stream(viewer), viewer)
+        return build_view(self.stream.visible_stream(viewer), viewer)
 
 
 class MatchStore:
     """The registry. Owns match records, tokens, and the serialisation boundary."""
 
-    def __init__(self, registry: TokenRegistry) -> None:
+    def __init__(self, registry: TokenRegistry, log_directory: Path | None = None) -> None:
         self._registry = registry
+        self._log_directory = log_directory
         self._matches: dict[str, MatchRecord] = {}
 
     @property
@@ -176,11 +181,23 @@ class MatchStore:
         except EngineRejection as rejection:
             raise ApiError(api_code_for(rejection.code), str(rejection)) from rejection
 
-        record = MatchRecord(match_id=match_id, state=state, rules=rules, protocol=protocol)
+        record = MatchRecord(
+            match_id=match_id,
+            state=state,
+            rules=rules,
+            protocol=protocol,
+            sink=self._sink_for(match_id),
+        )
         record.append(events, server_action_seq=0)
         self._matches[match_id] = record
         tokens = self._registry.mint_for_match(match_id, [seat.player_id for seat in players])
         return record, tokens, match_seed
+
+    def _sink_for(self, match_id: str) -> EventSink:
+        """A file-backed log when the server was given a directory, else none."""
+        if self._log_directory is None:
+            return NullEventSink()
+        return JsonlEventSink(self._log_directory, match_id)
 
     async def start(self, record: MatchRecord) -> None:
         """Deal the first hand and open the first play."""
@@ -216,8 +233,10 @@ class MatchStore:
             # Nothing can be applied to this match again, so the cached results
             # have nothing left to deduplicate.
             record.idempotency = IdempotencyCache()
-        # Outside the lock: waiters wake to a closed sink and return
+        # Outside the lock: waiters wake to a closed stream and return
         # MATCH_ABANDONED rather than hanging until their timeout expires.
+        record.stream.close()
+        # The handles go with them; §11.4 keeps the log itself on disk.
         record.sink.close()
 
     async def apply_action(
@@ -236,7 +255,7 @@ class MatchStore:
                 return self._replay(cached, action)
 
             server_action_seq = self._next_action_seq(record)
-            record.action_records.append(
+            record.record_action(
                 ActionRecord(
                     server_action_seq=server_action_seq,
                     action_id=action_id,
@@ -349,7 +368,7 @@ class MatchStore:
         expected = action.expected_view_version
         if expected is None:
             return
-        current = record.sink.view_version(viewer)
+        current = record.stream.view_version(viewer)
         if expected == current:
             return
         raise ApiError(
@@ -412,7 +431,7 @@ class MatchStore:
         time a duplicate arrives nothing in the state remembers the choice. The
         log does, and both events involved are public.
         """
-        required = [event for event in record.sink.events if event.type == EventType.ROW_CHOICE_REQUIRED]
+        required = [event for event in record.stream.events if event.type == EventType.ROW_CHOICE_REQUIRED]
         if not required:
             return code
         latest = required[-1]
@@ -420,6 +439,6 @@ class MatchStore:
             return code
         answered = any(
             event.type == EventType.ROW_CHOICE_MADE and (event.hand, event.play) == (latest.hand, latest.play)
-            for event in record.sink.events
+            for event in record.stream.events
         )
         return ApiErrorCode.ROW_ALREADY_CHOSEN if answered else code

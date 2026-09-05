@@ -179,10 +179,10 @@ async def read_events(
 ) -> EventsResponse:
     """The caller's own event stream, contiguous from 1, `since` exclusive."""
     record, viewer = _authorise(request, match_id)
-    numbered = record.sink.events_since(viewer, since, limit)
+    numbered = record.stream.events_since(viewer, since, limit)
     return EventsResponse(
         match_id=match_id,
-        view_version=record.sink.view_version(viewer),
+        view_version=record.stream.view_version(viewer),
         events=[serialise_event(cursor, event, viewer.role) for cursor, event in numbered],
     )
 
@@ -201,7 +201,7 @@ async def wait_for_events(
     call early nor moves their cursor.
     """
     record, viewer = _authorise(request, match_id)
-    subscription = record.sink.subscribe(viewer)
+    subscription = record.stream.subscribe(viewer)
     deadline = min(timeout, MAX_WAIT_SECONDS)
     try:
         # Subscribed before the first check, so an event landing between the two
@@ -218,11 +218,11 @@ async def wait_for_events(
     except SinkClosed:
         raise ApiError(ApiErrorCode.MATCH_ABANDONED, f"match {match_id} has been abandoned") from None
     finally:
-        record.sink.unsubscribe(subscription)
+        record.stream.unsubscribe(subscription)
 
 
 def _should_return_now(record: MatchRecord, viewer: Viewer, since: int) -> bool:
-    if record.sink.events_since(viewer, since):
+    if record.stream.events_since(viewer, since):
         return True
     view = record.view_for(viewer)
     if view.status != "in_progress":
@@ -248,7 +248,7 @@ def _match_awaits(view: MatchView, viewer: Viewer) -> bool:
 
 
 def _wait_response(record: MatchRecord, viewer: Viewer, since: int, timed_out: bool) -> WaitResponse:
-    numbered = record.sink.events_since(viewer, since)
+    numbered = record.stream.events_since(viewer, since)
     view = record.view_for(viewer)
     return WaitResponse(
         match_id=record.match_id,
@@ -279,13 +279,13 @@ async def stream_events(
 
 async def _stream_body(record: MatchRecord, viewer: Viewer, since: int) -> AsyncIterator[str]:
     """Replay from the caller's cursor, then follow their filtered stream live."""
-    subscription = record.sink.subscribe(viewer)
+    subscription = record.stream.subscribe(viewer)
     # Fixed here, before any delivery moves it: everything up to this point is
     # replayed, everything past it arrives through the subscription, and nothing
     # is sent twice.
     replay_through = subscription.cursor
     try:
-        for cursor, event in record.sink.events_since(viewer, since):
+        for cursor, event in record.stream.events_since(viewer, since):
             if cursor <= replay_through:
                 yield _sse_message(cursor, serialise_event(cursor, event, viewer.role), event.type.value)
         while True:
@@ -304,7 +304,7 @@ async def _stream_body(record: MatchRecord, viewer: Viewer, since: int) -> Async
             cursor, event = delivered
             yield _sse_message(cursor, serialise_event(cursor, event, viewer.role), event.type.value)
     finally:
-        record.sink.unsubscribe(subscription)
+        record.stream.unsubscribe(subscription)
 
 
 def _sse_message(cursor: int | None, payload: dict[str, Any], event_type: str) -> str:

@@ -1,15 +1,19 @@
-"""Command-line interface for deterministic in-process arenas."""
+"""Command-line interface: deterministic arenas, the HTTP server, and replay."""
 
+from pathlib import Path
 from typing import Annotated
 
 import typer
 import uvicorn
+from pydantic import ValidationError
 from typer._click.core import Context
 from typer.core import TyperCommand
 
 from sixnimmt_server.arena.runner import ArenaError, ArenaResult, run_arena
+from sixnimmt_server.engine.replay import ReplayedMatch, replay_events
 from sixnimmt_server.server.app import create_app
 from sixnimmt_server.server.auth import mint_token
+from sixnimmt_server.server.sink import read_event_log
 
 
 class PlayersCommand(TyperCommand):
@@ -99,6 +103,10 @@ def serve(
         str | None,
         typer.Option("--admin-token", help="Admin bearer token. Generated and printed when omitted."),
     ] = None,
+    log_dir: Annotated[
+        Path,
+        typer.Option("--log-dir", help="Directory for per-match JSONL logs."),
+    ] = Path("logs"),
 ) -> None:
     """Run the HTTP game server."""
     token = admin_token or mint_token()
@@ -106,4 +114,37 @@ def serve(
         # Match creation needs this before any match exists, so it cannot be
         # minted per match and has to be told to the operator once.
         typer.echo(f"admin token: {token}")
-    uvicorn.run(create_app(admin_token=token), host=host, port=port)
+    typer.echo(f"match logs: {log_dir}")
+    uvicorn.run(create_app(admin_token=token, log_directory=log_dir), host=host, port=port)
+
+
+def _print_replay(replayed: ReplayedMatch, events: int) -> None:
+    state = replayed.state
+    typer.echo(f"match={state.match_id}")
+    typer.echo(f"status={replayed.status}")
+    typer.echo(f"events={events}")
+    typer.echo(f"hands={state.hand_number}")
+    typer.echo(f"plays={state.play_number}")
+    for player in state.players:
+        typer.echo(
+            f"{player.player_id} total_score={player.total_score} "
+            f"score_this_hand={player.score_this_hand} cards_in_hand={len(player.hand)}"
+        )
+    typer.echo(f"winners={','.join(replayed.winners)}")
+
+
+@app.command()
+def replay(
+    path: Annotated[Path, typer.Argument(help="A match log written by the server, logs/{match_id}.jsonl.")],
+) -> None:
+    """Fold a match log back into its final state and print the result."""
+    if not path.is_file():
+        typer.echo(f"Error: no match log at {path}", err=True)
+        raise typer.Exit(code=2)
+    try:
+        events = read_event_log(path)
+    except ValidationError as error:
+        typer.echo(f"Error: {path} is not a match log: {error.error_count()} unreadable entries", err=True)
+        raise typer.Exit(code=2) from error
+
+    _print_replay(replay_events(events), len(events))

@@ -212,3 +212,6 @@ __marimo__/
 
 # Claude
 .claude/settings*
+
+# Match logs written by `sixnimmt serve`
+logs/

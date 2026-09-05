@@ -1,5 +1,7 @@
 """The FastAPI application: wiring, and rendering every refusal as §9.4's shape."""
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -23,13 +25,18 @@ def _error_response(error: ApiError) -> JSONResponse:
     return JSONResponse(status_code=error.status, content=body.model_dump(mode="json"))
 
 
-def create_app(admin_token: str | None = None) -> FastAPI:
+def create_app(admin_token: str | None = None, log_directory: Path | None = None) -> FastAPI:
     """Build the server. The admin token is server-wide because match creation
-    needs authority before any match exists."""
+    needs authority before any match exists.
+
+    Without a log directory the server keeps its matches in memory alone, which
+    is what an in-process harness wants; with one, every match is written to
+    `{log_directory}/{match_id}.jsonl` and can be replayed afterwards.
+    """
     app = FastAPI(title="6 nimmt! game server", version="1.0.0")
     tokens = TokenRegistry(admin_token or mint_token())
     app.state.tokens = tokens
-    app.state.store = MatchStore(tokens)
+    app.state.store = MatchStore(tokens, log_directory=log_directory)
     app.include_router(router)
 
     @app.exception_handler(ApiError)

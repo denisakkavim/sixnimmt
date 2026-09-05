@@ -9,6 +9,7 @@ from sixnimmt_server.arena.bots import RandomBot
 from sixnimmt_server.arena.runner import derive_seed, observe_player, run_match
 from sixnimmt_server.engine.cards import bull_heads
 from sixnimmt_server.engine.events import Event
+from sixnimmt_server.engine.replay import replay_events
 from sixnimmt_server.engine.state import MatchState, Phase
 
 
@@ -36,6 +37,8 @@ class MatchLedger:
         self.capture_row: int | None = None
         self.owners: dict[int, str] = {}
         self.finished = False
+        # Kept whole so the match can be rebuilt from it once it is over.
+        self.log: list[Event] = []
 
     def _check_cards(self) -> None:
         cards = [card for hand in self.hands.values() for card in hand]
@@ -194,6 +197,7 @@ class MatchLedger:
                 self.finished = True
 
     def __call__(self, state: MatchState, events: tuple[Event, ...]) -> None:
+        self.log.extend(events)
         for event in events:
             self._fold(event)
         assert [list(row.cards) for row in state.rows] == self.rows
@@ -221,6 +225,18 @@ class MatchLedger:
             assert self.pending == []
 
 
+def _assert_replay_matches(log: list[Event], live: MatchState) -> None:
+    """The log rebuilds the match exactly, so nothing changed state in silence.
+
+    Only the undealt remainder is compared loosely: the deal records which cards
+    went to hands and rows, but nothing records the order of the ones it never
+    used.
+    """
+    replayed = replay_events(log).state
+    assert Counter(replayed.undealt_remainder) == Counter(live.undealt_remainder)
+    assert replayed.model_dump(exclude={"undealt_remainder"}) == live.model_dump(exclude={"undealt_remainder"})
+
+
 def _validate_matches(player_count: int, games: int) -> None:
     for game in range(games):
         ledger = MatchLedger(player_count)
@@ -232,6 +248,7 @@ def _validate_matches(player_count: int, games: int) -> None:
         assert ledger.placements == ledger.completed_hands * 10 * player_count
         assert ledger.captures > 0
         assert result.winners == ledger.winners
+        _assert_replay_matches(ledger.log, result.final_state)
 
 
 @pytest.mark.parametrize("player_count", [2, 3, 5, 10])
