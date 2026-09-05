@@ -15,7 +15,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-from sixnimmt_server.engine.actions import Action, ChooseRowAction, MessageVisibility, SendMessageAction
+from sixnimmt_server.engine.actions import (
+    Action,
+    ChooseRowAction,
+    MessageVisibility,
+    SendMessageAction,
+    UncommitAction,
+)
 from sixnimmt_server.engine.audience import Viewer
 from sixnimmt_server.engine.errors import EngineRejection
 from sixnimmt_server.engine.events import (
@@ -378,7 +384,24 @@ class MatchStore:
             return ApiError(ApiErrorCode.MATCH_NOT_STARTED, f"match {record.match_id} has not been started yet")
         if isinstance(action, ChooseRowAction):
             code = self._refine_row_choice(record, player_id, code)
+        if isinstance(action, UncommitAction):
+            code = self._refine_uncommit(record, code)
         return ApiError(code, str(rejection))
+
+    def _refine_uncommit(self, record: MatchRecord, code: ApiErrorCode) -> ApiErrorCode:
+        """Name the real reason an uncommit came too late.
+
+        The engine's own all-committed check can never fire: unanimity resolves
+        the play in the same transition, so a later caller meets a phase guard
+        instead and is told whose turn it is. That answers a question they did
+        not ask. What actually happened is that the play was committed and can
+        no longer be withdrawn from, which is the rule §7.2 states.
+        """
+        withdrawable = code in (ApiErrorCode.WRONG_PHASE, ApiErrorCode.NOT_YOUR_TURN)
+        committed_play = record.state.phase in (Phase.RESOLVING, Phase.AWAITING_ROW_CHOICE)
+        if record.protocol.negotiation_enabled and withdrawable and committed_play:
+            return ApiErrorCode.CANNOT_UNCOMMIT_WHEN_ALL_COMMITTED
+        return code
 
     def _refine_row_choice(self, record: MatchRecord, player_id: str, code: ApiErrorCode) -> ApiErrorCode:
         """Tell a late row choice apart from one that was never pending.

@@ -65,7 +65,10 @@ class SendMessageAction(ActionEnvelope):
 
 class ChooseRowAction(ActionEnvelope):
     type: Literal[ActionType.CHOOSE_ROW] = ActionType.CHOOSE_ROW
-    row_index: int = Field(ge=0, le=3)
+    # Unbounded here on purpose: which rows exist is a rule the engine owns and
+    # the configuration can change, so it rejects a bad index rather than the
+    # action model refusing to parse one.
+    row_index: int
 
 
 Action = Annotated[
