@@ -209,6 +209,7 @@ def test_every_documented_error_code_is_produced_by_a_real_scenario(client: Test
         pytest.param([{"id": "solo"}], "INVALID_PLAYER_COUNT", id="too_few"),
         pytest.param([{"id": "a"}, {"id": "a"}], "DUPLICATE_PLAYER_ID", id="duplicates"),
         pytest.param([{"id": ""}, {"id": "b"}], "INVALID_PLAYER_ID", id="empty_id"),
+        pytest.param([{"id": "alice:bot"}, {"id": "b"}], "INVALID_PLAYER_ID", id="id_the_audience_cannot_address"),
     ],
 )
 def test_a_badly_specified_match_is_refused_at_creation(client: TestClient, players: list[dict], expected: str) -> None:
@@ -220,6 +221,37 @@ def test_a_badly_specified_match_is_refused_at_creation(client: TestClient, play
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == expected
+
+
+def test_a_match_cannot_be_created_with_a_ruleset_the_engine_would_ignore(client: TestClient) -> None:
+    """Non-published table shapes are refused rather than accepted and ignored.
+
+    A match reported as dealing one card each while the engine deals ten would
+    be unplayable and unreproducible, so creation fails instead.
+    """
+    response = client.post(
+        "/matches",
+        json={"players": [{"id": "alice"}, {"id": "bob"}], "seed": 1, "rules": {"cards_per_hand": 1}},
+        headers={"Authorization": "Bearer admin-token-for-tests"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "MALFORMED_REQUEST"
+
+
+def test_a_match_created_with_the_published_ruleset_is_accepted(client: TestClient) -> None:
+    """Sending the rules explicitly must stay as good as leaving them out."""
+    response = client.post(
+        "/matches",
+        json={
+            "players": [{"id": "alice"}, {"id": "bob"}],
+            "seed": 1,
+            "rules": {"cards_per_hand": 10, "row_count": 4, "row_capacity": 5, "deck_size": 104},
+        },
+        headers={"Authorization": "Bearer admin-token-for-tests"},
+    )
+
+    assert response.status_code == 200
 
 
 def test_a_pathological_agent_leaves_the_match_playable(match: Match) -> None:
@@ -264,3 +296,34 @@ def test_a_stale_from_view_never_costs_the_caller_anything(match: Match) -> None
 
     assert response.status_code == 200
     assert response.json()["you"]["selection"] == card
+
+
+@pytest.mark.parametrize(
+    ("seat", "description"),
+    [
+        pytest.param('{"id": "alice", "display_name": "\\ud800"}', "a display name that cannot be encoded", id="name"),
+        pytest.param(
+            '{"id": "alice", "agent_metadata": {"note": "\\ud800"}}', "metadata that cannot be", id="metadata"
+        ),
+        pytest.param(
+            '{"id": "alice", "agent_metadata": {"blob": "' + "x" * 5000 + '"}}', "oversized metadata", id="big"
+        ),
+    ],
+)
+def test_a_seat_the_server_could_not_render_back_is_refused(client: TestClient, seat: str, description: str) -> None:
+    """Anything copied into an event, a log and a response must survive all three.
+
+    The body is sent as raw bytes because a lone surrogate is exactly what a
+    JSON escape can express and an encoder cannot: no well-behaved client
+    library would be able to build this request.
+    """
+    body = '{"players": [' + seat + ', {"id": "bob"}], "seed": 1}'
+
+    response = client.post(
+        "/matches",
+        content=body.encode(),
+        headers={"Authorization": "Bearer admin-token-for-tests", "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "MALFORMED_REQUEST"
