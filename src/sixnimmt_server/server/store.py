@@ -65,7 +65,9 @@ class ActionRecord:
 
 
 @dataclass
-class _CacheEntry:
+class CacheEntry:
+    """One remembered outcome: the view it produced, or the refusal it raised."""
+
     fingerprint: str
     view: MatchView | None
     error: ApiError | None
@@ -76,12 +78,12 @@ class IdempotencyCache:
 
     def __init__(self, entries_per_player: int = IDEMPOTENCY_ENTRIES_PER_PLAYER) -> None:
         self._entries_per_player = entries_per_player
-        self._by_player: dict[str, OrderedDict[str, _CacheEntry]] = {}
+        self._by_player: dict[str, OrderedDict[str, CacheEntry]] = {}
 
-    def get(self, player_id: str, action_id: str) -> _CacheEntry | None:
+    def get(self, player_id: str, action_id: str) -> CacheEntry | None:
         return self._by_player.get(player_id, OrderedDict()).get(action_id)
 
-    def put(self, player_id: str, action_id: str, entry: _CacheEntry) -> None:
+    def put(self, player_id: str, action_id: str, entry: CacheEntry) -> None:
         entries = self._by_player.setdefault(player_id, OrderedDict())
         entries[action_id] = entry
         while len(entries) > self._entries_per_player:
@@ -266,7 +268,7 @@ class MatchStore:
         record.state = state
         record.append(events, server_action_seq)
         view = record.view_for(viewer)
-        record.idempotency.put(player_id, action_id, _CacheEntry(_fingerprint(action), view, None))
+        record.idempotency.put(player_id, action_id, CacheEntry(_fingerprint(action), view, None))
         return view
 
     def _reject(
@@ -301,9 +303,9 @@ class MatchStore:
         refusal.view_version = view.view_version
         # Cached because it emitted an event and moved the caller's cursor;
         # replaying it on retry is what stops one mistake being counted twice.
-        record.idempotency.put(player_id, action_id, _CacheEntry(_fingerprint(action), None, refusal))
+        record.idempotency.put(player_id, action_id, CacheEntry(_fingerprint(action), None, refusal))
 
-    def _replay(self, cached: _CacheEntry, action: Action) -> MatchView:
+    def _replay(self, cached: CacheEntry, action: Action) -> MatchView:
         if cached.fingerprint != _fingerprint(action):
             raise ApiError(
                 ApiErrorCode.IDEMPOTENCY_KEY_REUSED,
