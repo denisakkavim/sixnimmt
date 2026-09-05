@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from sixnimmt_server.common.text import check_representable
 from sixnimmt_server.engine.events import Event
 from sixnimmt_server.engine.rules import GameRules, MatchProtocol
 from sixnimmt_server.engine.views import ViewRole
@@ -24,29 +25,6 @@ _ROLES_SEEING_GLOBAL_SEQUENCE = (ViewRole.ADMIN, ViewRole.OMNISCIENT_OBSERVER)
 # otherwise be accepted at creation and fail every read of the match afterwards.
 MAX_DISPLAY_NAME_LENGTH = 200
 MAX_METADATA_BYTES = 4096
-MAX_METADATA_DEPTH = 8
-
-
-def _check_representable(value: Any, depth: int = 0) -> None:
-    """Refuse anything the server could not put back on the wire or in its log."""
-    if depth > MAX_METADATA_DEPTH:
-        msg = f"nested more than {MAX_METADATA_DEPTH} levels deep"
-        raise ValueError(msg)
-    if isinstance(value, str):
-        try:
-            value.encode("utf-8")
-        except UnicodeEncodeError as broken:
-            msg = "contains text that cannot be encoded as UTF-8, such as a lone surrogate"
-            raise ValueError(msg) from broken
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            _check_representable(key, depth + 1)
-            _check_representable(item, depth + 1)
-        return
-    if isinstance(value, list):
-        for item in value:
-            _check_representable(item, depth + 1)
 
 
 class PlayerSpec(BaseModel):
@@ -61,13 +39,13 @@ class PlayerSpec(BaseModel):
     @field_validator("display_name")
     @classmethod
     def _check_display_name(cls, value: str) -> str:
-        _check_representable(value)
+        check_representable(value)
         return value
 
     @field_validator("agent_metadata")
     @classmethod
     def _check_agent_metadata(cls, value: dict[str, Any]) -> dict[str, Any]:
-        _check_representable(value)
+        check_representable(value)
         # Opaque to the server but not unbounded: it is written to the log on
         # every match, and nothing downstream benefits from an unlimited blob.
         encoded = json.dumps(value).encode("utf-8")

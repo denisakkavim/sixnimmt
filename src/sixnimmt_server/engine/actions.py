@@ -3,7 +3,9 @@
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from sixnimmt_server.common.text import check_representable
 
 
 class ActionType(StrEnum):
@@ -51,6 +53,12 @@ class SendMessageAction(ActionEnvelope):
     visibility: MessageVisibility
     body: str
     to_player: str | None = None
+
+    @field_validator("body", "to_player")
+    @classmethod
+    def _check_text(cls, value: str | None) -> str | None:
+        check_representable(value)
+        return value
 
     @model_validator(mode="after")
     def _check_recipient(self) -> "SendMessageAction":
