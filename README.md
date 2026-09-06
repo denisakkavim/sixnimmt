@@ -210,8 +210,20 @@ The state view includes `messages`, `private_messages_observed`, and
 messages from the current play and reset when the next play starts. Direct-message
 content appears once for each participant or privileged observer. Other viewers
 see only the parties when `information_policy.private_message_existence` is
-`"visible"`; with `"hidden"`, their views and cursors do not change. Use `/events`
-for cross-play history and ordering between content and occurrence entries.
+`"visible"`; with `"hidden"`, their views and cursors do not change.
+The additional `message_history` list retains the latest 100 eligible messages
+across plays and hands, in visible event order. Each entry includes `hand_number`,
+`play_number`, and a `message` with the same content/occurrence visibility rules.
+Use `/events` for a complete history beyond these bounded windows.
+
+All player and spectator state views also include `play_history`: the latest 20
+publicly revealed plays, oldest first, retained across hand boundaries. Each play
+has `hand_number`, `play_number`, and `cards` in ascending placement order. Each
+card records `player_id`, `card`, `row_index` (null until placed), and `captured`
+cards. Selections enter this history only when publicly revealed. The existing
+`revealed_this_hand` field remains available for clients that only need card values.
+HTTP clients, scripted bots, and both LLM bot types receive these shared histories;
+no bot gets privileged access through its memory implementation.
 
 Selections, commits, uncommits, and messages each consume one action when
 `max_actions_per_play` is set. Required row choices remain available at zero
@@ -257,11 +269,14 @@ Never put credentials in `options`, `agent_metadata`, or the URL.
 Each decision sends concise rules with the active mode and actual match settings
 in the system message, followed by the seat personality. A separate user message
 renders the filtered view as text: sorted hand, rows and penalties, scores, and
-compact visible-card history. Negotiation adds selections, commitments, visible
-messages and remaining action budget; row choices identify the triggering card.
-Rejections appear prominently. Transport metadata and previous successful actions
-are excluded from the observation. There is no growing conversation or
-persistent model memory. Only currently available action types are offered as
+visible-card history. Both `llm` and `llm_memory` receive the same shared game
+observation, including recent public moves with player attribution, hand/play
+numbers, placement order, pending placements, and captured cards. Negotiation
+adds selections, commitments, recent visible messages and remaining action
+budget; row choices identify the triggering card. Rejections include the proposed
+action. Transport metadata is excluded from the observation. The `llm` bot starts
+fresh each decision, while `llm_memory` also retains a private notebook.
+Only currently available action types are offered as
 tools. Exactly one function call is accepted; the arena then regains control.
 Classic selection and row choice, and negotiation messaging and commitment, use
 the same path. Add `--negotiation` to enable negotiation. Views include the public
@@ -286,9 +301,14 @@ Model options (unknown keys are rejected):
 | `system_prompt` | Built-in game instructions | Replace shared rules; mode and match settings are injected |
 | `strategy_prompt` | `""` | Seat-specific strategy and personality appended to system instructions |
 
+Tools enumerate cards in the current hand and displayed row indices. Message
+tools expose the actual character limit, permitted visibility, and other players'
+IDs as recipients (with null for table messages). The recipient description
+explains its relationship to visibility; action validation checks that relationship.
 Local parsing always rejects extra fields and incorrect argument types, regardless
 of `strict_tools`. Well-formed illegal actions reach the engine and its existing
-rejection/retry budget. Malformed responses receive bounded repair feedback.
+rejection/retry budget. Malformed responses receive bounded repair feedback with
+a quoted preview of the rejected tool names and arguments, excluding provider reasoning.
 Provider errors fail the match without SDK retries or a fallback move, making
 provider failures visible in comparisons. Error bodies are excluded from recorded
 failure reasons.
@@ -307,7 +327,7 @@ bots, and is not sent as a claim of model determinism.
 
 
 Bot implementations live together in `src/sixnimmt_server/arena/bots/`:
-`random.py`, `greedy.py`, and `llm.py`. Shared contracts are in `base.py`, the
+`random.py`, `greedy.py`, `llm.py`, and `llm_memory.py`. Shared contracts are in `base.py`, the
 registry is in `__init__.py`, and default LLM instructions and tool schemas are
 in `prompt.py`. Existing imports from `sixnimmt_server.arena.bots` still work.
 
@@ -334,11 +354,47 @@ prompts are recorded in the seat options, and statistics include the hash of the
 combined instructions so prompt variants can be distinguished in experiments.
 
 
+### LLM bots with memory
+
+Choose `"bot": "llm_memory"` to retain a private notebook across decisions,
+plays, and hands within a match. It accepts all `llm` options plus
+`memory_max_chars` (default 4000, range 1–16000).
+Each available tool requires an additional `memory` string containing the
+complete replacement notebook. The model can preserve plans, promises, and
+observations about opponents, or clear the notebook with an empty string.
+Updating memory uses the same response as the move, without a second model call.
+The notebook shares the response's output token budget with the action and reasoning.
+
+Only successfully parsed decisions returned within the bot's decision budget
+replace the notebook. An engine rejection can still follow; the next observation
+includes the rejected action and tells the model to treat its notes as tentative.
+Notes are bounded summaries written by the model, so they can omit or misinterpret
+facts. They are not a growing conversation or a guarantee of better gameplay.
+Arena runs construct a fresh bot for each match, and notebooks are isolated per seat.
+
+The memory field is stripped before constructing the game action. Other players,
+game event logs, and run manifests do not receive notebook contents. Privileged
+model traces contain the notebook in requests and responses, and statistics
+record its format version and configured character limit.
+
+[`examples/arena-llm-memory-players.json`](examples/arena-llm-memory-players.json)
+compares `llm` and `llm_memory` with the same endpoint, model, and strategy prompt,
+alongside the greedy baseline. Replace both model placeholders with your installed
+tool-capable model before running:
+
+```bash
+uv run sixnimmt arena --players-file examples/arena-llm-memory-players.json \
+  --games 1 --seed 1234 --decision-timeout 130 --negotiation \
+  --trace-dir traces/memory-comparison
+```
+
+
 ### Model interaction traces
 
 With `--trace-dir`, LLM seats automatically write a privileged
 `<match-log-stem>.model.jsonl` sidecar, separate from game events and action
-records. No explanation or reasoning fields are added to game tools.
+records. The `llm_memory` adapter adds its private notebook field to model tools
+only; engine actions carry no notebook or reasoning fields.
 
 Each model request has a `request` record written before sending, a `response`
 or `provider_error` record when it returns, and an `action_parsed` or

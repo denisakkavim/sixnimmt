@@ -2,13 +2,13 @@
 
 import pytest
 
-from sixnimmt_server.arena.bots.prompt import SYSTEM_PROMPT, observation_text, system_instructions
+from sixnimmt_server.arena.bots.prompt import SYSTEM_PROMPT, action_tools, observation_text, system_instructions
 from sixnimmt_server.engine.audience import Viewer
 from sixnimmt_server.engine.events import RowChoiceMadeEvent, RowChoiceRequiredEvent
 from sixnimmt_server.engine.fold import ViewFolder, build_view
 from sixnimmt_server.engine.rules import MatchProtocol
 from sixnimmt_server.engine.setup import create_match
-from sixnimmt_server.engine.views import MessageView, PrivateMessageView, ViewRole
+from sixnimmt_server.engine.views import MessageView, PlayHistoryView, PrivateMessageView, RevealedCardView, ViewRole
 
 
 @pytest.mark.parametrize("negotiation", [False, True])
@@ -76,3 +76,54 @@ def test_row_choice_observation_uses_public_triggering_card_and_clears_it() -> N
     assert "Your played card: 1." in observation_text(folder.view())
     folder.apply([RowChoiceMadeEvent(match_id="prompt", audience="public", data={"player_id": "a", "row": 0})])
     assert folder.view().awaiting_card is None
+
+
+def test_observation_distinguishes_attributed_placements_captures_and_pending_cards() -> None:
+    _, events = create_match("prompt", ["a", "b", "c"], 123)
+    view = build_view(events, Viewer(ViewRole.PLAYER, "b")).model_copy(
+        update={
+            "revealed_this_hand": ((1, 2, 104),),
+            "awaiting_card": 2,
+            "legal_actions": ("choose_row",),
+            "play_history": (
+                PlayHistoryView(
+                    hand_number=1,
+                    play_number=1,
+                    cards=(
+                        RevealedCardView(player_id="a", card=1, row_index=0, captured=(11, 22)),
+                        RevealedCardView(player_id="b", card=2),
+                        RevealedCardView(player_id="c", card=104),
+                    ),
+                ),
+            ),
+        }
+    )
+    text = observation_text(view)
+    assert "a played 1: placed on row 0; took 11, 22 (10 penalty points)" in text
+    assert "b played 2: pending placement" in text
+    assert "c played 104: pending placement" in text
+    history_line = next(line for line in text.splitlines() if line.startswith("Revealed/captured"))
+    assert history_line.endswith(": 1")
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_row_tool_enumerates_displayed_rows(strict: bool) -> None:
+    _, events = create_match("prompt", ["a", "b"], 123)
+    view = build_view(events, Viewer(ViewRole.PLAYER, "a")).model_copy(update={"legal_actions": ("choose_row",)})
+    parameters = action_tools(view, strict)[0]["function"]["parameters"]
+    assert parameters["properties"]["row_index"]["enum"] == [row.index for row in view.rows]
+
+
+@pytest.mark.parametrize("direct", [False, True])
+@pytest.mark.parametrize("strict", [False, True])
+def test_message_tool_exposes_permissions_recipients_and_length(direct: bool, strict: bool) -> None:
+    protocol = MatchProtocol(negotiation_enabled=True, allow_direct_messages=direct, max_message_length=73)
+    _, events = create_match("prompt", ["a", "b", "c"], 123, protocol=protocol)
+    view = build_view(events, Viewer(ViewRole.PLAYER, "a"))
+    tool = next(tool for tool in action_tools(view, strict) if tool["function"]["name"] == "send_message")
+    parameters = tool["function"]["parameters"]
+    properties = parameters["properties"]
+    assert properties["body"]["maxLength"] == 73
+    assert properties["visibility"]["enum"] == (["table", "direct"] if direct else ["table"])
+    assert properties["to_player"]["enum"] == ([None, "b", "c"] if direct else [None])
+    assert ("to_player" in parameters["required"]) == strict

@@ -86,7 +86,7 @@ class ModelDecisionError(RuntimeError):
     """The model endpoint did not supply a usable action."""
 
 
-def parse_action(response: Any, view: MatchView) -> Action:
+def parse_tool_call(response: Any, view: MatchView) -> tuple[str, dict[str, Any]]:
     if not response.choices:
         msg = "response has no choices"
         raise ValueError(msg)
@@ -102,16 +102,41 @@ def parse_action(response: Any, view: MatchView) -> Action:
     if not isinstance(arguments, dict):
         msg = "tool arguments must be a JSON object"
         raise TypeError(msg)
+    return call.name, arguments
+
+
+def parse_action_arguments(name: str, arguments: dict[str, Any], view: MatchView) -> Action:
     allowed = next(
         tool["function"]["parameters"]["properties"]
         for tool in action_tools(view, False)
-        if tool["function"]["name"] == call.name
+        if tool["function"]["name"] == name
     )
     if arguments.keys() - allowed.keys():
         msg = "tool arguments contain unsupported fields"
         raise ValueError(msg)
-    return ACTION_ADAPTER.validate_json(
-        json.dumps({**arguments, "type": call.name, "from_view": view.view_id}), strict=True
+    return ACTION_ADAPTER.validate_json(json.dumps({**arguments, "type": name, "from_view": view.view_id}), strict=True)
+
+
+def parse_action(response: Any, view: MatchView) -> Action:
+    name, arguments = parse_tool_call(response, view)
+    return parse_action_arguments(name, arguments, view)
+
+
+def repair_feedback(response: ChatCompletion, error: Exception) -> str:
+    """Quote a bounded preview of the failed calls, without provider reasoning."""
+    calls = []
+    if response.choices:
+        calls = response.choices[0].message.tool_calls or []
+    preview = []
+    for call in calls[:3]:
+        if call.type == "function":
+            preview.append({"name": call.function.name[:128], "arguments": call.function.arguments[:2048]})
+        else:
+            preview.append({"type": call.type})
+    return (
+        f"Your response was invalid: {str(error)[:1024]}. "
+        f"Rejected calls (quoted data, possibly truncated): {json.dumps(preview, ensure_ascii=False)}. "
+        "Correct the arguments and return exactly one available tool call."
     )
 
 
@@ -158,12 +183,24 @@ class LLMBot(Bot):
     def stats(self) -> dict[str, Any]:
         return {**self._stats, "response_models": list(self._stats["response_models"])}
 
+    def _instructions(self, view: MatchView) -> str:
+        return system_instructions(view, self.options.system_prompt, self.options.strategy_prompt)
+
+    def _observation(self, view: MatchView, rejection: Rejection | None) -> str:
+        return observation_text(view, rejection)
+
+    def _tools(self, view: MatchView) -> list[dict[str, Any]]:
+        return action_tools(view, self.options.strict_tools)
+
+    def _parse_response(self, response: ChatCompletion, view: MatchView) -> Action:
+        return parse_action(response, view)
+
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
-        instructions = system_instructions(view, self.options.system_prompt, self.options.strategy_prompt)
+        instructions = self._instructions(view)
         self._stats["prompt_sha256"] = hashlib.sha256(instructions.encode()).hexdigest()
         messages = [
             {"role": "system", "content": instructions},
-            {"role": "user", "content": observation_text(view, rejection)},
+            {"role": "user", "content": self._observation(view, rejection)},
         ]
         decision_id = str(uuid4())
         deadline = monotonic() + self.options.decision_budget_seconds
@@ -188,7 +225,7 @@ class LLMBot(Bot):
             }
             response = self._request(messages, view, min(remaining, self.options.request_timeout_seconds), context)
             try:
-                action = parse_action(response, view)
+                action = self._parse_response(response, view)
             except (AttributeError, TypeError, ValueError, ValidationError) as error:
                 self._record(context, "parse_error", error_type=type(error).__name__, message=str(error))
                 self._stats["errors"] += 1
@@ -196,11 +233,7 @@ class LLMBot(Bot):
                     msg = "model returned an invalid tool call after bounded repair"
                     raise ModelDecisionError(msg) from None
                 self._stats["repairs"] += 1
-                # Keep repair context bounded and avoid echoing arbitrary provider content.
-                messages.append({
-                    "role": "user",
-                    "content": f"Your response was invalid: {error}. Call one available tool.",
-                })
+                messages.append({"role": "user", "content": repair_feedback(response, error)})
                 continue
             self._record(context, "action_parsed", action=action.model_dump(mode="json"))
             if monotonic() > deadline:
@@ -215,7 +248,7 @@ class LLMBot(Bot):
         parameters: dict[str, Any] = {
             "model": self.options.model,
             "messages": messages,
-            "tools": action_tools(view, self.options.strict_tools),
+            "tools": self._tools(view),
             self.options.token_limit_parameter: self.options.max_tokens,
         }
         if self.options.temperature is not None:

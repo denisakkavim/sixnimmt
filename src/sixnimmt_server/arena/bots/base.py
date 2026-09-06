@@ -24,6 +24,7 @@ class Rejection:
     code: ErrorCode
     message: str
     legal_actions: tuple[str, ...]
+    action: Action | None = None
 
 
 class Bot(Protocol):

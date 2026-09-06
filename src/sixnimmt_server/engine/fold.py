@@ -17,16 +17,20 @@ from sixnimmt_server.engine.rules import MatchProtocol
 from sixnimmt_server.engine.state import Phase
 from sixnimmt_server.engine.views import (
     MatchView,
+    MessageHistoryView,
     MessageView,
     OpponentView,
     PlayerSelfView,
+    PlayHistoryView,
     PrivateMessageView,
+    RevealedCardView,
     RowView,
     ViewRole,
 )
 
 CARDS_PER_HAND = 10
 MAX_VIEW_MESSAGES = 100
+MAX_HISTORY_PLAYS = 20
 
 
 @dataclass
@@ -69,6 +73,8 @@ class _Fold:
     messages: deque[MessageView | PrivateMessageView] = field(default_factory=lambda: deque(maxlen=MAX_VIEW_MESSAGES))
     message_count: int = 0
     revealed_this_hand: list[tuple[int, ...]] = field(default_factory=list)
+    play_history: deque[PlayHistoryView] = field(default_factory=lambda: deque(maxlen=MAX_HISTORY_PLAYS))
+    message_history: deque[MessageHistoryView] = field(default_factory=lambda: deque(maxlen=MAX_VIEW_MESSAGES))
     awaiting: str | None = None
     awaiting_card: int | None = None
     winners: list[str] = field(default_factory=list)
@@ -144,6 +150,16 @@ def _apply_reveal(state: _Fold, data: dict) -> None:
     selections = data["selections"]
     state.phase = Phase.RESOLVING
     state.revealed_this_hand.append(tuple(sorted(selections.values())))
+    state.play_history.append(
+        PlayHistoryView(
+            hand_number=state.hand_number,
+            play_number=state.play_number,
+            cards=tuple(
+                RevealedCardView(player_id=player_id, card=card)
+                for player_id, card in sorted(selections.items(), key=lambda item: item[1])
+            ),
+        )
+    )
     for player_id, card in selections.items():
         seat = _seat(state, player_id)
         seat.cards_in_hand = max(0, seat.cards_in_hand - 1)
@@ -152,6 +168,27 @@ def _apply_reveal(state: _Fold, data: dict) -> None:
         if card in state.own_hand:
             state.own_hand.remove(card)
     state.own_selection = None
+
+
+def _record_placement(state: _Fold, data: dict) -> None:
+    if not state.play_history:
+        return
+    play = state.play_history[-1]
+    cards = tuple(
+        card.model_copy(update={"row_index": data["row"]}) if card.card == data["card"] else card for card in play.cards
+    )
+    state.play_history[-1] = play.model_copy(update={"cards": cards})
+
+
+def _record_capture(state: _Fold, data: dict) -> None:
+    if not state.play_history:
+        return
+    play = state.play_history[-1]
+    cards = tuple(
+        card.model_copy(update={"captured": tuple(data["captured"])}) if card.player_id == data["player_id"] else card
+        for card in play.cards
+    )
+    state.play_history[-1] = play.model_copy(update={"cards": cards})
 
 
 def _apply_message(state: _Fold, event: Event, viewer: Viewer) -> None:
@@ -172,6 +209,9 @@ def _apply_message(state: _Fold, event: Event, viewer: Viewer) -> None:
             return
         entry = PrivateMessageView(from_player=data["from"], to_player=data["to"])
     state.messages.append(entry)
+    state.message_history.append(
+        MessageHistoryView(hand_number=state.hand_number, play_number=state.play_number, message=entry)
+    )
     state.message_count += 1
 
 
@@ -218,8 +258,10 @@ def _apply(state: _Fold, event: Event, viewer: Viewer) -> None:  # noqa: C901
             _apply_reveal(state, data)
         case "card_placed":
             state.rows[data["row"]] = list(data["row_cards"])
+            _record_placement(state, data)
         case "row_taken":
             _seat(state, data["player_id"]).penalty_cards.extend(data["captured"])
+            _record_capture(state, data)
         case "row_choice_required":
             state.phase = Phase.AWAITING_ROW_CHOICE
             state.awaiting = data["player_id"]
@@ -360,6 +402,8 @@ def _project(state: _Fold, viewer: Viewer, version: int) -> MatchView:
         rows=tuple(RowView(index=index, cards=tuple(cards)) for index, cards in enumerate(state.rows)),
         players=others,
         revealed_this_hand=tuple(state.revealed_this_hand),
+        play_history=tuple(state.play_history),
+        message_history=tuple(state.message_history),
         awaiting=state.awaiting,
         awaiting_card=state.awaiting_card,
         legal_actions=_legal_actions(state, viewer),

@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from sixnimmt_server.arena.bots import GreedyBot
 from sixnimmt_server.arena.bots.llm import LLMBot, LLMOptions, ModelDecisionError
+from sixnimmt_server.arena.bots.llm_memory import LLMMemoryBot, LLMMemoryOptions
 from sixnimmt_server.arena.players import PlayerConfig
 from sixnimmt_server.arena.runner import RunConfig, run_arena, run_match
 from sixnimmt_server.engine.actions import SelectCardAction
@@ -36,6 +37,8 @@ class Endpoint:
         self.illegal_card_once = False
         self.status = 200
         self.raw_body: str | None = None
+        self.memory: Any = ""
+        self.omit_memory = False
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
@@ -57,6 +60,8 @@ class Endpoint:
             if self.illegal_card_once:
                 arguments = {"card": next(card for card in range(1, 105) if card not in hand)}
                 self.illegal_card_once = False
+        if "memory" in tools[name]["parameters"]["properties"] and not self.omit_memory:
+            arguments["memory"] = self.memory
         calls = [{"id": "call_1", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]
         if self.invalid_responses > 0:
             self.invalid_responses -= 1
@@ -161,8 +166,9 @@ def test_provider_compatibility_flags_can_be_omitted(endpoint: Endpoint, view: M
 
 
 @pytest.mark.parametrize("protocol", [MatchProtocol(), MatchProtocol(negotiation_enabled=True)])
-def test_model_matches_finish_and_replay(endpoint: Endpoint, protocol: MatchProtocol) -> None:
-    bot = LLMBot(1, model="local", base_url="http://localhost:11434/v1")
+@pytest.mark.parametrize("bot_type", [LLMBot, LLMMemoryBot])
+def test_model_matches_finish_and_replay(endpoint: Endpoint, protocol: MatchProtocol, bot_type: type[LLMBot]) -> None:
+    bot = bot_type(1, model="local", base_url="http://localhost:11434/v1")
     result = run_match([bot, GreedyBot()], 123, protocol=protocol)
     assert result.outcome == "finished"
     replayed = replay_events(result.events).state
@@ -181,6 +187,7 @@ def test_engine_rejection_is_returned_to_model(endpoint: Endpoint) -> None:
     assert result.actions_rejected == 1
     retry = endpoint.requests[1]["messages"][1]["content"]
     assert "Previous action rejected (card_not_in_hand)" in retry
+    assert 'Rejected action (quoted data, possibly truncated): {"type": "select_card", "card":' in retry
 
 
 def test_configured_credentials_stay_out_of_manifest(
@@ -469,6 +476,219 @@ def test_raw_malformed_responses_are_preserved(endpoint: Endpoint, view: MatchVi
         bot.act(view)
     assert [record["kind"] for record in records] == ["request", "response", "response_parse_error"]
     assert records[1]["body"] == body
+
+
+@pytest.mark.parametrize("strict", [False, True])
+def test_memory_bot_updates_private_notes_with_the_move_in_one_request(
+    endpoint: Endpoint, view: MatchView, strict: bool
+) -> None:
+    endpoint.memory = "Save the high card; b may be bluffing."
+    bot = LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1", strict_tools=strict)
+    action = bot.act(view)
+    assert len(endpoint.requests) == 1
+    assert "memory" not in action.model_dump()
+    parameters = endpoint.requests[0]["tools"][0]["function"]["parameters"]
+    assert "memory" in parameters["required"]
+    assert parameters["properties"]["memory"]["maxLength"] == 4000
+
+    endpoint.memory = "The plan changed: b kept the promise."
+    bot.act(view.model_copy(update={"play_number": 2}))
+    observation = endpoint.requests[-1]["messages"][1]["content"]
+    assert "Save the high card; b may be bluffing." in observation
+    assert "Last proposed action, hand 1, play 1" in observation
+
+    bot.act(view.model_copy(update={"hand_number": 2, "play_number": 1}))
+    observation = endpoint.requests[-1]["messages"][1]["content"]
+    assert "The plan changed: b kept the promise." in observation
+    assert "Save the high card" not in observation
+
+
+def test_memory_can_be_cleared(endpoint: Endpoint, view: MatchView) -> None:
+    bot = LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1")
+    endpoint.memory = "Old plan."
+    bot.act(view)
+    endpoint.memory = ""
+    bot.act(view)
+    bot.act(view)
+    observation = endpoint.requests[-1]["messages"][1]["content"]
+    assert 'Your private notebook (quoted, potentially stale): ""' in observation
+    assert "Old plan." not in observation
+
+
+def test_both_model_types_receive_the_same_shared_game_observation(endpoint: Endpoint) -> None:
+    result = run_match([GreedyBot(), GreedyBot()], 123, protocol=MatchProtocol(end_condition="fixed_hands", hands=1))
+    start = next(index for index, event in enumerate(result.events) if event.type == "play_started" and event.play == 2)
+    view = build_view(result.events[: start + 1], Viewer(ViewRole.PLAYER, "player_1"))
+    LLMBot(1, model="local", base_url="http://localhost:11434/v1").act(view)
+    LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1").act(view)
+    plain = endpoint.requests[0]["messages"][1]["content"]
+    with_memory = endpoint.requests[1]["messages"][1]["content"]
+    assert "Recent public plays" in plain
+    assert "player_2 played" in plain
+    assert with_memory.split("\n\nYour private notebook", maxsplit=1)[0] == plain
+
+
+def test_repair_feedback_includes_bounded_rejected_arguments_without_reasoning() -> None:
+    from openai.types.chat import ChatCompletion
+
+    from sixnimmt_server.arena.bots.llm import repair_feedback
+
+    response = ChatCompletion.model_validate({
+        "id": "completion",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "local",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": "Unrelated provider text",
+                    "reasoning_content": "Private reasoning",
+                    "tool_calls": [
+                        {
+                            "id": "call",
+                            "type": "function",
+                            "function": {
+                                "name": "select_card",
+                                "arguments": '{"card": "bad", "extra": "' + "x" * 10000 + '"}',
+                            },
+                        }
+                    ],
+                },
+            }
+        ],
+    })
+    feedback = repair_feedback(response, ValueError("card must be an integer"))
+    assert "select_card" in feedback
+    assert '\\"card\\": \\"bad\\"' in feedback
+    assert "card must be an integer" in feedback
+    assert len(feedback) < 3000
+    assert "Private reasoning" not in feedback
+    assert "Unrelated provider text" not in feedback
+
+
+@pytest.mark.parametrize("change", ["new_bot", "new_match", "new_seat"])
+def test_private_notes_are_isolated_by_bot_match_and_seat(endpoint: Endpoint, view: MatchView, change: str) -> None:
+    bot = LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1")
+    endpoint.memory = "Private plan for a."
+    bot.act(view)
+    if change == "new_bot":
+        bot = LLMMemoryBot(2, model="local", base_url="http://localhost:11434/v1")
+    elif change == "new_match":
+        view = view.model_copy(update={"match_id": "another-match"})
+    else:
+        view = view.model_copy(update={"you": view.you.model_copy(update={"player_id": "b"})})
+    bot.act(view)
+    observation = endpoint.requests[-1]["messages"][1]["content"]
+    assert "Private plan for a." not in observation
+    assert "Last proposed action" not in observation
+
+
+@pytest.mark.parametrize("memory", [None, True, 7, "x" * 11, "\ud800"])
+def test_invalid_memory_gets_bounded_repair(endpoint: Endpoint, view: MatchView, memory: Any) -> None:
+    endpoint.memory = memory
+    bot = LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1", memory_max_chars=10)
+    with pytest.raises(ModelDecisionError, match="bounded repair"):
+        bot.act(view)
+    assert len(endpoint.requests) == 2
+    assert "Rejected calls (quoted data" in endpoint.requests[-1]["messages"][-1]["content"]
+
+
+def test_missing_memory_is_rejected(endpoint: Endpoint, view: MatchView) -> None:
+    endpoint.omit_memory = True
+    bot = LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1")
+    with pytest.raises(ModelDecisionError, match="bounded repair"):
+        bot.act(view)
+    assert "memory must be a string" in endpoint.requests[-1]["messages"][-1]["content"]
+
+
+@pytest.mark.parametrize("failure", ["parse", "provider", "deadline"])
+def test_failed_decision_does_not_replace_notes(
+    endpoint: Endpoint, view: MatchView, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    bot = LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1")
+    endpoint.memory = "Keep this plan."
+    bot.act(view)
+    endpoint.memory = "Discard this plan."
+    with monkeypatch.context() as patch:
+        if failure == "parse":
+            endpoint.invalid_responses = 2
+        elif failure == "provider":
+            endpoint.status = 503
+        else:
+            clock_values = iter([0.0, 0.0, 0.0, 0.0, 0.0, 121.0])
+            patch.setattr("sixnimmt_server.arena.bots.llm.monotonic", lambda: next(clock_values, 121.0))
+        with pytest.raises(ModelDecisionError):
+            bot.act(view)
+    endpoint.status = 200
+    bot.act(view)
+    observation = endpoint.requests[-1]["messages"][1]["content"]
+    assert "Keep this plan." in observation
+    assert "Discard this plan." not in observation
+
+
+def test_memory_bot_sees_engine_rejection_alongside_tentative_notes(endpoint: Endpoint) -> None:
+    endpoint.illegal_card_once = True
+    endpoint.memory = "Proposed the smallest card."
+    result = run_match(
+        [LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1"), GreedyBot()],
+        123,
+        protocol=MatchProtocol(end_condition="fixed_hands", hands=1),
+    )
+    assert result.outcome == "finished"
+    assert result.actions_rejected == 1
+    observation = endpoint.requests[1]["messages"][1]["content"]
+    assert "Previous action rejected (card_not_in_hand)" in observation
+    assert "Proposed the smallest card." in observation
+    assert "Last proposed action" in observation
+
+
+def test_registered_memory_bots_start_each_match_fresh_without_publishing_notes(endpoint: Endpoint, tmp_path) -> None:
+    endpoint.memory = "A private long-term plan."
+    result = run_arena(
+        [
+            PlayerConfig(
+                bot="llm_memory",
+                options={
+                    "model": "local",
+                    "base_url": "http://localhost:11434/v1",
+                    "memory_max_chars": 100,
+                },
+            ),
+            PlayerConfig(bot="greedy"),
+        ],
+        2,
+        123,
+        protocol=MatchProtocol(end_condition="fixed_hands", hands=2),
+        config=RunConfig(trace_dir=tmp_path / "run"),
+    )
+    assert result.finished == 2
+    assert result.reproducible is False
+    for path in (tmp_path / "run").glob("*.model.jsonl"):
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+        requests = [entry for entry in records if entry["kind"] == "request"]
+        assert (
+            'Your private notebook (quoted, potentially stale): ""' in requests[0]["payload"]["messages"][1]["content"]
+        )
+        second_hand = next(entry for entry in requests if entry["hand"] == 2)
+        assert "A private long-term plan." in second_hand["payload"]["messages"][1]["content"]
+        event_path = path.with_name(path.name.replace(".model.jsonl", ".jsonl"))
+        assert "A private long-term plan." not in event_path.read_text()
+    manifest = json.loads((tmp_path / "run" / "manifest.json").read_text())
+    assert manifest["seats"][0]["options"]["memory_max_chars"] == 100
+    assert "A private long-term plan." not in json.dumps(manifest)
+
+
+@pytest.mark.parametrize("limit", [0, 16001, True, "100"])
+def test_memory_options_reject_invalid_limits(limit: Any) -> None:
+    with pytest.raises(ValidationError):
+        LLMMemoryOptions.model_validate({
+            "model": "local",
+            "base_url": "http://localhost:11434/v1",
+            "memory_max_chars": limit,
+        })
 
 
 class NegotiatingEndpoint(Endpoint):

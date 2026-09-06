@@ -67,6 +67,33 @@ class PrivateMessageView(BaseModel):
     to_player: str
 
 
+class RevealedCardView(BaseModel):
+    """A publicly revealed move; a missing row means placement is still pending."""
+
+    model_config = ConfigDict(frozen=True)
+
+    player_id: str
+    card: int
+    row_index: int | None = None
+    captured: tuple[int, ...] = ()
+
+
+class PlayHistoryView(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    hand_number: int
+    play_number: int
+    cards: tuple[RevealedCardView, ...]
+
+
+class MessageHistoryView(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    hand_number: int
+    play_number: int
+    message: MessageView | PrivateMessageView
+
+
 class MatchView(BaseModel):
     """What one caller sees when reading match state."""
 
@@ -86,6 +113,10 @@ class MatchView(BaseModel):
     rows: tuple[RowView, ...] = ()
     players: tuple[OpponentView, ...] = ()
     revealed_this_hand: tuple[tuple[int, ...], ...] = ()
+    # Bounded histories retain the end of a hand when the next deal starts.
+    # Both are built only from this viewer's visible events.
+    play_history: tuple[PlayHistoryView, ...] = ()
+    message_history: tuple[MessageHistoryView, ...] = ()
     awaiting: str | None = None
     awaiting_card: int | None = None
     # Advisory presentation hint for clients. The server revalidates everything.

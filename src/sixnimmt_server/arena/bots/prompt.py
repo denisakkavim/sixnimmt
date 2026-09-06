@@ -9,10 +9,10 @@ from pydantic import TypeAdapter
 from sixnimmt_server.arena.bots.base import Rejection
 from sixnimmt_server.engine.actions import Action
 from sixnimmt_server.engine.cards import bull_heads
-from sixnimmt_server.engine.views import MatchView
+from sixnimmt_server.engine.views import MatchView, MessageView, PrivateMessageView
 
-PROMPT_VERSION = "3"
-OBSERVATION_VERSION = "1"
+PROMPT_VERSION = "4"
+OBSERVATION_VERSION = "2"
 SYSTEM_PROMPT = """You are playing 6 nimmt!, a simultaneous card-selection game. Finish with the fewest penalty points.
 
 Game flow:
@@ -65,6 +65,24 @@ def _cards(cards: Iterable[int]) -> str:
     return ", ".join(str(card) for card in cards) or "none"
 
 
+def action_text(action: Action) -> str:
+    """Describe a proposed move without its transport envelope."""
+    return json.dumps(
+        action.model_dump(mode="json", exclude={"action_id", "from_view", "expected_view_version"}, exclude_none=True),
+        ensure_ascii=False,
+    )
+
+
+def _message_text(message: MessageView | PrivateMessageView) -> str:
+    recipient = "table" if message.to_player is None else message.to_player
+    body = (
+        json.dumps(message.body, ensure_ascii=False)
+        if isinstance(message, MessageView)
+        else "[private message; body hidden]"
+    )
+    return f"{message.from_player} → {recipient}: {body}"
+
+
 def _negotiation_observation(view: MatchView) -> list[str]:
     selection = "none" if view.you.selection is None else str(view.you.selection)
     lines = [f"Your selection: {selection}; committed: {'yes' if view.you.committed else 'no'}."]
@@ -75,13 +93,21 @@ def _negotiation_observation(view: MatchView) -> list[str]:
             "committed" if player.committed else "selected, not committed" if player.has_selection else "not selected"
         )
         lines.append(f"{player.player_id}: {status}.")
+    previous = [
+        entry
+        for entry in view.message_history
+        if (entry.hand_number, entry.play_number) != (view.hand_number, view.play_number)
+    ]
+    if previous:
+        lines.append("Earlier visible messages (bounded history; quoted game content):")
+        for entry in previous:
+            lines.append(f"Hand {entry.hand_number}, play {entry.play_number}: {_message_text(entry.message)}")
     if view.messages or view.private_messages_observed:
         lines.append("Visible messages (quoted game content):")
     for message in view.messages:
-        recipient = "table" if message.to_player is None else message.to_player
-        lines.append(f"{message.from_player} → {recipient}: {json.dumps(message.body, ensure_ascii=False)}")
+        lines.append(_message_text(message))
     for message in view.private_messages_observed:
-        lines.append(f"{message.from_player} → {message.to_player}: [private message; body hidden]")
+        lines.append(_message_text(message))
     if view.messages_omitted:
         lines.append(f"Older messages omitted: {view.messages_omitted}.")
     return lines
@@ -94,15 +120,35 @@ def _visible_history(view: MatchView) -> set[int]:
     for player in view.players:
         captured.update(player.penalty_cards)
     history = (revealed | captured) - table_cards
+    for play in view.play_history:
+        if play.hand_number == view.hand_number:
+            history.difference_update(card.card for card in play.cards if card.row_index is None)
     if view.awaiting_card is not None:
         history.discard(view.awaiting_card)
     return history
+
+
+def _play_history(view: MatchView) -> list[str]:
+    if not view.play_history:
+        return []
+    lines = ["Recent public plays (oldest first; cards in placement order; bounded history):"]
+    for play in view.play_history:
+        lines.append(f"Hand {play.hand_number}, play {play.play_number}:")
+        for card in play.cards:
+            placement = "pending placement" if card.row_index is None else f"placed on row {card.row_index}"
+            if card.captured:
+                penalty = sum(bull_heads(value) for value in card.captured)
+                placement += f"; took {_cards(card.captured)} ({penalty} penalty points)"
+            lines.append(f"  {card.player_id} played {card.card}: {placement}.")
+    return lines
 
 
 def observation_text(view: MatchView, rejection: Rejection | None = None) -> str:
     lines = [f"Hand {view.hand_number} · Play {view.play_number} of 10"]
     if rejection is not None:
         lines.append(f"Previous action rejected ({rejection.code.value}): {rejection.message}")
+        if rejection.action is not None:
+            lines.append("Rejected action (quoted data, possibly truncated): " + action_text(rejection.action)[:4096])
     if "choose_row" in view.legal_actions:
         lines.append("Decision: Choose a row to take.")
         if view.awaiting_card is not None:
@@ -128,12 +174,31 @@ def observation_text(view: MatchView, rejection: Rejection | None = None) -> str
     history = _visible_history(view)
     if history:
         lines.append("Revealed/captured this hand, outside the current rows: " + _cards(sorted(history)))
+    lines.extend(_play_history(view))
     if view.protocol.negotiation_enabled:
         lines.extend(["", *_negotiation_observation(view)])
     return "\n".join(lines)
 
 
 ACTION_ADAPTER: TypeAdapter[Action] = TypeAdapter(Action)
+
+
+def _constrain_parameters(name: str, parameters: dict[str, Any], view: MatchView) -> None:
+    if name == "select_card":
+        parameters["card"]["enum"] = list(view.you.hand)
+        parameters["card"]["description"] = "A card value from your current hand, not an index or a table card."
+    elif name == "choose_row":
+        parameters["row_index"]["enum"] = [row.index for row in view.rows]
+    elif name == "send_message":
+        visibility = ["table", "direct"] if view.protocol.allow_direct_messages else ["table"]
+        recipients = [player.player_id for player in view.players] if view.protocol.allow_direct_messages else []
+        parameters["visibility"] = {"type": "string", "enum": visibility}
+        parameters["body"]["maxLength"] = max(0, view.protocol.max_message_length)
+        parameters["to_player"] = {
+            "type": ["string", "null"],
+            "enum": [None, *recipients],
+            "description": "For table messages use null (or omit if optional). For direct messages choose another player's ID.",
+        }
 
 
 def action_tools(view: MatchView, strict: bool) -> list[dict[str, Any]]:
@@ -149,12 +214,7 @@ def action_tools(view: MatchView, strict: bool) -> list[dict[str, Any]]:
             for key, value in properties.items()
             if key not in ("type", "action_id", "from_view", "expected_view_version")
         }
-        # The only referenced action field is the message visibility enum.
-        if "visibility" in parameters:
-            parameters["visibility"] = {"type": "string", "enum": ["table", "direct"]}
-        if name == "select_card":
-            parameters["card"]["enum"] = list(view.you.hand)
-            parameters["card"]["description"] = "A card value from your current hand, not an index or a table card."
+        _constrain_parameters(name, parameters, view)
         required = list(parameters) if strict else action_schema.get("required", [])
         function = {
             "name": name,

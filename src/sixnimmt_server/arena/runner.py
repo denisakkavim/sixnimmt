@@ -207,7 +207,7 @@ class _Match:
         try:
             state, events = transition(self.state, player_id, action, self.protocol, self.rules)
         except EngineRejection as error:
-            rejection = Rejection(error.code, str(error), ())
+            rejection = Rejection(error.code, str(error), (), action)
             event = ActionRejectedEvent(
                 match_id=self.state.match_id,
                 hand=self.state.hand_number,
