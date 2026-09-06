@@ -5,6 +5,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from pydantic import BaseModel, ConfigDict
+
 from sixnimmt_server.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt_server.engine.cards import bull_heads
 from sixnimmt_server.engine.errors import ErrorCode
@@ -26,12 +28,24 @@ class Bot(Protocol):
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action: ...
 
 
+class BotOptions(BaseModel):
+    """Base option schema: reject unsupported keys instead of ignoring typos.
+
+    Registered strategies subclass this to declare their constructor options.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
 @dataclass(frozen=True)
 class BotSpec:
+    """A registered strategy; build receives a seed and validated option keywords."""
+
     name: str
-    build: Callable[[int], Bot]
+    build: Callable[..., Bot]
     deterministic: bool
     metadata: dict[str, Any]
+    options_model: type[BotOptions] = BotOptions
 
 
 class RandomBot(Bot):

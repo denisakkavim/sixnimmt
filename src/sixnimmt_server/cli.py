@@ -6,11 +6,10 @@ from typing import Annotated
 
 import typer
 import uvicorn
-from pydantic import ValidationError
-from typer._click.core import Context
-from typer.core import TyperCommand
+from pydantic import TypeAdapter, ValidationError
 
 from sixnimmt_server.analytics.summary import summarise as summarise_match
+from sixnimmt_server.arena.players import PlayerConfig
 from sixnimmt_server.arena.runner import ArenaError, ArenaResult, RunConfig, run_arena
 from sixnimmt_server.engine.replay import ReplayedMatch, replay_events
 from sixnimmt_server.engine.rules import MatchProtocol
@@ -18,33 +17,6 @@ from sixnimmt_server.persistence.manifest import ManifestMatch
 from sixnimmt_server.persistence.sink import read_action_log, read_event_log
 from sixnimmt_server.server.app import create_app
 from sixnimmt_server.server.auth import mint_token
-
-
-class PlayersCommand(TyperCommand):
-    """Accept either repeated or contiguous values for ``--players``."""
-
-    def parse_args(self, ctx: Context, args: list[str]) -> list[str]:
-        normalized_args: list[str] = []
-        index = 0
-
-        while index < len(args):
-            argument = args[index]
-            normalized_args.append(argument)
-            index += 1
-
-            if argument != "--players":
-                continue
-            if index >= len(args) or args[index].startswith("-"):
-                ctx.fail("Option '--players' requires an argument.")
-
-            normalized_args.append(args[index])
-            index += 1
-            while index < len(args) and not args[index].startswith("-"):
-                normalized_args.extend(("--players", args[index]))
-                index += 1
-
-        return super().parse_args(ctx, normalized_args)
-
 
 app = typer.Typer(help="Run deterministic 6 nimmt! tools.", no_args_is_help=True)
 
@@ -68,15 +40,17 @@ def _print_result(result: ArenaResult) -> None:
         typer.echo(
             f"{player.player_id} bot={player.bot_name} wins={player.wins} "
             f"ties={player.ties} total_score={player.total_score} "
-            f"average_score={average_score:.2f}"
+            f"average_score={average_score:.2f} display_name={player.display_name}"
         )
 
 
-@app.command(cls=PlayersCommand)
+@app.command()
 def arena(
-    players: Annotated[
-        list[str],
-        typer.Option("--players", help="Bot names, either repeated or space-separated."),
+    players_file: Annotated[
+        Path,
+        typer.Option(
+            "--players-file", help="JSON array of per-player bot, display_name, options, and agent_metadata settings."
+        ),
     ],
     games: Annotated[int, typer.Option("--games", help="Number of matches to run.")],
     seed: Annotated[int, typer.Option("--seed", help="Root seed for deterministic matches.")],
@@ -111,7 +85,7 @@ def arena(
         )
     try:
         result = run_arena(
-            players,
+            _read_players(players_file),
             games,
             seed,
             protocol=MatchProtocol(negotiation_enabled=negotiation),
@@ -224,3 +198,12 @@ def _manifest_entry(path: Path, log_name: str) -> ManifestMatch:
         msg = "manifest must contain exactly one entry for this log"
         raise ValueError(msg)
     return ManifestMatch.model_validate(entries[0])
+
+
+def _read_players(path: Path) -> list[PlayerConfig]:
+    """Parse the same structured seat configuration accepted by Python callers."""
+    try:
+        return TypeAdapter(list[PlayerConfig]).validate_json(path.read_text(encoding="utf-8"))
+    except OSError as error:
+        msg = f"cannot read players file {path}: {error}"
+        raise ValueError(msg) from error

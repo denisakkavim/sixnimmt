@@ -3,15 +3,16 @@
 import hashlib
 from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from typing import Literal
 
-from sixnimmt_server.arena.bots import REGISTRY, Bot, BotSpec, Rejection
+from sixnimmt_server.arena.bots import Bot, Rejection
 from sixnimmt_server.arena.config import RunConfig as RunConfig
 from sixnimmt_server.arena.config import resolve as resolve
 from sixnimmt_server.arena.decisions import AbandonedDecisions, Decision, decide
+from sixnimmt_server.arena.players import PlayerConfig as PlayerConfig
+from sixnimmt_server.arena.players import ResolvedPlayer, resolve_players
 from sixnimmt_server.arena.results import ArenaResult as ArenaResult
 from sixnimmt_server.arena.results import MatchOutcome as MatchOutcome
 from sixnimmt_server.arena.results import MatchResult as MatchResult
@@ -273,7 +274,7 @@ def run_match(
 def _play_game(
     index: int,
     seed: int,
-    specs: Sequence[BotSpec],
+    specs: Sequence[ResolvedPlayer],
     seats: Sequence[PlayerSeat],
     rules: GameRules,
     protocol: MatchProtocol,
@@ -335,8 +336,9 @@ def _play_game(
 
 
 class _Aggregate:
-    def __init__(self, players: Sequence[str]) -> None:
+    def __init__(self, players: Sequence[str], display_names: Sequence[str]) -> None:
         self.players = players
+        self.display_names = display_names
         self.counts = dict.fromkeys(MatchOutcome, 0)
         self.hands = 0
         self.actions = 0
@@ -368,7 +370,14 @@ class _Aggregate:
     ) -> ArenaResult:
         seats = tuple(
             SeatResult(
-                f"player_{i + 1}", name, self.wins[i], self.ties[i], self.scores[i], self.accepted[i], self.rejected[i]
+                f"player_{i + 1}",
+                name,
+                self.wins[i],
+                self.ties[i],
+                self.scores[i],
+                self.accepted[i],
+                self.rejected[i],
+                self.display_names[i],
             )
             for i, name in enumerate(self.players)
         )
@@ -393,7 +402,7 @@ class _Aggregate:
 def _drive_games(
     games: int,
     seed: int,
-    specs: Sequence[BotSpec],
+    specs: Sequence[ResolvedPlayer],
     seats: Sequence[PlayerSeat],
     rules: GameRules,
     protocol: MatchProtocol,
@@ -453,7 +462,7 @@ def _drive_games(
 
 
 def run_arena(
-    players: list[str],
+    players: Sequence[PlayerConfig],
     games: int,
     seed: int,
     *,
@@ -474,17 +483,16 @@ def run_arena(
     if max_actions_per_match is not None:
         config = replace(config, match_action_limit=max_actions_per_match)
     config = resolve(config, protocol)
-    specs = []
-    for name in players:
-        if name not in REGISTRY:
-            msg = f"unknown bot {name!r}; available bots: {', '.join(sorted(REGISTRY))}"
-            raise ValueError(msg)
-        specs.append(REGISTRY[name])
+    specs = resolve_players(players)
     if not rules.min_players <= len(players) <= rules.max_players:
         msg = "player count is outside the configured game rules"
         raise ValueError(msg)
     seats = [
-        PlayerSeat(player_id=f"player_{i + 1}", display_name=f"Player {i + 1}", agent_metadata=deepcopy(spec.metadata))
+        PlayerSeat(
+            player_id=f"player_{i + 1}",
+            display_name=spec.config.display_name if spec.config.display_name is not None else f"Player {i + 1}",
+            agent_metadata=spec.metadata,
+        )
         for i, spec in enumerate(specs)
     ]
     # Construct game zero before any submission; later construction failures are
@@ -498,7 +506,7 @@ def run_arena(
     if config.trace_dir is not None:
         config.trace_dir.mkdir(parents=True, exist_ok=False)
     abandoned = AbandonedDecisions(config.max_abandoned_decisions or 0)
-    aggregate = _Aggregate(players)
+    aggregate = _Aggregate([spec.name for spec in specs], [seat.display_name for seat in seats])
     entries: list[ManifestMatch] = []
     started, fatal = _drive_games(
         games,
@@ -532,6 +540,8 @@ def run_arena(
                 {
                     "player_id": seat.player_id,
                     "bot": spec.name,
+                    "display_name": seat.display_name,
+                    "options": spec.recorded_options,
                     "deterministic": spec.deterministic,
                     "agent_metadata": seat.agent_metadata,
                 }

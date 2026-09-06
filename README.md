@@ -15,13 +15,13 @@ Install the project and its development tools into a managed virtual environment
 uv sync --all-groups
 ```
 
-Run the command-line arena with two random bots:
+Configure each seat in a JSON file, then run the arena:
 
 ```bash
-uv run sixnimmt arena --players random random --games 10000 --seed 1234
+uv run sixnimmt arena --players-file examples/arena-players.json --games 10000 --seed 1234
 ```
 
-`--players` also accepts repeated options, such as `--players random --players random`. The `--match-action-limit` (also accepted as `--max-actions-per-match`) defaults to 10,000 attempts, including rejected actions.
+The players file is an array of structured player configurations, shown below. The `--match-action-limit` (also accepted as `--max-actions-per-match`) defaults to 10,000 attempts, including rejected actions.
 
 The command reports the root seed, aggregate hand and action counts, and per-seat wins, ties, total scores, and average scores. Wins count sole winners; ties count matches in which that seat shared the lowest score. Lower scores are better. Finished, abandoned, forfeited, and failed matches are counted separately. Only finished matches contribute scores, wins, and ties. Registered deterministic bots reproduce their results with the same Python runtime and seed, independently of match concurrency.
 
@@ -55,11 +55,57 @@ retries the same seat with its error code, message, legal actions, and refreshed
 view. Eight consecutive rejections in one offer forfeit the match by default.
 An exception or malformed return fails that match and lets the run continue.
 
-Register a strategy by adding a `BotSpec(name, build, deterministic, metadata)`
-to `arena.bots.REGISTRY`. `build(seed)` creates a fresh bot for each match.
-Declare reproducibility honestly: a seeded deal does not reproduce an external
-model's answers. Optional `stats()` returns opaque JSON data for the manifest;
-missing or failed statistics never change a match outcome.
+Configure a multi-match arena with one `PlayerConfig` per seat:
+
+```python
+from sixnimmt_server.arena.players import PlayerConfig
+from sixnimmt_server.arena.runner import run_arena
+
+result = run_arena(
+    players=[
+        PlayerConfig(bot="random", display_name="Alice", agent_metadata={"group": "baseline"}),
+        PlayerConfig(bot="greedy", display_name="Bob"),
+    ],
+    games=100,
+    seed=1234,
+)
+```
+
+The equivalent CLI file is:
+
+```json
+[
+  {"bot": "random", "display_name": "Alice", "options": {}, "agent_metadata": {"group": "baseline"}},
+  {"bot": "greedy", "display_name": "Bob", "options": {}}
+]
+```
+
+`bot` selects a registered type. `options` configures that instance;
+`display_name` and `agent_metadata` configure the seat's identity. Seat IDs remain
+`player_1`, `player_2`, etc. Omitted display names become `Player 1`, `Player 2`,
+etc. Name-only player lists and the old `--players` flag are no longer accepted.
+The bundled random and greedy strategies currently have no strategy options and
+reject nonempty option dictionaries.
+
+To register a configurable bot, subclass `BotOptions` in `arena.bots` with its
+Pydantic fields, defaults, and constraints, then supply that class as
+`BotSpec.options_model`. The arena validates all seats before constructing any
+bot and calls `BotSpec.build(seed, **validated_options)` for every match. Existing
+seed-only factories work with the default empty `BotOptions` schema. Unknown
+option keys are rejected. Each factory receives its own copy of nested options.
+For example, a model-backed bot can declare `model`, `temperature`, and `prompt`
+fields; two seats can then select the same registered type with different values.
+
+The manifest records resolved options, including defaults, and display names.
+Seat metadata combines the registry metadata with per-player metadata (the
+per-player values take precedence), plus an arena-supplied `bot_options` entry.
+Options and metadata are recorded in traces; credentials should come from the
+bot's environment or client setup. Bot settings stay out of other players' views.
+
+Declare `BotSpec.deterministic` honestly for the configurations it accepts:
+a seeded deal does not reproduce an external model's answers. Optional `stats()`
+returns opaque JSON data for the manifest; missing or failed statistics never
+change a match outcome.
 
 `run_match` and `run_arena` accept `GameRules`, `MatchProtocol`, and `RunConfig`.
 An optional `observer(state, events)` receives setup and every appended batch.
@@ -69,7 +115,7 @@ when matches run concurrently.
 ## Traced experiments
 
 ```bash
-uv run sixnimmt arena --players random random greedy --games 1000 --seed 1234 \
+uv run sixnimmt arena --players-file examples/arena-players.json --games 1000 --seed 1234 \
   --negotiation --scheduler round_robin --concurrency 8 --trace-dir traces/run-1234
 uv run sixnimmt summarise traces/run-1234/<match-log>.jsonl
 uv run sixnimmt replay traces/run-1234/<match-log>.jsonl

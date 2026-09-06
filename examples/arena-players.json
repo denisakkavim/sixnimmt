@@ -1,0 +1,15 @@
+[
+  {
+    "bot": "random",
+    "display_name": "Alice",
+    "options": {},
+    "agent_metadata": {
+      "group": "baseline"
+    }
+  },
+  {
+    "bot": "greedy",
+    "display_name": "Bob",
+    "options": {}
+  }
+]

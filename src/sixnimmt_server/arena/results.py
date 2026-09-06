@@ -41,6 +41,7 @@ class SeatResult:
     total_score: int
     actions_accepted: int
     actions_rejected: int
+    display_name: str = ""
 
 
 @dataclass(frozen=True)

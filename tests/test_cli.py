@@ -14,153 +14,78 @@ from sixnimmt_server.server.app import create_app
 runner = CliRunner()
 
 
-def invoke_arena(*arguments: str):
-    return runner.invoke(app, ["arena", *arguments])
+@pytest.fixture
+def players_file(tmp_path: Path) -> Path:
+    path = tmp_path / "players.json"
+    path.write_text('[{"bot": "random", "display_name": "Alice"}, {"bot": "random", "display_name": "Bob"}]')
+    return path
 
 
-def assert_successful_arena(output: str) -> None:
-    assert "seed=1234" in output
-    assert "games=1" in output
-    assert "total_hands=" in output
-    assert "total_actions=" in output
-    assert "player_1 bot=random" in output
-    assert "player_2 bot=random" in output
-    assert "average_score=" in output
-
-
-def test_runs_arena_with_space_separated_players() -> None:
-    result = invoke_arena("--players", "random", "random", "--games", "1", "--seed", "1234")
-
-    assert result.exit_code == 0
-    assert_successful_arena(result.stdout)
-
-
-def test_runs_arena_with_repeated_players() -> None:
-    result = invoke_arena(
-        "--players",
-        "random",
-        "--players",
-        "random",
-        "--games",
-        "1",
-        "--seed",
-        "1234",
+def invoke_arena(players_file: Path, *arguments: str):
+    return runner.invoke(
+        app, ["arena", "--players-file", str(players_file), "--games", "1", "--seed", "1234", *arguments]
     )
 
-    assert result.exit_code == 0
-    assert_successful_arena(result.stdout)
+
+def test_runs_arena_with_structured_players(players_file: Path) -> None:
+    result = invoke_arena(players_file)
+    assert result.exit_code == 0, result.output
+    assert "player_1 bot=random" in result.stdout
+    assert "player_2 bot=random" in result.stdout
+    assert "finished=1" in result.stdout
 
 
-def test_runs_arena_with_equals_players() -> None:
-    result = invoke_arena("--players=random", "--players=random", "--games=1", "--seed=1234")
-
-    assert result.exit_code == 0
-    assert_successful_arena(result.stdout)
+def test_same_arguments_produce_same_output(players_file: Path) -> None:
+    assert invoke_arena(players_file).stdout == invoke_arena(players_file).stdout
 
 
-def test_same_arguments_produce_same_output() -> None:
-    arguments = ("--players", "random", "random", "--games", "1", "--seed", "1234")
-
-    first = invoke_arena(*arguments)
-    second = invoke_arena(*arguments)
-
-    assert first.exit_code == 0
-    assert second.exit_code == 0
-    assert first.stdout == second.stdout
-
-
-def test_reports_runner_validation_errors_without_traceback() -> None:
-    result = invoke_arena("--players", "random", "unknown", "--games", "1", "--seed", "1234")
-
+@pytest.mark.parametrize(
+    "contents, message",
+    [
+        ('["random", "random"]', "Input should be an object"),
+        ('[{"bot": "unknown"}, {"bot": "random"}]', "unknown bot"),
+        ('[{"bot": "random", "options": {"typo": 1}}, {"bot": "random"}]', "invalid options for player 1"),
+        ('[{"bot": "random", "display_nam": "Alice"}, {"bot": "random"}]', "Extra inputs"),
+        ('[{"bot": "random"}]', "between 2 and 10"),
+        ("not json", "Invalid JSON"),
+    ],
+)
+def test_rejects_invalid_player_files(players_file: Path, contents: str, message: str) -> None:
+    players_file.write_text(contents)
+    result = invoke_arena(players_file)
     assert result.exit_code == 2
-    assert "unknown bot 'unknown'; available bots: greedy, random" in result.stderr
+    assert message in result.stderr
     assert "Traceback" not in result.stderr
 
 
-def test_rejects_too_few_players() -> None:
-    result = invoke_arena("--players", "random", "--games", "1", "--seed", "1234")
-
+def test_reports_missing_player_file(tmp_path: Path) -> None:
+    result = invoke_arena(tmp_path / "missing.json")
     assert result.exit_code == 2
-    assert "an arena match requires between 2 and 10 players" in result.stderr
+    assert "cannot read players file" in result.stderr
 
 
-def test_rejects_non_positive_games() -> None:
-    result = invoke_arena("--players", "random", "random", "--games", "0", "--seed", "1234")
-
+@pytest.mark.parametrize("flag", ["--games", "--max-actions-per-match"])
+def test_rejects_nonpositive_run_settings(players_file: Path, flag: str) -> None:
+    result = invoke_arena(players_file, flag, "0")
     assert result.exit_code == 2
-    assert "games must be positive" in result.stderr
+    assert "positive" in result.stderr
 
 
-def test_rejects_non_positive_action_limit() -> None:
-    result = invoke_arena(
-        "--players",
-        "random",
-        "random",
-        "--games",
-        "1",
-        "--seed",
-        "1234",
-        "--max-actions-per-match",
-        "0",
-    )
-
-    assert result.exit_code == 2
-    assert "match_action_limit must be a positive integer" in result.stderr
-
-
-def test_reports_action_limit_exhaustion_without_traceback() -> None:
-    result = invoke_arena(
-        "--players",
-        "random",
-        "random",
-        "--games",
-        "1",
-        "--seed",
-        "1234",
-        "--max-actions-per-match",
-        "1",
-    )
-
+def test_reports_action_limit_abandonment(players_file: Path) -> None:
+    result = invoke_arena(players_file, "--max-actions-per-match", "1")
     assert result.exit_code == 0
     assert "abandoned=1" in result.stdout
-    assert "Traceback" not in result.stderr
 
 
-def test_rejects_missing_player_value() -> None:
-    result = invoke_arena("--players", "--games", "1", "--seed", "1234")
-
+def test_cli_does_not_accept_name_only_players() -> None:
+    result = runner.invoke(app, ["arena", "--players", "random", "random", "--games", "1", "--seed", "1234"])
     assert result.exit_code == 2
-    assert "Option '--players' requires an argument" in result.stderr
-
-
-def test_rejects_unknown_options() -> None:
-    result = invoke_arena(
-        "--players",
-        "random",
-        "random",
-        "--games",
-        "1",
-        "--seed",
-        "1234",
-        "--bogus",
-    )
-
-    assert result.exit_code == 2
-    assert "No such option: --bogus" in result.stderr
-
-
-def test_rejects_unexpected_argument_after_equals_players() -> None:
-    result = invoke_arena("--players=random", "random", "--games", "1", "--seed", "1234")
-
-    assert result.exit_code == 2
-    assert "Got unexpected extra argument" in result.stderr
-    assert "random" in result.stderr
+    assert "No such option: --players" in result.stderr
 
 
 @pytest.mark.arena_slow
-def test_runs_multiple_arena_games() -> None:
-    result = invoke_arena("--players", "random", "random", "--games", "10", "--seed", "1234")
-
+def test_runs_multiple_arena_games(players_file: Path) -> None:
+    result = invoke_arena(players_file, "--games", "10")
     assert result.exit_code == 0
     assert "games=10" in result.stdout
 
@@ -215,22 +140,9 @@ def test_replay_reports_a_missing_log(tmp_path: Path) -> None:
     assert "no match log" in result.stderr
 
 
-def test_negotiation_cli_traces_and_summarises(tmp_path: Path) -> None:
+def test_negotiation_cli_traces_and_summarises(tmp_path: Path, players_file: Path) -> None:
     directory = tmp_path / "trace"
-    result = invoke_arena(
-        "--players",
-        "random",
-        "greedy",
-        "--games",
-        "1",
-        "--seed",
-        "123",
-        "--negotiation",
-        "--concurrency",
-        "2",
-        "--trace-dir",
-        str(directory),
-    )
+    result = invoke_arena(players_file, "--negotiation", "--concurrency", "2", "--trace-dir", str(directory))
     assert result.exit_code == 0, result.output
     assert "finished=1 abandoned=0 forfeited=0 failed=0" in result.stdout
     logs = [path for path in directory.glob("*.jsonl") if not path.name.endswith(".actions.jsonl")]
@@ -240,15 +152,13 @@ def test_negotiation_cli_traces_and_summarises(tmp_path: Path) -> None:
     assert '"outcome": "finished"' in summary.stdout
 
 
-def test_cli_refuses_starving_schedule() -> None:
-    result = invoke_arena(
-        "--players", "random", "random", "--games", "1", "--seed", "123", "--negotiation", "--scheduler", "sequential"
-    )
+def test_cli_refuses_starving_schedule(players_file: Path) -> None:
+    result = invoke_arena(players_file, "--negotiation", "--scheduler", "sequential")
     assert result.exit_code == 2
     assert "starve" in result.stderr
 
 
-def test_cli_warns_when_stopping_has_no_deadline() -> None:
-    result = invoke_arena("--players", "random", "random", "--games", "1", "--seed", "123", "--stop-on-failure")
+def test_cli_warns_when_stopping_has_no_deadline(players_file: Path) -> None:
+    result = invoke_arena(players_file, "--stop-on-failure")
     assert result.exit_code == 0
     assert "wait indefinitely" in result.stderr

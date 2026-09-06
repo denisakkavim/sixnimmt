@@ -11,6 +11,7 @@ from starlette.testclient import TestClient
 
 from sixnimmt_server.analytics.summary import summarise
 from sixnimmt_server.arena.bots import REGISTRY, BotSpec, GreedyBot, RandomBot, Rejection
+from sixnimmt_server.arena.players import PlayerConfig
 from sixnimmt_server.arena.runner import ArenaError, MatchOutcome, RunConfig, resolve, run_arena, run_match
 from sixnimmt_server.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction, SendMessageAction
 from sixnimmt_server.engine.audience import Viewer, visible_events
@@ -186,7 +187,7 @@ def test_sequential_negotiation_is_rejected_before_play(surface: str) -> None:
         if surface == "match":
             run_match([RandomBot(1), RandomBot(2)], 123, protocol=protocol, config=config)
         else:
-            run_arena(["random"] * 2, 1, 123, protocol=protocol, config=config)
+            run_arena([PlayerConfig(bot="random")] * 2, 1, 123, protocol=protocol, config=config)
 
 
 @pytest.mark.parametrize("negotiation, scheduler, limit", [(False, "sequential", None), (True, "round_robin", 200)])
@@ -253,7 +254,7 @@ def test_concurrency_preserves_results_and_event_logs(tmp_path: Path, short_prot
     directories = [tmp_path / "one", tmp_path / "eight"]
     results = [
         run_arena(
-            ["random", "greedy"],
+            [PlayerConfig(bot="random"), PlayerConfig(bot="greedy")],
             8,
             123,
             protocol=short_protocol,
@@ -276,7 +277,7 @@ def test_concurrency_preserves_results_and_event_logs(tmp_path: Path, short_prot
 @pytest.mark.parametrize("outcome, bot", [("forfeited", IllegalBot), ("failed", RaisingBot)])
 def test_nonfinished_matches_do_not_contribute_scores(monkeypatch: pytest.MonkeyPatch, outcome: str, bot: Any) -> None:
     monkeypatch.setitem(REGISTRY, "broken", BotSpec("broken", lambda seed: bot(), False, {"provider": "test"}))
-    result = run_arena(["broken", "random"], 3, 123)
+    result = run_arena([PlayerConfig(bot="broken"), PlayerConfig(bot="random")], 3, 123)
     assert getattr(result, outcome) == 3
     assert result.games_started == result.games_completed == 3
     assert not result.reproducible
@@ -290,7 +291,7 @@ def test_first_build_failure_stops_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setitem(REGISTRY, "bad", BotSpec("bad", build, False, {}))
     with pytest.raises(ArenaError, match="first game's lineup"):
-        run_arena(["bad", "random"], 3, 123)
+        run_arena([PlayerConfig(bot="bad"), PlayerConfig(bot="random")], 3, 123)
 
 
 def test_later_build_failure_is_a_match_outcome(
@@ -308,7 +309,13 @@ def test_later_build_failure_is_a_match_outcome(
 
     monkeypatch.setitem(REGISTRY, "transient", BotSpec("transient", build, False, {}))
     directory = tmp_path / "trace"
-    result = run_arena(["transient", "random"], 3, 123, protocol=short_protocol, config=RunConfig(trace_dir=directory))
+    result = run_arena(
+        [PlayerConfig(bot="transient"), PlayerConfig(bot="random")],
+        3,
+        123,
+        protocol=short_protocol,
+        config=RunConfig(trace_dir=directory),
+    )
     assert result.finished == 2
     assert result.failed == 1
     manifest = json.loads((directory / "manifest.json").read_text())
@@ -331,7 +338,13 @@ def test_stats_are_opaque_and_cannot_cost_a_match(
 
     monkeypatch.setitem(REGISTRY, "reporting", BotSpec("reporting", Reporting, True, {"strategy": "test"}))
     directory = tmp_path / "trace"
-    result = run_arena(["reporting", "random"], 1, 123, protocol=short_protocol, config=RunConfig(trace_dir=directory))
+    result = run_arena(
+        [PlayerConfig(bot="reporting"), PlayerConfig(bot="random")],
+        1,
+        123,
+        protocol=short_protocol,
+        config=RunConfig(trace_dir=directory),
+    )
     assert result.finished == 1
     manifest = json.loads((directory / "manifest.json").read_text())
     entry = manifest["matches"][0]
@@ -341,7 +354,7 @@ def test_stats_are_opaque_and_cannot_cost_a_match(
         assert "metrics unavailable" in entry["stats_errors"]["player_1"]
     else:
         assert entry["seat_stats"]["player_1"] == {"tokens": {"input": 19}, "custom": ["opaque", 2.5]}
-    assert manifest["seats"][0]["agent_metadata"] == {"strategy": "test"}
+    assert manifest["seats"][0]["agent_metadata"] == {"strategy": "test", "bot_options": {}}
 
 
 def test_timeout_is_finalised_while_bot_is_still_blocked(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -361,7 +374,10 @@ def test_timeout_is_finalised_while_bot_is_still_blocked(monkeypatch: pytest.Mon
     directory = tmp_path / "trace"
     try:
         result = run_arena(
-            ["blocked", "random"], 2, 123, config=RunConfig(trace_dir=directory, decision_timeout_seconds=0.02)
+            [PlayerConfig(bot="blocked"), PlayerConfig(bot="random")],
+            2,
+            123,
+            config=RunConfig(trace_dir=directory, decision_timeout_seconds=0.02),
         )
         assert result.failed == 2
         assert result.decisions_abandoned == 2
@@ -393,7 +409,7 @@ def test_abandoned_decision_bound_stops_submission(monkeypatch: pytest.MonkeyPat
     try:
         with pytest.raises(ArenaError, match="max_abandoned_decisions"):
             run_arena(
-                ["blocked", "random"],
+                [PlayerConfig(bot="blocked"), PlayerConfig(bot="random")],
                 20,
                 123,
                 config=RunConfig(trace_dir=directory, decision_timeout_seconds=0.01, max_abandoned_decisions=1),
@@ -434,7 +450,7 @@ def test_stop_on_failure_drains_already_started_matches(
 
     monkeypatch.setitem(REGISTRY, "coordinated", BotSpec("coordinated", build, False, {}))
     result = run_arena(
-        ["coordinated", "random"],
+        [PlayerConfig(bot="coordinated"), PlayerConfig(bot="random")],
         20,
         123,
         protocol=short_protocol,
@@ -459,13 +475,13 @@ def test_no_deadline_calls_bot_inline(short_protocol: MatchProtocol) -> None:
 
 def test_existing_trace_directory_is_refused(tmp_path: Path) -> None:
     with pytest.raises(FileExistsError):
-        run_arena(["random"] * 2, 1, 123, config=RunConfig(trace_dir=tmp_path))
+        run_arena([PlayerConfig(bot="random")] * 2, 1, 123, config=RunConfig(trace_dir=tmp_path))
 
 
 def test_summary_distinguishes_forfeit_only_with_manifest(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setitem(REGISTRY, "illegal", BotSpec("illegal", lambda seed: IllegalBot(), True, {}))
     directory = tmp_path / "trace"
-    run_arena(["illegal", "random"], 1, 123, config=RunConfig(trace_dir=directory))
+    run_arena([PlayerConfig(bot="illegal"), PlayerConfig(bot="random")], 1, 123, config=RunConfig(trace_dir=directory))
     manifest = json.loads((directory / "manifest.json").read_text())
     entry = ManifestMatch.model_validate(manifest["matches"][0])
     events, actions = read_event_log(directory / entry.log), read_action_log(directory / entry.actions)
@@ -528,7 +544,9 @@ def test_trace_write_failure_stops_run(monkeypatch: pytest.MonkeyPatch, tmp_path
     directory = tmp_path / "trace"
     monkeypatch.setitem(REGISTRY, "sabotage", BotSpec("sabotage", Sabotage, True, {}))
     with pytest.raises(ArenaError):
-        run_arena(["sabotage", "random"], 2, 123, config=RunConfig(trace_dir=directory))
+        run_arena(
+            [PlayerConfig(bot="sabotage"), PlayerConfig(bot="random")], 2, 123, config=RunConfig(trace_dir=directory)
+        )
 
 
 def test_scheduler_failure_stops_run(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -540,7 +558,7 @@ def test_scheduler_failure_stops_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(SequentialScheduler, "next_seat", broken)
     with pytest.raises(ArenaError, match="scheduler defect"):
-        run_arena(["random"] * 2, 3, 123)
+        run_arena([PlayerConfig(bot="random")] * 2, 3, 123)
 
 
 def test_greedy_chooses_lowest_cost_card_and_lowest_row_on_ties() -> None:
@@ -737,7 +755,13 @@ def test_concurrent_matches_have_distinct_instances_and_bounded_capacity(
         return instance
 
     monkeypatch.setitem(REGISTRY, "isolated", BotSpec("isolated", build, True, {}))
-    result = run_arena(["isolated", "random"], 6, 123, protocol=short_protocol, config=RunConfig(concurrency=3))
+    result = run_arena(
+        [PlayerConfig(bot="isolated"), PlayerConfig(bot="random")],
+        6,
+        123,
+        protocol=short_protocol,
+        config=RunConfig(concurrency=3),
+    )
     assert result.finished == 6
     assert len(instances) == len({id(bot) for bot in instances}) == 6
     assert maximum == 3

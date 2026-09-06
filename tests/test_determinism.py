@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 from pydantic import TypeAdapter
 
@@ -66,17 +67,17 @@ def test_hand_3_deal_is_determined_by_seed_not_prior_play() -> None:
     assert first_hand3.players[0].hand != first.players[0].hand
 
 
-def test_arena_output_is_identical_across_interpreter_hash_seeds() -> None:
+def test_arena_output_is_identical_across_interpreter_hash_seeds(tmp_path: Path) -> None:
     """Reproducibility must never depend on dict or set iteration order."""
+    players_file = tmp_path / "players.json"
+    players_file.write_text('[ {"bot": "random"}, {"bot": "random"}, {"bot": "random"} ]')
     command = [
         sys.executable,
         "-c",
         "from sixnimmt_server.cli import app; app()",
         "arena",
-        "--players",
-        "random",
-        "random",
-        "random",
+        "--players-file",
+        str(players_file),
         "--games",
         "3",
         "--seed",

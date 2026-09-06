@@ -5,6 +5,7 @@ import random
 import pytest
 
 from sixnimmt_server.arena.bots import REGISTRY, RandomBot, Rejection
+from sixnimmt_server.arena.players import PlayerConfig
 from sixnimmt_server.arena.runner import MatchOutcome, derive_seed, run_arena, run_match
 from sixnimmt_server.engine.actions import Action, ChooseRowAction, SelectCardAction
 from sixnimmt_server.engine.audience import Viewer
@@ -56,12 +57,12 @@ def test_bot_draws_do_not_change_other_bots(observation: MatchView) -> None:
 
 def test_arena_does_not_touch_global_random_state() -> None:
     before = random.getstate()
-    run_arena(["random", "random"], 2, 123)
+    run_arena([PlayerConfig(bot="random"), PlayerConfig(bot="random")], 2, 123)
     assert random.getstate() == before
 
 
 def test_same_arena_seed_reproduces_results() -> None:
-    assert run_arena(["random"] * 3, 4, 123) == run_arena(["random"] * 3, 4, 123)
+    assert run_arena([PlayerConfig(bot="random")] * 3, 4, 123) == run_arena([PlayerConfig(bot="random")] * 3, 4, 123)
 
 
 def test_seed_streams_are_distinct_and_stable() -> None:
@@ -78,13 +79,13 @@ def test_later_game_can_be_reproduced_without_earlier_games() -> None:
         if state.phase == Phase.FINISHED:
             finals.append(state)
 
-    run_arena(["random"] * 2, 3, 123, observer=record)
+    run_arena([PlayerConfig(bot="random")] * 2, 3, 123, observer=record)
     bots = [RandomBot(derive_seed(123, "bot", 2, seat)) for seat in range(2)]
     seats = [
         PlayerSeat(
             player_id=f"player_{seat + 1}",
             display_name=f"Player {seat + 1}",
-            agent_metadata=REGISTRY["random"].metadata,
+            agent_metadata={**REGISTRY["random"].metadata, "bot_options": {}},
         )
         for seat in range(2)
     ]
@@ -175,7 +176,7 @@ def test_only_awaited_player_is_scheduled_for_row_choice() -> None:
 
 
 def test_arena_counts_sole_wins_and_shared_wins_separately() -> None:
-    result = run_arena(["random", "random"], 10, 1234)
+    result = run_arena([PlayerConfig(bot="random"), PlayerConfig(bot="random")], 10, 1234)
     assert [player.wins for player in result.players] == [3, 6]
     assert [player.ties for player in result.players] == [1, 1]
     assert [player.total_score for player in result.players] == [689, 594]
@@ -184,7 +185,7 @@ def test_arena_counts_sole_wins_and_shared_wins_separately() -> None:
 @pytest.mark.parametrize("count", [0, 1, 11])
 def test_rejects_invalid_player_counts(count: int) -> None:
     with pytest.raises(ValueError, match="between 2 and 10"):
-        run_arena(["random"] * count, 1, 123)
+        run_arena([PlayerConfig(bot="random")] * count, 1, 123)
     with pytest.raises(ValueError, match="between 2 and 10"):
         run_match([RandomBot(1) for _ in range(count)], 123)
 
@@ -192,12 +193,12 @@ def test_rejects_invalid_player_counts(count: int) -> None:
 @pytest.mark.parametrize("games", [0, -1])
 def test_rejects_nonpositive_games(games: int) -> None:
     with pytest.raises(ValueError, match="games must be positive"):
-        run_arena(["random"] * 2, games, 123)
+        run_arena([PlayerConfig(bot="random")] * 2, games, 123)
 
 
 def test_rejects_unknown_bot_before_starting() -> None:
     with pytest.raises(ValueError, match="unknown bot"):
-        run_arena(["random", "unknown"], 1, 123)
+        run_arena([PlayerConfig(bot="random"), PlayerConfig(bot="unknown")], 1, 123)
 
 
 @pytest.mark.parametrize("limit", [0, -1])
@@ -205,7 +206,7 @@ def test_rejects_nonpositive_action_limit(limit: int) -> None:
     with pytest.raises(ValueError, match="positive"):
         run_match([RandomBot(1), RandomBot(2)], 123, max_actions=limit)
     with pytest.raises(ValueError, match="positive"):
-        run_arena(["random"] * 2, 1, 123, max_actions_per_match=limit)
+        run_arena([PlayerConfig(bot="random")] * 2, 1, 123, max_actions_per_match=limit)
 
 
 def test_action_limit_abandons_match() -> None:
