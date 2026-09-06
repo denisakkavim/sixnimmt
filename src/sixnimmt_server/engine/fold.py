@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from sixnimmt_server.engine.audience import Viewer, addressed_player, visible_events
 from sixnimmt_server.engine.cards import bull_heads
 from sixnimmt_server.engine.events import Event
+from sixnimmt_server.engine.rules import MatchProtocol
 from sixnimmt_server.engine.state import Phase
 from sixnimmt_server.engine.views import (
     MatchView,
@@ -53,6 +54,7 @@ class _Fold:
     hand_number: int = 1
     play_number: int = 1
     target_score: int = 66
+    protocol: MatchProtocol = field(default_factory=MatchProtocol)
     negotiation_enabled: bool = False
     anonymise_display_names: bool = False
     max_actions_per_play: int | None = None
@@ -81,6 +83,7 @@ def _seat(state: _Fold, player_id: str) -> _Seat:
 def _apply_match_created(state: _Fold, data: dict) -> None:
     rules = data.get("rules", {})
     protocol = data.get("protocol", {})
+    state.protocol = MatchProtocol.model_validate(protocol)
     state.target_score = rules.get("target_score", state.target_score)
     state.negotiation_enabled = protocol.get("negotiation_enabled", False)
     state.anonymise_display_names = protocol.get("anonymise_display_names", False)
@@ -356,6 +359,7 @@ def _project(state: _Fold, viewer: Viewer, version: int) -> MatchView:
         awaiting=state.awaiting,
         legal_actions=_legal_actions(state, viewer),
         target_score=state.target_score,
+        protocol=state.protocol,
         messages=tuple(entry for entry in state.messages if isinstance(entry, MessageView)),
         private_messages_observed=tuple(entry for entry in state.messages if isinstance(entry, PrivateMessageView)),
         messages_omitted=state.message_count - len(state.messages),

@@ -223,3 +223,105 @@ The message cap bounds response size, not server resource use: live event histor
 and subscriber queues remain unbounded, and subscribers can accumulate queued events. Views on both surfaces advance
 incrementally as events arrive. Harnesses must still bound experiments and
 abandon stalled matches. Negotiation is available through both HTTP and the arena.
+
+## LLM arena players
+
+The `llm` strategy calls an **OpenAI-compatible Chat Completions endpoint** using
+function tools. Each seat specifies its own `base_url` and `model`, so one lineup
+can compare local models and hosted providers. Endpoints must support tool calling;
+this does not imply support for every provider's native API.
+
+For Ollama, start the service and edit the example model name to match an installed
+tool-capable model. The example names `qwen3.5:0.8b-mlx`, which was available in
+the local environment used for the initial smoke test:
+
+```bash
+ollama list
+uv run sixnimmt arena --players-file examples/arena-llm-players.json \
+  --games 1 --seed 1234 --concurrency 1 --decision-timeout 130 \
+  --trace-dir traces/llm-first-run
+```
+
+The example uses `http://localhost:11434/v1`. Ollama's compatibility endpoint
+accepts the SDK's placeholder API key; no OpenAI account is required. See
+[Ollama's compatibility documentation](https://docs.ollama.com/api/openai-compatibility).
+The example is a starting configuration, not a model-quality benchmark.
+
+For a hosted endpoint, set `base_url` to its API root (including `/v1` when
+required), `model` to its model identifier, and `api_key_env` to the **name** of an
+environment variable holding that endpoint's key. Keys are never read implicitly
+from `OPENAI_API_KEY`; selecting a different endpoint cannot silently reuse it.
+When `api_key_env` is set, an absent or empty variable fails before matches start.
+Never put credentials in `options`, `agent_metadata`, or the URL.
+
+Each decision sends fresh instructions, the player's filtered view, row penalties,
+and the previous action and any rejection. There is no growing conversation or
+persistent model memory. Only currently available action types are offered as
+tools. Exactly one function call is accepted; the arena then regains control.
+Classic selection and row choice, and negotiation messaging and commitment, use
+the same path. Add `--negotiation` to enable negotiation. Views include the public
+protocol so bots can see message permissions, limits, and the end condition.
+
+Model options (unknown keys are rejected):
+
+| Option | Default | Meaning |
+|---|---|---|
+| `model`, `base_url` | Required | Model identifier and endpoint API root |
+| `api_key_env` | `null` | Credential environment variable name; otherwise a placeholder key |
+| `temperature` | `null` | Omitted unless specified |
+| `max_tokens` | `2048` | Output token cap, including reasoning where the endpoint counts it |
+| `token_limit_parameter` | `"max_tokens"` | Set to `"max_completion_tokens"` for endpoints requiring that field |
+| `request_timeout_seconds` | `60.0` | SDK request timeout |
+| `decision_budget_seconds` | `120.0` | Budget across response repair attempts |
+| `repair_attempts` | `1` | Additional requests for malformed/missing/multiple tool calls (0–3) |
+| `tool_choice` | `"required"` | Use `"auto"` or `null` to omit it for endpoints with limited support |
+| `disable_parallel_tool_calls` | `true` | Sends `parallel_tool_calls=false`; set false to omit the field |
+| `strict_tools` | `false` | Opt into server-side strict function schemas where supported |
+| `system_prompt` | Built-in game instructions | Replace the full system instructions for this seat |
+| `strategy_prompt` | `""` | Seat-specific strategy and personality appended to system instructions |
+
+Local parsing always rejects extra fields and incorrect argument types, regardless
+of `strict_tools`. Well-formed illegal actions reach the engine and its existing
+rejection/retry budget. Malformed responses receive bounded repair feedback.
+Provider errors fail the match without SDK retries or a fallback move, making
+provider failures visible in comparisons. Error bodies are excluded from recorded
+failure reasons.
+
+Set the arena's `--decision-timeout` slightly above `decision_budget_seconds`.
+The budget caps time allotted to subsequent requests and discards late responses;
+SDK network timeouts are not a guaranteed wall-clock cancellation. The arena's
+outer deadline remains the backstop. Start with concurrency 1 for a local model.
+
+Tracing records resolved model options, prompt version/hash, returned model
+identifiers, calls, repairs, errors, token usage, and request latency per seat.
+Missing usage is counted explicitly. Monetary cost and raw model transcripts are
+not currently recorded. Model runs are marked non-reproducible; game event logs
+still replay without calling a model. The root seed controls deals and scripted
+bots, and is not sent as a claim of model determinism.
+
+
+Bot implementations live together in `src/sixnimmt_server/arena/bots/`:
+`random.py`, `greedy.py`, and `llm.py`. Shared contracts are in `base.py`, the
+registry is in `__init__.py`, and default LLM instructions and tool schemas are
+in `prompt.py`. Existing imports from `sixnimmt_server.arena.bots` still work.
+
+Give each LLM seat its own `options.strategy_prompt` to compare strategies or
+personalities, even when both seats use the same model. For example:
+
+```json
+{
+  "bot": "llm",
+  "display_name": "Assertive negotiator",
+  "options": {
+    "model": "qwen3.5:0.8b-mlx",
+    "base_url": "http://localhost:11434/v1",
+    "strategy_prompt": "Take calculated risks. Negotiate assertively and propose mutually beneficial deals."
+  }
+}
+```
+
+Use `options.system_prompt` when you want to replace the default game instructions
+entirely. `strategy_prompt` is appended to whichever system prompt that seat uses.
+Tool schemas and one-action validation remain enforced by code. Both resolved
+prompts are recorded in the seat options, and statistics include the hash of the
+combined instructions so prompt variants can be distinguished in experiments.

@@ -32,6 +32,7 @@ class ActionRecord(BaseModel):
     from_view: str | None
     received_at: datetime
     outcome: Literal["accepted", "rejected", "timeout", "error"] = "accepted"
+    reason: str | None = None
     decision_started_at: datetime | None = None
     decision_ended_at: datetime | None = None
     decision_duration_ms: float | None = None
@@ -186,14 +187,56 @@ class JsonlEventSink(EventSink):
         self._events = AtomicJsonlWriter(event_log_path(directory, match_id))
         self._actions = AtomicJsonlWriter(action_log_path(directory, match_id))
         self._closed = False
+        self._player_names: dict[str, str] = {}
+        # A reopened sink must retain the labels learned when the match began.
+        for event in read_event_log(event_log_path(directory, match_id)):
+            self._remember_names(event)
 
     def append(self, events: Sequence[Event]) -> None:
         if not events:
             return
-        self._write(self._events, [event.model_dump(mode="json") for event in events])
+        payloads = []
+        for event in events:
+            self._remember_names(event)
+            payloads.append(self._with_player_names(event.model_dump(mode="json")))
+        self._write(self._events, payloads)
 
     def record_action(self, record: ActionRecord) -> None:
-        self._write(self._actions, [record.model_dump(mode="json")])
+        self._write(self._actions, [self._with_player_names(record.model_dump(mode="json"))])
+
+    def _remember_names(self, event: Event) -> None:
+        if event.type != "match_created" or event.audience != "public":
+            return
+        self._player_names = {player["player_id"]: player["display_name"] for player in event.data["players"]}
+
+    def _with_player_names(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Label explicit identity references without interpreting message text.
+
+        This top-level annotation is ignored by event/action readers. Keeping it
+        outside event data preserves the authoritative event and replay contract.
+        """
+        data = payload.get("data", payload)
+        player_ids = set()
+        for key in ("player_id", "from", "to", "ended_by"):
+            player_id = data.get(key)
+            if isinstance(player_id, str):
+                player_ids.add(player_id)
+        for key in ("selections", "hand_scores", "totals"):
+            player_ids.update(data.get(key, {}))
+        player_ids.update(data.get("winners", []))
+        for player in data.get("players", []):
+            player_ids.add(player["player_id"])
+        audience = payload.get("audience", "")
+        if audience.startswith("player:"):
+            player_ids.add(audience.removeprefix("player:"))
+        names = {
+            player_id: self._player_names[player_id]
+            for player_id in sorted(player_ids)
+            if player_id in self._player_names
+        }
+        if names:
+            payload["player_display_names"] = names
+        return payload
 
     def _write(self, writer: AtomicJsonlWriter, payloads: list[dict[str, Any]]) -> None:
         if self._closed:

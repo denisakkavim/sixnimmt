@@ -5,6 +5,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, Field
 
 from sixnimmt_server.engine.actions import MessageVisibility
+from sixnimmt_server.engine.rules import MatchProtocol
 from sixnimmt_server.engine.state import Phase
 
 
@@ -89,6 +90,7 @@ class MatchView(BaseModel):
     # Advisory presentation hint for clients. The server revalidates everything.
     legal_actions: tuple[str, ...] = ()
     target_score: int = 66
+    protocol: MatchProtocol = Field(default_factory=MatchProtocol)
     messages: tuple[MessageView, ...] = ()
     private_messages_observed: tuple[PrivateMessageView, ...] = ()
     messages_omitted: int = Field(default=0, ge=0)

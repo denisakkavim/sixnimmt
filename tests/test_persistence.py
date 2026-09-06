@@ -365,3 +365,41 @@ def test_an_abandoned_match_records_no_further_actions(logged: Match, tmp_path: 
     assert logged.act("alice", type="select_card", card=card).status_code == 409
 
     assert read_action_log(action_log_path(tmp_path, logged.match_id)) == before
+
+
+def test_trace_labels_player_references_and_preserves_events(tmp_path: Path) -> None:
+    from sixnimmt_server.engine.events import CardsRevealedEvent, MessageSentEvent
+    from sixnimmt_server.engine.setup import create_match
+    from sixnimmt_server.engine.state import PlayerSeat
+
+    _, events = create_match(
+        "names", [PlayerSeat(player_id="a", display_name="Alice"), PlayerSeat(player_id="b", display_name="Bob")], 123
+    )
+    message = MessageSentEvent(
+        match_id="names", audience="public", data={"from": "a", "to": "b", "body": "hello", "visibility": "direct"}
+    )
+    revealed = CardsRevealedEvent(match_id="names", audience="public", data={"selections": {"a": 1, "b": 2}})
+    sink = JsonlEventSink(tmp_path, "names")
+    sink.append(events)
+    sink.close()
+    sink = JsonlEventSink(tmp_path, "names")
+    sink.append([message, revealed])
+    action = ActionRecord(
+        server_action_seq=1,
+        action_id="action",
+        player_id="a",
+        type="select_card",
+        from_view=None,
+        received_at=message.timestamp,
+    )
+    sink.record_action(action)
+    sink.close()
+
+    lines = _lines(event_log_path(tmp_path, "names"))
+    assert lines[-2]["player_display_names"] == {"a": "Alice", "b": "Bob"}
+    assert lines[-1]["player_display_names"] == {"a": "Alice", "b": "Bob"}
+    dealt = next(line for line in lines if line["type"] == "cards_dealt" and line["data"]["player_id"] == "a")
+    assert dealt["player_display_names"] == {"a": "Alice"}
+    assert _lines(action_log_path(tmp_path, "names"))[0]["player_display_names"] == {"a": "Alice"}
+    assert read_event_log(event_log_path(tmp_path, "names")) == [*events, message, revealed]
+    assert read_action_log(action_log_path(tmp_path, "names")) == [action]

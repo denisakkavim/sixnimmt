@@ -812,3 +812,21 @@ def test_server_records_rejected_outcomes_without_arena_timings(tmp_path: Path) 
         record.decision_started_at is None and record.decision_ended_at is None and record.decision_duration_ms is None
         for record in records
     )
+
+
+def test_failure_reason_is_written_before_manifest(tmp_path: Path) -> None:
+    from sixnimmt_server.persistence.sink import JsonlEventSink
+
+    sink = JsonlEventSink(tmp_path, "failure")
+    try:
+        result = run_match([RaisingBot(), RandomBot(2)], 123, match_id="failure", sink=sink)
+        assert not (tmp_path / "manifest.json").exists()
+        events = read_event_log(tmp_path / "failure.jsonl")
+        failure = next(event for event in events if event.type == "match_abandoned" and event.audience == "admin")
+        assert failure.data == {"outcome": "failed", "ended_by": "player_1", "reason": result.reason}
+        assert "provider unavailable" in failure.data["reason"]
+        assert events[-1].audience == "public"
+        assert "reason" not in events[-1].data
+        assert read_action_log(tmp_path / "failure.actions.jsonl")[0].reason == result.reason
+    finally:
+        sink.close()

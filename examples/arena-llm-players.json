@@ -1,0 +1,21 @@
+[
+  {
+    "bot": "llm",
+    "display_name": "Local model",
+    "options": {
+      "model": "qwen3.5:0.8b-mlx",
+      "base_url": "http://localhost:11434/v1",
+      "request_timeout_seconds": 60.0,
+      "decision_budget_seconds": 120.0,
+      "strategy_prompt": "Play cautiously: minimise the risk of taking expensive rows. During negotiation, be calm and diplomatic, and make only promises you intend to keep."
+    }
+  },
+  {
+    "bot": "greedy",
+    "display_name": "Greedy baseline"
+  },
+  {
+    "bot": "random",
+    "display_name": "Random baseline"
+  }
+]

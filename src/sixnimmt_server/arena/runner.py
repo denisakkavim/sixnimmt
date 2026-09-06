@@ -101,12 +101,21 @@ class _Match:
             winners = tuple(self.events[-1].data["winners"])
         else:
             self.append([
+                # Exception details may contain private observations. Keep them
+                # in the admin log, while announcing termination publicly.
+                MatchAbandonedEvent(
+                    match_id=self.state.match_id,
+                    hand=self.state.hand_number,
+                    play=self.state.play_number,
+                    audience="admin",
+                    data={"outcome": outcome.value, "ended_by": ended_by, "reason": reason},
+                ),
                 MatchAbandonedEvent(
                     match_id=self.state.match_id,
                     hand=self.state.hand_number,
                     play=self.state.play_number,
                     audience="public",
-                )
+                ),
             ])
         return MatchResult(
             self.seed,
@@ -147,6 +156,11 @@ class _Match:
             outcome, next_state, batch, refused = self.attempt(seat, decision)
             if refused is not None:
                 rejection = refused
+            reason = None
+            if outcome in ("timeout", "error"):
+                reason = "decision_timeout" if decision.timed_out else repr(decision.error)
+            elif refused is not None:
+                reason = f"{refused.code.value}: {refused.message}"
             self.sink.record_action(
                 ActionRecord(
                     server_action_seq=self.action_seq,
@@ -156,13 +170,13 @@ class _Match:
                     from_view=view.view_id,
                     received_at=decision.ended_at,
                     outcome=outcome,
+                    reason=reason,
                     decision_started_at=decision.started_at,
                     decision_ended_at=decision.ended_at,
                     decision_duration_ms=decision.duration_ms,
                 )
             )
             if outcome in ("timeout", "error"):
-                reason = "decision_timeout" if decision.timed_out else repr(decision.error)
                 return self.finish(MatchOutcome.FAILED, player_id, reason)
             self.play_attempts += 1
             if outcome == "accepted":
