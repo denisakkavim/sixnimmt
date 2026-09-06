@@ -2,13 +2,13 @@
 
 import pytest
 
-from sixnimmt_server.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction
-from sixnimmt_server.engine.events import ActionRejectedEvent, Event, MatchAbandonedEvent
-from sixnimmt_server.engine.replay import replay_events
-from sixnimmt_server.engine.rules import GameRules, MatchProtocol
-from sixnimmt_server.engine.setup import create_match
-from sixnimmt_server.engine.state import MatchState, Phase, PlayerSeat
-from sixnimmt_server.engine.transition import transition
+from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction
+from sixnimmt.engine.events import ActionRejectedEvent, Event, MatchAbandonedEvent
+from sixnimmt.engine.replay import replay_events
+from sixnimmt.engine.rules import GameRules, MatchProtocol
+from sixnimmt.engine.setup import create_match
+from sixnimmt.engine.state import MatchState, Phase, PlayerSeat
+from sixnimmt.engine.transition import transition
 
 CLASSIC = MatchProtocol()
 COMMUNICATION = MatchProtocol(communication_enabled=True)
@@ -138,7 +138,7 @@ def test_an_abandoned_match_replays_as_abandoned_without_a_winner() -> None:
 
     assert replayed.status == "abandoned"
     assert replayed.winners == ()
-    # Abandonment is a server lifecycle event, so it leaves the game itself
+    # Abandonment is an application lifecycle event, so it leaves the game itself
     # exactly where it stood rather than moving it through a phase.
     assert _comparable(replayed.state) == _comparable(live)
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from sixnimmt_server.engine.cards import bull_heads, full_deck
+from sixnimmt.engine.cards import bull_heads, full_deck
 
 # Independent lookup of known values: written by hand, not derived from the
 # implementation, so the test cannot repeat an implementation bug.

@@ -3,13 +3,13 @@
 import pytest
 from pydantic import TypeAdapter
 
-from sixnimmt_server.engine.actions import Action, CommitAction, UncommitAction
-from sixnimmt_server.engine.errors import EngineRejection, ErrorCode
-from sixnimmt_server.engine.events import EventType
-from sixnimmt_server.engine.rules import GameRules, MatchProtocol
-from sixnimmt_server.engine.setup import create_match
-from sixnimmt_server.engine.state import MatchState, Phase, PlayerState, ResolutionState, RowState
-from sixnimmt_server.engine.transition import transition
+from sixnimmt.engine.actions import Action, CommitAction, UncommitAction
+from sixnimmt.engine.errors import EngineRejection, ErrorCode
+from sixnimmt.engine.events import EventType
+from sixnimmt.engine.rules import GameRules, MatchProtocol
+from sixnimmt.engine.setup import create_match
+from sixnimmt.engine.state import MatchState, Phase, PlayerState, ResolutionState, RowState
+from sixnimmt.engine.transition import transition
 
 _ACTION_ADAPTER: TypeAdapter[Action] = TypeAdapter(Action)
 _COMMUNICATION = MatchProtocol(communication_enabled=True)

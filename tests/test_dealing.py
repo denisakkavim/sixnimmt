@@ -2,7 +2,7 @@
 
 import pytest
 
-from sixnimmt_server.engine.cards import deal, full_deck, shuffled_deck
+from sixnimmt.engine.cards import deal, full_deck, shuffled_deck
 
 
 def test_deal_is_round_robin_in_seating_order_for_10_passes() -> None:

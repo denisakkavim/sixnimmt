@@ -2,20 +2,20 @@
 
 import pytest
 
-from sixnimmt_server.engine.actions import ChooseRowAction, SelectCardAction
-from sixnimmt_server.engine.audience import (
+from sixnimmt.engine.actions import ChooseRowAction, SelectCardAction
+from sixnimmt.engine.audience import (
     Viewer,
     events_since,
     view_version,
     visible_events,
     visible_to,
 )
-from sixnimmt_server.engine.events import Event, EventType, PlayStartedEvent
-from sixnimmt_server.engine.rules import GameRules, MatchProtocol
-from sixnimmt_server.engine.setup import create_match
-from sixnimmt_server.engine.state import Phase
-from sixnimmt_server.engine.transition import transition
-from sixnimmt_server.engine.views import ViewRole
+from sixnimmt.engine.events import Event, EventType, PlayStartedEvent
+from sixnimmt.engine.rules import GameRules, MatchProtocol
+from sixnimmt.engine.setup import create_match
+from sixnimmt.engine.state import Phase
+from sixnimmt.engine.transition import transition
+from sixnimmt.engine.views import ViewRole
 
 ALICE = Viewer(role=ViewRole.PLAYER, player_id="alice")
 BOB = Viewer(role=ViewRole.PLAYER, player_id="bob")

@@ -3,7 +3,7 @@
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from sixnimmt_server.engine.events import (
+from sixnimmt.engine.events import (
     EVENT_TYPES,
     Event,
     MatchCreatedEvent,

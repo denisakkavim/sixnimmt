@@ -6,22 +6,20 @@ import pathlib
 import pytest
 from pydantic import TypeAdapter
 
-from sixnimmt_server.engine.actions import Action
-from sixnimmt_server.engine.errors import EngineRejection
-from sixnimmt_server.engine.rules import GameRules, MatchProtocol
-from sixnimmt_server.engine.setup import create_match
-from sixnimmt_server.engine.state import Phase
-from sixnimmt_server.engine.transition import transition
+from sixnimmt.engine.actions import Action
+from sixnimmt.engine.errors import EngineRejection
+from sixnimmt.engine.rules import GameRules, MatchProtocol
+from sixnimmt.engine.setup import create_match
+from sixnimmt.engine.state import Phase
+from sixnimmt.engine.transition import transition
 
 _ACTION_ADAPTER: TypeAdapter[Action] = TypeAdapter(Action)
 
 
-def test_engine_never_imports_server_or_web_frameworks() -> None:
-    engine_dir = pathlib.Path(__file__).resolve().parent.parent / "src" / "sixnimmt_server" / "engine"
+def test_engine_never_imports_web_frameworks() -> None:
+    engine_dir = pathlib.Path(__file__).resolve().parent.parent / "src" / "sixnimmt" / "engine"
     sources = " ".join(path.read_text() for path in engine_dir.glob("*.py"))
 
-    assert "from server" not in sources
-    assert "import server" not in sources
     assert "fastapi" not in sources.lower()
 
 
@@ -78,11 +76,10 @@ def test_finished_match_rejects_every_action() -> None:
         ("engine", {"common", "engine"}),
         ("persistence", {"common", "engine", "persistence"}),
         ("arena", {"common", "engine", "persistence", "arena"}),
-        ("server", {"common", "engine", "persistence", "server"}),
     ],
 )
 def test_packages_respect_dependency_direction(package: str, allowed: set[str]) -> None:
-    root = pathlib.Path(__file__).resolve().parent.parent / "src" / "sixnimmt_server"
+    root = pathlib.Path(__file__).resolve().parent.parent / "src" / "sixnimmt"
     for path in (root / package).rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
             modules = []
@@ -91,7 +88,6 @@ def test_packages_respect_dependency_direction(package: str, allowed: set[str]) 
             elif isinstance(node, ast.ImportFrom) and node.module is not None:
                 modules = [node.module]
             for module in modules:
-                if module.startswith("sixnimmt_server."):
+                if module.startswith("sixnimmt."):
                     assert module.split(".")[1] in allowed, (path, module)
-                if package != "server":
-                    assert module.split(".")[0] not in {"fastapi", "starlette", "uvicorn"}, (path, module)
+                assert module.split(".")[0] not in {"fastapi", "starlette", "uvicorn"}, (path, module)

@@ -6,24 +6,22 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import open_match
-from starlette.testclient import TestClient
 
-from sixnimmt_server.analytics.summary import summarise
-from sixnimmt_server.arena.bots import REGISTRY, BotSpec, GreedyBot, RandomBot, Rejection
-from sixnimmt_server.arena.players import PlayerConfig
-from sixnimmt_server.arena.runner import ArenaError, MatchOutcome, RunConfig, resolve, run_arena, run_match
-from sixnimmt_server.arena.scheduling import SequentialScheduler
-from sixnimmt_server.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction, SendMessageAction
-from sixnimmt_server.engine.audience import Viewer, visible_events
-from sixnimmt_server.engine.events import Event
-from sixnimmt_server.engine.fold import ViewFolder, build_view
-from sixnimmt_server.engine.replay import replay_events
-from sixnimmt_server.engine.rules import MatchProtocol
-from sixnimmt_server.engine.state import MatchState, Phase
-from sixnimmt_server.engine.views import MatchView, ViewRole
-from sixnimmt_server.persistence.manifest import ManifestMatch
-from sixnimmt_server.persistence.sink import read_action_log, read_event_log
+from sixnimmt.analytics.summary import summarise
+from sixnimmt.arena.bots import REGISTRY, BotSpec, GreedyBot, RandomBot, Rejection
+from sixnimmt.arena.players import PlayerConfig
+from sixnimmt.arena.runner import ArenaError, MatchOutcome, RunConfig, resolve, run_arena, run_match
+from sixnimmt.arena.scheduling import SequentialScheduler
+from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction, SendMessageAction
+from sixnimmt.engine.audience import Viewer, visible_events
+from sixnimmt.engine.events import Event
+from sixnimmt.engine.fold import ViewFolder, build_view
+from sixnimmt.engine.replay import replay_events
+from sixnimmt.engine.rules import MatchProtocol
+from sixnimmt.engine.state import MatchState, Phase
+from sixnimmt.engine.views import MatchView, ViewRole
+from sixnimmt.persistence.manifest import ManifestMatch
+from sixnimmt.persistence.sink import read_action_log, read_event_log
 
 
 class BadRows(RandomBot):
@@ -123,28 +121,6 @@ def test_every_offer_can_recover_from_a_private_rejection(short_protocol: MatchP
             for event in visible_events(result.events, own)
             if event.type == "action_rejected"
         )
-
-
-@pytest.mark.parametrize(
-    "action", [ChooseRowAction(row_index=99), CommitAction(), SendMessageAction(visibility="table", body="hello")]
-)
-def test_retry_feedback_matches_http_error_body(client: TestClient, action: Action) -> None:
-    match = open_match(client, players=["player_1", "player_2"], seed=123)
-    match.start()
-    expected = match.act("player_1", **action.model_dump(mode="json")).json()["error"]
-    refusals: list[Rejection] = []
-
-    class Refused:
-        def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
-            if rejection is not None:
-                refusals.append(rejection)
-            return action
-
-    result = run_match([Refused(), RandomBot(2)], 123, config=RunConfig(decision_rejection_limit=2))
-    assert result.outcome == MatchOutcome.FORFEITED
-    assert refusals[0].code.name == expected["code"]
-    assert refusals[0].message == expected["message"]
-    assert list(refusals[0].legal_actions) == expected["legal_actions"]
 
 
 @pytest.mark.parametrize(
@@ -579,8 +555,8 @@ def test_scheduler_failure_stops_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_greedy_chooses_lowest_cost_card_and_lowest_row_on_ties() -> None:
-    from sixnimmt_server.engine.setup import create_match
-    from sixnimmt_server.engine.views import RowView
+    from sixnimmt.engine.setup import create_match
+    from sixnimmt.engine.views import RowView
 
     _, events = create_match("greedy", ["a", "b"], 123)
     view = build_view(events, Viewer(ViewRole.PLAYER, "a"))
@@ -594,8 +570,8 @@ def test_greedy_chooses_lowest_cost_card_and_lowest_row_on_ties() -> None:
 
 
 def test_round_robin_resumes_and_skips_committed_seats() -> None:
-    from sixnimmt_server.arena.scheduling import RoundRobinScheduler
-    from sixnimmt_server.engine.setup import create_match
+    from sixnimmt.arena.scheduling import RoundRobinScheduler
+    from sixnimmt.engine.setup import create_match
 
     state, _ = create_match("schedule", ["a", "b", "c"], 123)
     scheduler = RoundRobinScheduler()
@@ -614,7 +590,7 @@ def test_round_robin_resumes_and_skips_committed_seats() -> None:
 
 
 def test_hidden_direct_messages_do_not_change_uninvolved_bot_view(short_protocol: MatchProtocol) -> None:
-    from sixnimmt_server.engine.rules import InformationPolicy
+    from sixnimmt.engine.rules import InformationPolicy
 
     protocol = short_protocol.model_copy(
         update={
@@ -644,10 +620,10 @@ def test_hidden_direct_messages_do_not_change_uninvolved_bot_view(short_protocol
 
 
 def test_live_folder_applies_each_visible_event_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    import sixnimmt_server.engine.fold as fold
-    from sixnimmt_server.engine.rules import GameRules
-    from sixnimmt_server.engine.setup import create_match
-    from sixnimmt_server.engine.transition import transition
+    import sixnimmt.engine.fold as fold
+    from sixnimmt.engine.rules import GameRules
+    from sixnimmt.engine.setup import create_match
+    from sixnimmt.engine.transition import transition
 
     protocol = MatchProtocol(communication_enabled=True)
     state, initial = create_match("messages", ["a", "b"], 123, protocol=protocol)
@@ -672,53 +648,6 @@ def test_live_folder_applies_each_visible_event_once(monkeypatch: pytest.MonkeyP
         folder.view()
         expected += len(visible_events(batch, viewer))
     assert applied == expected
-
-
-def test_summary_reads_both_surfaces_and_counts_direct_messages_once(
-    tmp_path: Path, short_protocol: MatchProtocol
-) -> None:
-    from conftest import ADMIN_TOKEN
-
-    from sixnimmt_server.server.app import create_app
-
-    protocol = short_protocol.model_copy(update={"communication_enabled": True})
-    proposed: list[tuple[str, Action]] = []
-
-    class Recording(RandomBot):
-        def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
-            action = super().act(view, rejection)
-            proposed.append((view.you.player_id, action))
-            return action
-
-    class RecordingChat(Chatty):
-        def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
-            action = super().act(view, rejection)
-            proposed.append((view.you.player_id, action))
-            return action
-
-    arena_dir = tmp_path / "arena"
-    run_match([RecordingChat(1), Recording(2)], 123, protocol=protocol, config=RunConfig(trace_dir=arena_dir))
-    server_dir = tmp_path / "server"
-    with TestClient(create_app(admin_token=ADMIN_TOKEN, log_directory=server_dir)) as client:
-        match = open_match(
-            client, players=["player_1", "player_2"], seed=123, protocol=protocol.model_dump(mode="json")
-        )
-        match.start()
-        for player_id, action in proposed:
-            assert match.act(player_id, **action.model_dump(mode="json")).status_code == 200
-    summaries = []
-    for directory, match_id in [(arena_dir, "arena_0"), (server_dir, match.match_id)]:
-        events = read_event_log(directory / f"{match_id}.jsonl")
-        records = read_action_log(directory / f"{match_id}.actions.jsonl")
-        summary = summarise(events, records)
-        assert summary.players[0].messages_sent == summary.players[1].messages_received == 10
-        summaries.append(summary)
-    for arena_seat, server_seat in zip(summaries[0].players, summaries[1].players, strict=True):
-        assert arena_seat.model_dump(exclude={"decision_latencies_ms"}) == server_seat.model_dump(
-            exclude={"decision_latencies_ms"}
-        )
-        assert arena_seat.decision_latencies_ms is not None
-        assert server_seat.decision_latencies_ms is None
 
 
 def test_concurrent_matches_have_distinct_instances_and_bounded_capacity(
@@ -782,9 +711,9 @@ def test_direct_match_trace_has_manifest(tmp_path: Path, short_protocol: MatchPr
 
 
 def test_legacy_fold_keeps_selection_only_action_counts() -> None:
-    from sixnimmt_server.engine.rules import GameRules
-    from sixnimmt_server.engine.setup import create_match
-    from sixnimmt_server.engine.transition import transition
+    from sixnimmt.engine.rules import GameRules
+    from sixnimmt.engine.setup import create_match
+    from sixnimmt.engine.transition import transition
 
     state, events = create_match("legacy", ["a", "b"], 123)
     _, selected = transition(state, "a", SelectCardAction(card=state.players[0].hand[0]), MatchProtocol(), GameRules())
@@ -794,28 +723,8 @@ def test_legacy_fold_keeps_selection_only_action_counts() -> None:
     assert view.you.committed
 
 
-def test_server_records_rejected_outcomes_without_arena_timings(tmp_path: Path) -> None:
-    from conftest import ADMIN_TOKEN
-
-    from sixnimmt_server.server.app import create_app
-
-    with TestClient(create_app(admin_token=ADMIN_TOKEN, log_directory=tmp_path)) as client:
-        match = open_match(client, players=["player_1", "player_2"], seed=123)
-        match.start()
-        assert match.act("player_1", type="choose_row", row_index=99).status_code == 409
-        card = match.state("player_1")["you"]["hand"][0]
-        assert match.act("player_1", type="select_card", card=card).status_code == 200
-    records = read_action_log(tmp_path / f"{match.match_id}.actions.jsonl")
-    assert [record.outcome for record in records] == ["rejected", "accepted"]
-    assert records[1].server_action_seq == records[0].server_action_seq + 1
-    assert all(
-        record.decision_started_at is None and record.decision_ended_at is None and record.decision_duration_ms is None
-        for record in records
-    )
-
-
 def test_failure_reason_is_written_before_manifest(tmp_path: Path) -> None:
-    from sixnimmt_server.persistence.sink import JsonlEventSink
+    from sixnimmt.persistence.sink import JsonlEventSink
 
     sink = JsonlEventSink(tmp_path, "failure")
     try:

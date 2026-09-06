@@ -1,7 +1,7 @@
 """Match setup and hand dealing orchestration."""
 
-from sixnimmt_server.engine.setup import create_match, start_hand
-from sixnimmt_server.engine.state import Phase, PlayerState
+from sixnimmt.engine.setup import create_match, start_hand
+from sixnimmt.engine.state import Phase, PlayerState
 
 
 def test_create_match_deals_first_hand_in_selecting() -> None:

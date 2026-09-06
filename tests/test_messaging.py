@@ -5,24 +5,24 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from sixnimmt_server.engine.actions import (
+from sixnimmt.engine.actions import (
     ChooseRowAction,
     CommitAction,
     SelectCardAction,
     SendMessageAction,
     UncommitAction,
 )
-from sixnimmt_server.engine.audience import Viewer, visible_events
-from sixnimmt_server.engine.errors import EngineRejection, ErrorCode
-from sixnimmt_server.engine.events import PlayStartedEvent
-from sixnimmt_server.engine.fold import MAX_VIEW_MESSAGES, build_view
-from sixnimmt_server.engine.replay import replay_events
-from sixnimmt_server.engine.rules import GameRules, MatchProtocol
-from sixnimmt_server.engine.setup import create_match
-from sixnimmt_server.engine.state import Phase, ResolutionState
-from sixnimmt_server.engine.transition import transition
-from sixnimmt_server.engine.views import ViewRole
-from sixnimmt_server.persistence.sink import read_event_log
+from sixnimmt.engine.audience import Viewer, visible_events
+from sixnimmt.engine.errors import EngineRejection, ErrorCode
+from sixnimmt.engine.events import PlayStartedEvent
+from sixnimmt.engine.fold import MAX_VIEW_MESSAGES, build_view
+from sixnimmt.engine.replay import replay_events
+from sixnimmt.engine.rules import GameRules, MatchProtocol
+from sixnimmt.engine.setup import create_match
+from sixnimmt.engine.state import Phase, ResolutionState
+from sixnimmt.engine.transition import transition
+from sixnimmt.engine.views import ViewRole
+from sixnimmt.persistence.sink import read_event_log
 
 RULES = GameRules()
 COMMUNICATION = MatchProtocol(communication_enabled=True)

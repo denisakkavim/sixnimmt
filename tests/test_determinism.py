@@ -7,11 +7,11 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from sixnimmt_server.engine.actions import Action
-from sixnimmt_server.engine.rules import GameRules, MatchProtocol
-from sixnimmt_server.engine.setup import create_match, start_hand
-from sixnimmt_server.engine.state import MatchState, Phase
-from sixnimmt_server.engine.transition import transition
+from sixnimmt.engine.actions import Action
+from sixnimmt.engine.rules import GameRules, MatchProtocol
+from sixnimmt.engine.setup import create_match, start_hand
+from sixnimmt.engine.state import MatchState, Phase
+from sixnimmt.engine.transition import transition
 
 _ACTION_ADAPTER: TypeAdapter[Action] = TypeAdapter(Action)
 
@@ -74,7 +74,7 @@ def test_arena_output_is_identical_across_interpreter_hash_seeds(tmp_path: Path)
     command = [
         sys.executable,
         "-c",
-        "from sixnimmt_server.cli import app; app()",
+        "from sixnimmt.cli import app; app()",
         "arena",
         "--players-file",
         str(players_file),

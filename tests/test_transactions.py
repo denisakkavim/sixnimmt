@@ -2,12 +2,12 @@
 
 import pytest
 
-from sixnimmt_server.arena.bots import GreedyBot
-from sixnimmt_server.arena.bots.base import ActionBatch, Rejection
-from sixnimmt_server.arena.runner import RunConfig, run_match
-from sixnimmt_server.engine.actions import Action, CommitAction, SelectCardAction, SendMessageAction
-from sixnimmt_server.engine.rules import MatchProtocol
-from sixnimmt_server.engine.views import MatchView
+from sixnimmt.arena.bots import GreedyBot
+from sixnimmt.arena.bots.base import ActionBatch, Rejection
+from sixnimmt.arena.runner import RunConfig, run_match
+from sixnimmt.engine.actions import Action, CommitAction, SelectCardAction, SendMessageAction
+from sixnimmt.engine.rules import MatchProtocol
+from sixnimmt.engine.views import MatchView
 
 
 class TransactionBot:

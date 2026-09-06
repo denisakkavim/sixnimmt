@@ -2,16 +2,16 @@
 
 import pytest
 
-from sixnimmt_server.engine.actions import ChooseRowAction, CommitAction, SelectCardAction, UncommitAction
-from sixnimmt_server.engine.audience import Viewer
-from sixnimmt_server.engine.cards import bull_heads
-from sixnimmt_server.engine.events import Event, MatchAbandonedEvent
-from sixnimmt_server.engine.fold import build_view
-from sixnimmt_server.engine.rules import GameRules, MatchProtocol
-from sixnimmt_server.engine.setup import create_match, open_match, start_match
-from sixnimmt_server.engine.state import MatchState, Phase, PlayerSeat
-from sixnimmt_server.engine.transition import transition
-from sixnimmt_server.engine.views import MatchView, ViewRole
+from sixnimmt.engine.actions import ChooseRowAction, CommitAction, SelectCardAction, UncommitAction
+from sixnimmt.engine.audience import Viewer
+from sixnimmt.engine.cards import bull_heads
+from sixnimmt.engine.events import Event, MatchAbandonedEvent
+from sixnimmt.engine.fold import build_view
+from sixnimmt.engine.rules import GameRules, MatchProtocol
+from sixnimmt.engine.setup import create_match, open_match, start_match
+from sixnimmt.engine.state import MatchState, Phase, PlayerSeat
+from sixnimmt.engine.transition import transition
+from sixnimmt.engine.views import MatchView, ViewRole
 
 PLAYERS = ["alice", "bob", "cara"]
 SPECTATOR = Viewer(role=ViewRole.PUBLIC_SPECTATOR)

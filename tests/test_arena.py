@@ -4,16 +4,16 @@ import random
 
 import pytest
 
-from sixnimmt_server.arena.bots import REGISTRY, RandomBot, Rejection
-from sixnimmt_server.arena.players import PlayerConfig
-from sixnimmt_server.arena.runner import MatchOutcome, derive_seed, run_arena, run_match
-from sixnimmt_server.engine.actions import Action, ChooseRowAction, SelectCardAction
-from sixnimmt_server.engine.audience import Viewer
-from sixnimmt_server.engine.events import Event
-from sixnimmt_server.engine.fold import build_view
-from sixnimmt_server.engine.setup import create_match
-from sixnimmt_server.engine.state import MatchState, Phase, PlayerSeat
-from sixnimmt_server.engine.views import MatchView, ViewRole
+from sixnimmt.arena.bots import REGISTRY, RandomBot, Rejection
+from sixnimmt.arena.players import PlayerConfig
+from sixnimmt.arena.runner import MatchOutcome, derive_seed, run_arena, run_match
+from sixnimmt.engine.actions import Action, ChooseRowAction, SelectCardAction
+from sixnimmt.engine.audience import Viewer
+from sixnimmt.engine.events import Event
+from sixnimmt.engine.fold import build_view
+from sixnimmt.engine.setup import create_match
+from sixnimmt.engine.state import MatchState, Phase, PlayerSeat
+from sixnimmt.engine.views import MatchView, ViewRole
 
 
 @pytest.fixture

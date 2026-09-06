@@ -2,17 +2,17 @@
 
 import pytest
 
-from sixnimmt_server.arena.bots import GreedyBot
-from sixnimmt_server.arena.bots.prompt import observation_text
-from sixnimmt_server.arena.runner import run_match
-from sixnimmt_server.engine.actions import SelectCardAction, SendMessageAction
-from sixnimmt_server.engine.audience import Viewer
-from sixnimmt_server.engine.events import CardPlacedEvent, CardsRevealedEvent, PlayStartedEvent, RowTakenEvent
-from sixnimmt_server.engine.fold import MAX_HISTORY_PLAYS, MAX_VIEW_MESSAGES, ViewFolder, build_view
-from sixnimmt_server.engine.rules import GameRules, MatchProtocol
-from sixnimmt_server.engine.setup import create_match
-from sixnimmt_server.engine.transition import transition
-from sixnimmt_server.engine.views import MessageView, PrivateMessageView, ViewRole
+from sixnimmt.arena.bots import GreedyBot
+from sixnimmt.arena.bots.prompt import observation_text
+from sixnimmt.arena.runner import run_match
+from sixnimmt.engine.actions import SelectCardAction, SendMessageAction
+from sixnimmt.engine.audience import Viewer
+from sixnimmt.engine.events import CardPlacedEvent, CardsRevealedEvent, PlayStartedEvent, RowTakenEvent
+from sixnimmt.engine.fold import MAX_HISTORY_PLAYS, MAX_VIEW_MESSAGES, ViewFolder, build_view
+from sixnimmt.engine.rules import GameRules, MatchProtocol
+from sixnimmt.engine.setup import create_match
+from sixnimmt.engine.transition import transition
+from sixnimmt.engine.views import MessageView, PrivateMessageView, ViewRole
 
 
 @pytest.mark.parametrize(

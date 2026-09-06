@@ -8,15 +8,15 @@ from typing import Any
 import pytest
 from pydantic import Field
 
-from sixnimmt_server.arena.bots import REGISTRY, BotOptions, BotSpec, RandomBot
-from sixnimmt_server.arena.players import PlayerConfig
-from sixnimmt_server.arena.runner import RunConfig, run_arena
-from sixnimmt_server.engine.audience import Viewer, visible_events
-from sixnimmt_server.engine.events import Event
-from sixnimmt_server.engine.rules import MatchProtocol
-from sixnimmt_server.engine.state import MatchState
-from sixnimmt_server.engine.views import ViewRole
-from sixnimmt_server.persistence.sink import read_event_log
+from sixnimmt.arena.bots import REGISTRY, BotOptions, BotSpec, RandomBot
+from sixnimmt.arena.players import PlayerConfig
+from sixnimmt.arena.runner import RunConfig, run_arena
+from sixnimmt.engine.audience import Viewer, visible_events
+from sixnimmt.engine.events import Event
+from sixnimmt.engine.rules import MatchProtocol
+from sixnimmt.engine.state import MatchState
+from sixnimmt.engine.views import ViewRole
+from sixnimmt.persistence.sink import read_event_log
 
 
 class StrategyOptions(BotOptions):
@@ -122,7 +122,7 @@ def test_configured_names_reach_observer_without_changing_seat_ids(short_protoco
 def test_cli_passes_validated_options_to_factory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from typer.testing import CliRunner
 
-    from sixnimmt_server.cli import app
+    from sixnimmt.cli import app
 
     options_received = []
 

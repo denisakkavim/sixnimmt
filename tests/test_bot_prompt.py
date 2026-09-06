@@ -2,13 +2,13 @@
 
 import pytest
 
-from sixnimmt_server.arena.bots.prompt import SYSTEM_PROMPT, action_tools, observation_text, system_instructions
-from sixnimmt_server.engine.audience import Viewer
-from sixnimmt_server.engine.events import RowChoiceMadeEvent, RowChoiceRequiredEvent
-from sixnimmt_server.engine.fold import ViewFolder, build_view
-from sixnimmt_server.engine.rules import MatchProtocol
-from sixnimmt_server.engine.setup import create_match
-from sixnimmt_server.engine.views import MessageView, PlayHistoryView, PrivateMessageView, RevealedCardView, ViewRole
+from sixnimmt.arena.bots.prompt import SYSTEM_PROMPT, action_tools, observation_text, system_instructions
+from sixnimmt.engine.audience import Viewer
+from sixnimmt.engine.events import RowChoiceMadeEvent, RowChoiceRequiredEvent
+from sixnimmt.engine.fold import ViewFolder, build_view
+from sixnimmt.engine.rules import MatchProtocol
+from sixnimmt.engine.setup import create_match
+from sixnimmt.engine.views import MessageView, PlayHistoryView, PrivateMessageView, RevealedCardView, ViewRole
 
 
 @pytest.mark.parametrize("communication", [False, True])

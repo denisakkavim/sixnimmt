@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from sixnimmt_server.engine.state import (
+from sixnimmt.engine.state import (
     MatchState,
     Phase,
     PlayerState,

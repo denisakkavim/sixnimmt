@@ -5,17 +5,17 @@ from itertools import pairwise
 
 import pytest
 
-from sixnimmt_server.arena.bots import RandomBot, Rejection
-from sixnimmt_server.arena.runner import derive_seed, run_match
-from sixnimmt_server.engine.actions import Action, SelectCardAction, SendMessageAction
-from sixnimmt_server.engine.audience import Viewer
-from sixnimmt_server.engine.cards import bull_heads
-from sixnimmt_server.engine.events import Event
-from sixnimmt_server.engine.fold import ViewFolder
-from sixnimmt_server.engine.replay import replay_events
-from sixnimmt_server.engine.rules import MatchProtocol
-from sixnimmt_server.engine.state import MatchState, Phase
-from sixnimmt_server.engine.views import MatchView, ViewRole
+from sixnimmt.arena.bots import RandomBot, Rejection
+from sixnimmt.arena.runner import derive_seed, run_match
+from sixnimmt.engine.actions import Action, SelectCardAction, SendMessageAction
+from sixnimmt.engine.audience import Viewer
+from sixnimmt.engine.cards import bull_heads
+from sixnimmt.engine.events import Event
+from sixnimmt.engine.fold import ViewFolder
+from sixnimmt.engine.replay import replay_events
+from sixnimmt.engine.rules import MatchProtocol
+from sixnimmt.engine.state import MatchState, Phase
+from sixnimmt.engine.views import MatchView, ViewRole
 
 
 class MatchLedger:

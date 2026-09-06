@@ -1,7 +1,7 @@
 [project]
-name = "sixnimmt-server"
+name = "sixnimmt"
 version = "0.0.1"
-description = "A game server and rules engine for deterministic 6 nimmt! matches."
+description = "A deterministic 6 nimmt! rules engine and in-process arena."
 authors = [{ name = "Denis Akkavim", email = "foo@email.com" }]
 readme = "README.md"
 keywords = ['python']
@@ -14,15 +14,13 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "fastapi>=0.141.1",
     "openai>=3.8.0",
     "pydantic>=2.13.5",
     "typer>=0.27.2",
-    "uvicorn>=0.52.4",
 ]
 
 [project.scripts]
-sixnimmt = "sixnimmt_server.cli:app"
+sixnimmt = "sixnimmt.cli:app"
 
 [project.urls]
 Homepage = "https://denisakkavim.github.io/sixnimmt-server/"
@@ -46,7 +44,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/sixnimmt_server"]
+packages = ["src/sixnimmt"]
 
 [tool.ty.environment]
 python = "./.venv"

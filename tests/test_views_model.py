@@ -3,8 +3,8 @@
 import pytest
 from pydantic import ValidationError
 
-from sixnimmt_server.engine.state import Phase
-from sixnimmt_server.engine.views import (
+from sixnimmt.engine.state import Phase
+from sixnimmt.engine.views import (
     MatchView,
     OpponentView,
     PlayerSelfView,

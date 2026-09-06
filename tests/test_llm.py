@@ -8,19 +8,19 @@ import pytest
 from openai import OpenAI
 from pydantic import ValidationError
 
-from sixnimmt_server.arena.bots import GreedyBot
-from sixnimmt_server.arena.bots.base import ActionBatch
-from sixnimmt_server.arena.bots.llm import LLMBot, LLMOptions, ModelDecisionError
-from sixnimmt_server.arena.bots.llm_memory import LLMMemoryBot, LLMMemoryOptions
-from sixnimmt_server.arena.players import PlayerConfig
-from sixnimmt_server.arena.runner import RunConfig, run_arena, run_match
-from sixnimmt_server.engine.actions import SelectCardAction
-from sixnimmt_server.engine.audience import Viewer
-from sixnimmt_server.engine.fold import build_view
-from sixnimmt_server.engine.replay import replay_events
-from sixnimmt_server.engine.rules import MatchProtocol
-from sixnimmt_server.engine.setup import create_match
-from sixnimmt_server.engine.views import MatchView, ViewRole
+from sixnimmt.arena.bots import GreedyBot
+from sixnimmt.arena.bots.base import ActionBatch
+from sixnimmt.arena.bots.llm import LLMBot, LLMOptions, ModelDecisionError
+from sixnimmt.arena.bots.llm_memory import LLMMemoryBot, LLMMemoryOptions
+from sixnimmt.arena.players import PlayerConfig
+from sixnimmt.arena.runner import RunConfig, run_arena, run_match
+from sixnimmt.engine.actions import SelectCardAction
+from sixnimmt.engine.audience import Viewer
+from sixnimmt.engine.fold import build_view
+from sixnimmt.engine.replay import replay_events
+from sixnimmt.engine.rules import MatchProtocol
+from sixnimmt.engine.setup import create_match
+from sixnimmt.engine.views import MatchView, ViewRole
 
 
 @pytest.fixture
@@ -103,7 +103,7 @@ def endpoint(monkeypatch: pytest.MonkeyPatch) -> Endpoint:
     def client(**kwargs: Any) -> OpenAI:
         return OpenAI(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(endpoint.handle)))
 
-    monkeypatch.setattr("sixnimmt_server.arena.bots.llm.OpenAI", client)
+    monkeypatch.setattr("sixnimmt.arena.bots.llm.OpenAI", client)
     return endpoint
 
 
@@ -260,7 +260,7 @@ def test_view_carries_public_protocol_limits() -> None:
 def test_parses_each_game_action(view: MatchView, name: str, arguments: dict) -> None:
     from openai.types.chat import ChatCompletion
 
-    from sixnimmt_server.arena.bots.llm import parse_action
+    from sixnimmt.arena.bots.llm import parse_action
 
     response = ChatCompletion.model_validate({
         "id": "completion",
@@ -303,7 +303,7 @@ def test_parses_each_game_action(view: MatchView, name: str, arguments: dict) ->
 def test_rejects_malformed_or_extra_tool_arguments(view: MatchView, arguments: str) -> None:
     from openai.types.chat import ChatCompletion
 
-    from sixnimmt_server.arena.bots.llm import parse_action
+    from sixnimmt.arena.bots.llm import parse_action
 
     response = ChatCompletion.model_validate({
         "id": "completion",
@@ -339,7 +339,7 @@ def test_does_not_retry_after_decision_budget_expires(
 ) -> None:
     endpoint.invalid_responses = 1
     clock_values = iter([0.0, 0.0, 0.0, 121.0, 121.0])
-    monkeypatch.setattr("sixnimmt_server.arena.bots.llm.monotonic", lambda: next(clock_values, 121.0))
+    monkeypatch.setattr("sixnimmt.arena.bots.llm.monotonic", lambda: next(clock_values, 121.0))
     bot = LLMBot(1, model="local", base_url="http://localhost:11434/v1")
     with pytest.raises(ModelDecisionError, match="budget exhausted"):
         bot.act(view)
@@ -395,7 +395,7 @@ def test_system_prompt_can_be_replaced_per_seat(endpoint: Endpoint, view: MatchV
 
 
 def test_card_tool_lists_only_current_hand(view: MatchView) -> None:
-    from sixnimmt_server.arena.bots.prompt import action_tools
+    from sixnimmt.arena.bots.prompt import action_tools
 
     tools = action_tools(view, False)
     assert tools[0]["function"]["parameters"]["properties"]["card"]["enum"] == list(view.you.hand)
@@ -544,7 +544,7 @@ def test_both_model_types_receive_the_same_shared_game_observation(endpoint: End
 def test_repair_feedback_includes_bounded_rejected_arguments_without_reasoning() -> None:
     from openai.types.chat import ChatCompletion
 
-    from sixnimmt_server.arena.bots.llm import repair_feedback
+    from sixnimmt.arena.bots.llm import repair_feedback
 
     response = ChatCompletion.model_validate({
         "id": "completion",
@@ -637,7 +637,7 @@ def test_failed_decision_does_not_replace_notes(
             endpoint.status = 503
         else:
             clock_values = iter([0.0, 0.0, 0.0, 0.0, 0.0, 121.0])
-            patch.setattr("sixnimmt_server.arena.bots.llm.monotonic", lambda: next(clock_values, 121.0))
+            patch.setattr("sixnimmt.arena.bots.llm.monotonic", lambda: next(clock_values, 121.0))
         with pytest.raises(ModelDecisionError):
             bot.act(view)
     endpoint.status = 200

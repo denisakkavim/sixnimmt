@@ -2,12 +2,12 @@
 
 from pydantic import TypeAdapter
 
-from sixnimmt_server.engine.actions import Action
-from sixnimmt_server.engine.cards import bull_heads, full_deck
-from sixnimmt_server.engine.rules import GameRules, MatchProtocol
-from sixnimmt_server.engine.setup import create_match
-from sixnimmt_server.engine.state import MatchState, Phase
-from sixnimmt_server.engine.transition import transition
+from sixnimmt.engine.actions import Action
+from sixnimmt.engine.cards import bull_heads, full_deck
+from sixnimmt.engine.rules import GameRules, MatchProtocol
+from sixnimmt.engine.setup import create_match
+from sixnimmt.engine.state import MatchState, Phase
+from sixnimmt.engine.transition import transition
 
 _ACTION_ADAPTER: TypeAdapter[Action] = TypeAdapter(Action)
 

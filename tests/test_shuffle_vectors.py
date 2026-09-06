@@ -7,7 +7,7 @@ that alters shuffle behaviour must fail loudly here.
 
 import pytest
 
-from sixnimmt_server.engine.cards import deal, hand_seed_for, shuffled_deck
+from sixnimmt.engine.cards import deal, hand_seed_for, shuffled_deck
 
 # (match_seed, hand_number) -> (hand_seed, full shuffled deck).
 VECTORS: dict[tuple[int, int], tuple[int, list[int]]] = {

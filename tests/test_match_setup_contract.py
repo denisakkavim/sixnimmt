@@ -2,11 +2,11 @@
 
 import pytest
 
-from sixnimmt_server.engine.errors import EngineRejection, ErrorCode
-from sixnimmt_server.engine.events import assign_sequence
-from sixnimmt_server.engine.rules import GameRules
-from sixnimmt_server.engine.setup import create_match, open_match, start_hand, start_match
-from sixnimmt_server.engine.state import MatchState, Phase, PlayerSeat
+from sixnimmt.engine.errors import EngineRejection, ErrorCode
+from sixnimmt.engine.events import assign_sequence
+from sixnimmt.engine.rules import GameRules
+from sixnimmt.engine.setup import create_match, open_match, start_hand, start_match
+from sixnimmt.engine.state import MatchState, Phase, PlayerSeat
 
 
 @pytest.mark.parametrize("count", [0, 1, 11, 20])

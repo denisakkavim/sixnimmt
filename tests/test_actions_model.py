@@ -5,7 +5,7 @@ from typing import Literal
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from sixnimmt_server.engine.actions import (
+from sixnimmt.engine.actions import (
     Action,
     ChooseRowAction,
     CommitAction,
