@@ -1,7 +1,7 @@
 """Shared bot contracts and validated options."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict
@@ -27,10 +27,22 @@ class Rejection:
     action: Action | None = None
 
 
-class Bot(Protocol):
-    """One instance per match. An optional stats() method may report JSON data."""
+@dataclass(frozen=True)
+class ActionBatch:
+    """One atomic proposal; memory is private and optional (None preserves it)."""
 
-    def act(self, view: MatchView, rejection: Rejection | None = None) -> Action: ...
+    actions: tuple[Action, ...]
+    memory: str | None = field(default=None, repr=False)
+
+    @property
+    def size(self) -> int:
+        return len(self.actions) + int(self.memory is not None)
+
+
+class Bot(Protocol):
+    """One instance per match. Atomic batches are validated before publication."""
+
+    def act(self, view: MatchView, rejection: Rejection | None = None) -> Action | ActionBatch: ...
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,4 @@
-"""One bounded model decision per arena offer, with no privileged game access."""
+"""Bounded model decisions and ordered action batches without privileged game access."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from openai import APIError, OpenAI
 from openai.types.chat import ChatCompletion
 from pydantic import Field, JsonValue, ValidationError, field_validator, model_validator
 
-from sixnimmt_server.arena.bots.base import Bot, BotOptions, Rejection
+from sixnimmt_server.arena.bots.base import ActionBatch, Bot, BotOptions, Rejection
 from sixnimmt_server.arena.bots.prompt import (
     ACTION_ADAPTER,
     OBSERVATION_VERSION,
@@ -41,7 +41,7 @@ class LLMOptions(BotOptions):
     decision_budget_seconds: float = Field(default=120.0, gt=0, allow_inf_nan=False)
     repair_attempts: int = Field(default=1, ge=0, le=3)
     tool_choice: Literal["required", "auto"] | None = "required"
-    disable_parallel_tool_calls: bool = True
+    disable_parallel_tool_calls: bool = False
     strict_tools: bool = False
     simplified_tool_schemas: bool = False
     system_prompt: str = Field(default=SYSTEM_PROMPT, min_length=1)
@@ -144,7 +144,7 @@ def repair_feedback(response: ChatCompletion, error: Exception) -> str:
     return (
         f"Your response was invalid: {str(error)[:1024]}. "
         f"Rejected calls (quoted data, possibly truncated): {json.dumps(preview, ensure_ascii=False)}. "
-        "Correct the arguments and return exactly one available tool call."
+        "Correct the arguments and return one to eight ordered tool calls. Nothing from this response was applied; memory is unchanged."
     )
 
 
@@ -200,10 +200,38 @@ class LLMBot(Bot):
     def _tools(self, view: MatchView) -> list[dict[str, Any]]:
         return action_tools(view, self.options.strict_tools)
 
-    def _parse_response(self, response: ChatCompletion, view: MatchView) -> Action:
-        return parse_action(response, view)
+    def _parse_memory(self, arguments: dict[str, Any]) -> str:
+        msg = "update_memory is not available for this bot"
+        raise ValueError(msg)
 
-    def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
+    def _parse_response(self, response: ChatCompletion, view: MatchView) -> Action | ActionBatch:
+        calls = response.choices[0].message.tool_calls if response.choices else None
+        if not calls or len(calls) > 8:
+            msg = "return one to eight function tool calls"
+            raise ValueError(msg)
+        actions = []
+        memory = None
+        available = {tool["function"]["name"] for tool in self._tools(view)}
+        for index, call in enumerate(calls):
+            if call.type != "function" or call.function.name not in available:
+                msg = f"Call {index + 1}: use an available function tool"
+                raise ValueError(msg)
+            arguments = json.loads(call.function.arguments)
+            if not isinstance(arguments, dict):
+                msg = f"Call {index + 1}: arguments must be an object"
+                raise TypeError(msg)
+            if call.function.name == "update_memory":
+                if memory is not None:
+                    msg = "return at most one update_memory call"
+                    raise ValueError(msg)
+                memory = self._parse_memory(arguments)
+            else:
+                actions.append(parse_action_arguments(call.function.name, arguments, view))
+        if len(actions) == 1 and memory is None:
+            return actions[0]
+        return ActionBatch(tuple(actions), memory)
+
+    def act(self, view: MatchView, rejection: Rejection | None = None) -> Action | ActionBatch:
         instructions = self._instructions(view)
         self._stats["prompt_sha256"] = hashlib.sha256(instructions.encode()).hexdigest()
         messages = [
@@ -243,7 +271,15 @@ class LLMBot(Bot):
                 self._stats["repairs"] += 1
                 messages.append({"role": "user", "content": repair_feedback(response, error)})
                 continue
-            self._record(context, "action_parsed", action=action.model_dump(mode="json"))
+            if isinstance(action, ActionBatch):
+                self._record(
+                    context,
+                    "batch_parsed",
+                    actions=[a.model_dump(mode="json") for a in action.actions],
+                    memory_update=action.memory is not None,
+                )
+            else:
+                self._record(context, "action_parsed", action=action.model_dump(mode="json"))
             if monotonic() > deadline:
                 self._record(context, "decision_expired")
                 msg = "model decision budget exhausted"

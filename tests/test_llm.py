@@ -9,6 +9,7 @@ from openai import OpenAI
 from pydantic import ValidationError
 
 from sixnimmt_server.arena.bots import GreedyBot
+from sixnimmt_server.arena.bots.base import ActionBatch
 from sixnimmt_server.arena.bots.llm import LLMBot, LLMOptions, ModelDecisionError
 from sixnimmt_server.arena.bots.llm_memory import LLMMemoryBot, LLMMemoryOptions
 from sixnimmt_server.arena.players import PlayerConfig
@@ -52,7 +53,7 @@ class Endpoint:
         tools = {tool["function"]["name"]: tool["function"] for tool in payload["tools"]}
         if "choose_row" in tools:
             name, arguments = "choose_row", {"row_index": 0}
-        elif "commit" in tools:
+        elif "commit" in tools and "Your selection: none;" not in payload["messages"][1]["content"]:
             name, arguments = "commit", {}
         else:
             hand = tools["select_card"]["parameters"]["properties"]["card"]["enum"]
@@ -60,9 +61,13 @@ class Endpoint:
             if self.illegal_card_once:
                 arguments = {"card": next(card for card in range(1, 105) if card not in hand)}
                 self.illegal_card_once = False
-        if "memory" in tools[name]["parameters"]["properties"] and not self.omit_memory:
-            arguments["memory"] = self.memory
         calls = [{"id": "call_1", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]
+        if "update_memory" in tools and not self.omit_memory:
+            calls.append({
+                "id": "memory",
+                "type": "function",
+                "function": {"name": "update_memory", "arguments": json.dumps({"memory": self.memory})},
+            })
         if self.invalid_responses > 0:
             self.invalid_responses -= 1
             calls = []
@@ -113,7 +118,7 @@ def test_calls_configured_endpoint_with_only_available_tools(endpoint: Endpoint,
     assert payload["model"] == "my-local-model"
     assert [tool["function"]["name"] for tool in payload["tools"]] == ["select_card"]
     assert "temperature" not in payload
-    assert payload["parallel_tool_calls"] is False
+    assert "parallel_tool_calls" not in payload
     observation = payload["messages"][1]["content"]
     assert "Your cards: " + ", ".join(map(str, sorted(view.you.hand))) in observation
     assert view.view_id not in observation
@@ -486,16 +491,20 @@ def test_memory_bot_updates_private_notes_with_the_move_in_one_request(
     bot = LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1", strict_tools=strict)
     action = bot.act(view)
     assert len(endpoint.requests) == 1
-    assert "memory" not in action.model_dump()
-    parameters = endpoint.requests[0]["tools"][0]["function"]["parameters"]
+    assert isinstance(action, ActionBatch)
+    assert all("memory" not in item.model_dump() for item in action.actions)
+    assert bot._memory == ""
+    bot.accept_batch(action)
+    parameters = endpoint.requests[0]["tools"][-1]["function"]["parameters"]
     assert "memory" in parameters["required"]
     assert parameters["properties"]["memory"]["maxLength"] == 4000
 
     endpoint.memory = "The plan changed: b kept the promise."
-    bot.act(view.model_copy(update={"play_number": 2}))
+    proposal = bot.act(view.model_copy(update={"play_number": 2}))
+    assert isinstance(proposal, ActionBatch)
+    bot.accept_batch(proposal)
     observation = endpoint.requests[-1]["messages"][1]["content"]
     assert "Save the high card; b may be bluffing." in observation
-    assert "Last proposed action, hand 1, play 1" in observation
 
     bot.act(view.model_copy(update={"hand_number": 2, "play_number": 1}))
     observation = endpoint.requests[-1]["messages"][1]["content"]
@@ -506,9 +515,13 @@ def test_memory_bot_updates_private_notes_with_the_move_in_one_request(
 def test_memory_can_be_cleared(endpoint: Endpoint, view: MatchView) -> None:
     bot = LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1")
     endpoint.memory = "Old plan."
-    bot.act(view)
+    proposal = bot.act(view)
+    assert isinstance(proposal, ActionBatch)
+    bot.accept_batch(proposal)
     endpoint.memory = ""
-    bot.act(view)
+    proposal = bot.act(view)
+    assert isinstance(proposal, ActionBatch)
+    bot.accept_batch(proposal)
     bot.act(view)
     observation = endpoint.requests[-1]["messages"][1]["content"]
     assert 'Your private notebook (quoted, potentially stale): ""' in observation
@@ -573,7 +586,9 @@ def test_repair_feedback_includes_bounded_rejected_arguments_without_reasoning()
 def test_private_notes_are_isolated_by_bot_match_and_seat(endpoint: Endpoint, view: MatchView, change: str) -> None:
     bot = LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1")
     endpoint.memory = "Private plan for a."
-    bot.act(view)
+    proposal = bot.act(view)
+    assert isinstance(proposal, ActionBatch)
+    bot.accept_batch(proposal)
     if change == "new_bot":
         bot = LLMMemoryBot(2, model="local", base_url="http://localhost:11434/v1")
     elif change == "new_match":
@@ -596,12 +611,13 @@ def test_invalid_memory_gets_bounded_repair(endpoint: Endpoint, view: MatchView,
     assert "Rejected calls (quoted data" in endpoint.requests[-1]["messages"][-1]["content"]
 
 
-def test_missing_memory_is_rejected(endpoint: Endpoint, view: MatchView) -> None:
-    endpoint.omit_memory = True
+def test_omitting_memory_preserves_notes(endpoint: Endpoint, view: MatchView) -> None:
     bot = LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1")
-    with pytest.raises(ModelDecisionError, match="bounded repair"):
-        bot.act(view)
-    assert "memory must be a string" in endpoint.requests[-1]["messages"][-1]["content"]
+    bot.act(view)
+    bot.accept_batch(ActionBatch((), "Existing notes"))
+    endpoint.omit_memory = True
+    assert isinstance(bot.act(view), SelectCardAction)
+    assert bot._memory == "Existing notes"
 
 
 @pytest.mark.parametrize("failure", ["parse", "provider", "deadline"])
@@ -610,7 +626,9 @@ def test_failed_decision_does_not_replace_notes(
 ) -> None:
     bot = LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1")
     endpoint.memory = "Keep this plan."
-    bot.act(view)
+    proposal = bot.act(view)
+    assert isinstance(proposal, ActionBatch)
+    bot.accept_batch(proposal)
     endpoint.memory = "Discard this plan."
     with monkeypatch.context() as patch:
         if failure == "parse":
@@ -629,7 +647,7 @@ def test_failed_decision_does_not_replace_notes(
     assert "Discard this plan." not in observation
 
 
-def test_memory_bot_sees_engine_rejection_alongside_tentative_notes(endpoint: Endpoint) -> None:
+def test_memory_bot_sees_engine_rejection_without_rejected_notes(endpoint: Endpoint) -> None:
     endpoint.illegal_card_once = True
     endpoint.memory = "Proposed the smallest card."
     result = run_match(
@@ -638,11 +656,11 @@ def test_memory_bot_sees_engine_rejection_alongside_tentative_notes(endpoint: En
         protocol=MatchProtocol(end_condition="fixed_hands", hands=1),
     )
     assert result.outcome == "finished"
-    assert result.actions_rejected == 1
+    assert result.actions_rejected == 2
     observation = endpoint.requests[1]["messages"][1]["content"]
     assert "Previous action rejected (card_not_in_hand)" in observation
-    assert "Proposed the smallest card." in observation
-    assert "Last proposed action" in observation
+    assert "Proposed the smallest card." not in observation
+    assert "Nothing was applied; memory is unchanged" in observation
 
 
 def test_registered_memory_bots_start_each_match_fresh_without_publishing_notes(endpoint: Endpoint, tmp_path) -> None:
@@ -796,11 +814,14 @@ def test_model_seats_exchange_messages_revise_selection_and_finish_communication
     )
 
 
-@pytest.mark.parametrize("memory", ["A plan", None, "x" * 4001])
-def test_simplified_schemas_preserve_local_memory_validation(endpoint: Endpoint, view: MatchView, memory: Any) -> None:
-    arguments = {"card": min(view.you.hand), "memory": memory}
-    endpoint.raw_body = json.dumps({
-        "id": "test",
+def test_rejects_strict_and_simplified_schemas_together() -> None:
+    with pytest.raises(ValidationError, match="cannot both be enabled"):
+        LLMOptions(model="test", base_url="http://localhost/v1", strict_tools=True, simplified_tool_schemas=True)
+
+
+def atomic_response(calls: list[tuple[str, dict[str, Any]]]) -> str:
+    return json.dumps({
+        "id": "atomic",
         "object": "chat.completion",
         "created": 0,
         "model": "test",
@@ -812,33 +833,64 @@ def test_simplified_schemas_preserve_local_memory_validation(endpoint: Endpoint,
                     "role": "assistant",
                     "tool_calls": [
                         {
-                            "id": "call",
+                            "id": f"call_{index}",
                             "type": "function",
-                            "function": {"name": "select_card", "arguments": json.dumps(arguments)},
+                            "function": {"name": name, "arguments": json.dumps(arguments)},
                         }
+                        for index, (name, arguments) in enumerate(calls)
                     ],
                 },
             }
         ],
     })
-    bot = LLMMemoryBot(1, model="test", base_url="http://localhost/v1", simplified_tool_schemas=True)
-    if memory == "A plan":
-        action = bot.act(view)
-        assert isinstance(action, SelectCardAction)
-        assert action.card == min(view.you.hand)
-    else:
-        with pytest.raises(ModelDecisionError):
-            bot.act(view)
-    schema = endpoint.requests[0]["tools"][0]["function"]["parameters"]
-    assert schema["required"] == ["card", "memory"]
-    assert "additionalProperties" not in schema
-    assert schema["properties"]["card"]["type"] == "integer"
-    assert "description" in schema["properties"]["card"]
-    assert "enum" not in schema["properties"]["card"]
-    assert "maxLength" not in schema["properties"]["memory"]
-    assert "enum" in bot._tools(view)[0]["function"]["parameters"]["properties"]["card"]
 
 
-def test_rejects_strict_and_simplified_schemas_together() -> None:
-    with pytest.raises(ValidationError, match="cannot both be enabled"):
-        LLMOptions(model="test", base_url="http://localhost/v1", strict_tools=True, simplified_tool_schemas=True)
+@pytest.mark.parametrize("position", [0, 1, 2])
+def test_memory_tool_position_does_not_change_game_order(endpoint: Endpoint, view: MatchView, position: int) -> None:
+    view = view.model_copy(update={"protocol": MatchProtocol(communication_enabled=True)})
+    calls = [("select_card", {"card": min(view.you.hand)}), ("commit", {})]
+    calls.insert(position, ("update_memory", {"memory": "new notes"}))
+    endpoint.raw_body = atomic_response(calls)
+    bot = LLMMemoryBot(1, model="test", base_url="http://localhost/v1")
+    proposal = bot.act(view)
+    assert isinstance(proposal, ActionBatch)
+    assert [action.type for action in proposal.actions] == ["select_card", "commit"]
+    assert proposal.memory == "new notes"
+    assert bot._memory == ""
+    bot.accept_batch(proposal)
+    assert bot._memory == "new notes"
+
+
+@pytest.mark.parametrize(
+    "calls",
+    [
+        [],
+        [("update_memory", {"memory": "one"}), ("update_memory", {"memory": "two"})],
+        [("update_memory", {"memory": ""})] * 9,
+        [("update_memory", {"memory": "okay"}), ("select_card", {"card": "bad"})],
+    ],
+)
+def test_invalid_transaction_is_rejected_without_memory_changes(endpoint: Endpoint, view: MatchView, calls) -> None:
+    endpoint.raw_body = atomic_response(calls)
+    bot = LLMMemoryBot(1, model="test", base_url="http://localhost/v1", repair_attempts=0)
+    with pytest.raises(ModelDecisionError):
+        bot.act(view)
+    assert bot._memory == ""
+
+
+def test_simplified_memory_tool_retains_local_length_validation(endpoint: Endpoint, view: MatchView) -> None:
+    endpoint.raw_body = atomic_response([("update_memory", {"memory": "too long"})])
+    bot = LLMMemoryBot(
+        1,
+        model="test",
+        base_url="http://localhost/v1",
+        memory_max_chars=2,
+        simplified_tool_schemas=True,
+        repair_attempts=0,
+    )
+    with pytest.raises(ModelDecisionError):
+        bot.act(view)
+    tools = {tool["function"]["name"]: tool["function"] for tool in endpoint.requests[0]["tools"]}
+    assert "memory" not in tools["select_card"]["parameters"]["properties"]
+    assert tools["update_memory"]["parameters"]["properties"]["memory"]["type"] == "string"
+    assert "maxLength" not in tools["update_memory"]["parameters"]["properties"]["memory"]

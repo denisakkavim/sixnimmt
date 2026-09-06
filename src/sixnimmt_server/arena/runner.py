@@ -9,6 +9,7 @@ from functools import partial
 from typing import Literal
 
 from sixnimmt_server.arena.bots import Bot, Rejection
+from sixnimmt_server.arena.bots.base import ActionBatch
 from sixnimmt_server.arena.config import RunConfig as RunConfig
 from sixnimmt_server.arena.config import resolve as resolve
 from sixnimmt_server.arena.decisions import AbandonedDecisions, Decision, decide
@@ -20,6 +21,7 @@ from sixnimmt_server.arena.results import MatchResult as MatchResult
 from sixnimmt_server.arena.results import SeatResult
 from sixnimmt_server.arena.scheduling import RoundRobinScheduler, Scheduler, SequentialScheduler
 from sixnimmt_server.arena.tracing import collect_stats, write_standalone_manifest
+from sixnimmt_server.arena.transactions import prepare_batch
 from sixnimmt_server.engine.audience import Viewer
 from sixnimmt_server.engine.errors import EngineRejection
 from sixnimmt_server.engine.events import (
@@ -152,54 +154,143 @@ class _Match:
         while True:
             view = self.folders[seat].view()
             decision = decide(bot, view, rejection, self.config.decision_timeout_seconds, abandoned)
-            self.action_seq += 1
-            action = decision.action
-            outcome, next_state, batch, refused = self.attempt(seat, decision)
-            if refused is not None:
-                rejection = refused
-            reason = None
-            if outcome in ("timeout", "error"):
-                reason = "decision_timeout" if decision.timed_out else repr(decision.error)
-            elif refused is not None:
-                reason = f"{refused.code.value}: {refused.message}"
-            self.sink.record_action(
-                ActionRecord(
-                    server_action_seq=self.action_seq,
-                    action_id=f"{self.state.match_id}:{self.action_seq}",
-                    player_id=player_id,
-                    type=action.type.value if action is not None else None,
-                    from_view=view.view_id,
-                    received_at=decision.ended_at,
-                    outcome=outcome,
-                    reason=reason,
-                    decision_started_at=decision.started_at,
-                    decision_ended_at=decision.ended_at,
-                    decision_duration_ms=decision.duration_ms,
-                )
-            )
-            if outcome in ("timeout", "error"):
-                return self.finish(MatchOutcome.FAILED, player_id, reason)
-            self.play_attempts += 1
-            if outcome == "accepted":
-                self.accepted[seat] += 1
-                self.state = next_state
+            if isinstance(decision.action, ActionBatch):
+                result, rejection = self.apply_batch(bot, seat, decision, decision.action)
             else:
-                self.rejected[seat] += 1
-                rejections += 1
-            self.append(batch)
-            terminal = self.check_limits(batch, rejections, player_id, rejection)
+                result, rejection = self.apply_single(seat, decision)
+            if result is not None or rejection is None:
+                return result
+            rejections += 1
+            terminal = self.check_limits([], rejections, player_id, rejection)
             if terminal is not None:
                 return terminal
-            if outcome == "accepted":
-                return None
-            if rejection is not None:
-                rejection = replace(rejection, legal_actions=self.folders[seat].view().legal_actions)
+            rejection = replace(rejection, legal_actions=self.folders[seat].view().legal_actions)
+
+    def record_decision(
+        self,
+        seat: int,
+        decision: Decision,
+        action_type: str | None,
+        outcome: ActionOutcome,
+        reason: str | None,
+        from_view: str | None = None,
+        record_timing: bool = True,
+    ) -> None:
+        self.action_seq += 1
+        self.sink.record_action(
+            ActionRecord(
+                server_action_seq=self.action_seq,
+                action_id=f"{self.state.match_id}:{self.action_seq}",
+                player_id=self.state.players[seat].player_id,
+                type=action_type,
+                from_view=from_view if from_view is not None else self.folders[seat].view().view_id,
+                received_at=decision.ended_at,
+                outcome=outcome,
+                reason=reason,
+                decision_started_at=decision.started_at,
+                decision_ended_at=decision.ended_at,
+                decision_duration_ms=decision.duration_ms if record_timing else None,
+            )
+        )
+
+    def apply_single(self, seat: int, decision: Decision) -> tuple[MatchResult | None, Rejection | None]:
+        action = decision.action
+        if isinstance(action, ActionBatch):
+            msg = "batch must be preflighted separately"
+            raise ArenaError(msg)
+        outcome, next_state, events, refused = self.attempt(seat, decision)
+        reason = decision_reason(decision, refused)
+        self.record_decision(seat, decision, action.type.value if action is not None else None, outcome, reason)
+        player_id = self.state.players[seat].player_id
+        if outcome in ("timeout", "error"):
+            return self.finish(MatchOutcome.FAILED, player_id, reason), None
+        self.play_attempts += 1
+        if outcome == "accepted":
+            self.accepted[seat] += 1
+            self.state = next_state
+        else:
+            self.rejected[seat] += 1
+        self.append(events)
+        if refused is not None:
+            return None, refused
+        return self.check_limits(events, 0, player_id, None), None
+
+    def apply_batch(
+        self, bot: Bot, seat: int, decision: Decision, proposal: ActionBatch
+    ) -> tuple[MatchResult | None, Rejection | None]:
+        if self.action_seq + proposal.size > self.config.match_action_limit:
+            return self.finish(MatchOutcome.ABANDONED, reason="match_action_limit"), None
+        if (
+            self.config.play_action_limit is not None
+            and self.play_attempts + proposal.size > self.config.play_action_limit
+        ):
+            return self.finish(MatchOutcome.ABANDONED, reason="play_action_limit"), None
+        player_id = self.state.players[seat].player_id
+        prepared = prepare_batch(self.state, player_id, proposal, self.protocol, self.rules)
+        if prepared.rejection is not None:
+            self.reject_batch(seat, decision, proposal, prepared.rejection)
+            return None, prepared.rejection
+        # No game effects or notebook writes escape preflight. Once validated,
+        # publish each action with its own sequence number and apply memory once.
+        if proposal.memory is not None:
+            accept = getattr(bot, "accept_batch", None)
+            if accept is None:
+                msg = "bot does not support transactional memory"
+                raise ArenaError(msg)
+            accept(proposal)
+        all_events = []
+        offered_view = self.folders[seat].view().view_id
+        for index, (action, (state, events)) in enumerate(zip(proposal.actions, prepared.steps, strict=True)):
+            self.record_decision(
+                seat, decision, action.type.value, "accepted", None, from_view=offered_view, record_timing=index == 0
+            )
+            self.state = state
+            self.append(events)
+            all_events.extend(events)
+        if proposal.memory is not None:
+            self.record_decision(
+                seat,
+                decision,
+                "update_memory",
+                "accepted",
+                None,
+                from_view=offered_view,
+                record_timing=not proposal.actions,
+            )
+        self.play_attempts += proposal.size
+        self.accepted[seat] += proposal.size
+        return self.check_limits(all_events, 0, player_id, None), None
+
+    def reject_batch(self, seat: int, decision: Decision, proposal: ActionBatch, rejection: Rejection) -> None:
+        names = [action.type.value for action in proposal.actions]
+        if proposal.memory is not None:
+            names.append("update_memory")
+        for index, name in enumerate(names):
+            self.record_decision(seat, decision, name, "rejected", rejection.message, record_timing=index == 0)
+        self.play_attempts += proposal.size
+        self.rejected[seat] += proposal.size
+        self.append([
+            ActionRejectedEvent(
+                match_id=self.state.match_id,
+                hand=self.state.hand_number,
+                play=self.state.play_number,
+                audience=audience_for_player(self.state.players[seat].player_id),
+                data={
+                    "code": rejection.code.value,
+                    "message": rejection.message,
+                    "action_type": rejection.action.type.value if rejection.action is not None else "transaction",
+                },
+            )
+        ])
 
     def attempt(self, seat: int, decision: Decision) -> tuple[ActionOutcome, MatchState, list[Event], Rejection | None]:
         if decision.timed_out or decision.error is not None:
             outcome = "timeout" if decision.timed_out else "error"
             return outcome, self.state, [], None
         action = decision.action
+        if isinstance(action, ActionBatch):
+            msg = "batch must be preflighted separately"
+            raise ArenaError(msg)
         if action is None:
             msg = "successful decision did not carry an action"
             raise ArenaError(msg)
@@ -232,6 +323,16 @@ class _Match:
         if self.action_seq >= self.config.match_action_limit:
             return self.finish(MatchOutcome.ABANDONED, reason="match_action_limit")
         return None
+
+
+def decision_reason(decision: Decision, refused: Rejection | None) -> str | None:
+    if decision.timed_out:
+        return "decision_timeout"
+    if decision.error is not None:
+        return repr(decision.error)
+    if refused is not None:
+        return f"{refused.code.value}: {refused.message}"
+    return None
 
 
 def _attach_bot_traces(bots: Sequence[Bot], seats: Sequence[PlayerSeat], sink: EventSink) -> None:

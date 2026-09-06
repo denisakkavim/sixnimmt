@@ -22,9 +22,9 @@
   },
   {
     "bot": "llm_memory",
-    "display_name": "DeepSeek V4 Flash 0731",
+    "display_name": "Qwen 3.7 Flash",
     "options": {
-      "model": "deepseek/deepseek-v4-flash-0731",
+      "model": "qwen/qwen3.7-flash",
       "base_url": "https://openrouter.ai/api/v1",
       "api_key_env": "OPENROUTER_API_KEY",
       "memory_max_chars": 4000

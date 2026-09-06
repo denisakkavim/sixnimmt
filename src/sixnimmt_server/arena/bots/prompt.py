@@ -11,7 +11,7 @@ from sixnimmt_server.engine.actions import Action
 from sixnimmt_server.engine.cards import bull_heads
 from sixnimmt_server.engine.views import MatchView, MessageView, PrivateMessageView
 
-PROMPT_VERSION = "5"
+PROMPT_VERSION = "7"
 OBSERVATION_VERSION = "3"
 SYSTEM_PROMPT = """You are playing 6 nimmt!, a simultaneous card-selection game. Finish with the fewest penalty points.
 
@@ -28,7 +28,10 @@ Placement and penalties:
 - This-hand penalties are added to banked scores when the hand ends.
 
 Your decisions:
-- Return exactly one available game-tool call. Other players may act before your next decision.
+- Return one to eight typed tool calls together. Game actions execute in returned order, before any other player acts.
+- The entire response is atomic: all actions and any memory update succeed together, or none are applied. On rejection, submit a corrected complete transaction.
+- Commitment, row choice, or a change of play or phase must end the game-action sequence. A memory update may appear anywhere.
+- You may send messages then select a card, or select a card then commit. Commit requires a selection, possibly made earlier in this response.
 - Select a card value from your current hand, not a hand position, table card, or previously played card.
 - For row choices, use the displayed index (0-3).
 - Use the current observation and correct rejected actions using its feedback.
@@ -208,7 +211,10 @@ def action_tools(view: MatchView, strict: bool) -> list[dict[str, Any]]:
     for action_schema in schema["$defs"].values():
         properties = action_schema.get("properties", {})
         name = properties.get("type", {}).get("const")
-        if name not in view.legal_actions:
+        available_after_selection = (
+            name == "commit" and view.protocol.communication_enabled and "select_card" in view.legal_actions
+        )
+        if name not in view.legal_actions and not available_after_selection:
             continue
         parameters = {
             key: {k: v for k, v in value.items() if k not in ("default", "title")}

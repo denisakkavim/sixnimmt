@@ -283,8 +283,14 @@ adds selections, commitments, recent visible messages and remaining action
 budget; row choices identify the triggering card. Rejections include the proposed
 action. Transport metadata is excluded from the observation. The `llm` bot starts
 fresh each decision, while `llm_memory` also retains a private notebook.
-Only currently available action types are offered as
-tools. Exactly one function call is accepted; the arena then regains control.
+Currently available action types are offered as tools, along with commitment
+when a preceding selection could make it legal. Responses contain one to eight
+function calls, treated atomically. The arena simulates game actions in returned
+order before publishing any events or memory changes. If one fails, the entire
+transaction is rejected and the model receives retry feedback. Commitment, row
+choice, or a change of play or phase must end the game-action sequence.
+Each call counts toward arena action limits, including optional memory updates;
+a transaction exceeding the remaining budget is not partially applied.
 Classic selection and row choice, and messaging and explicit commitment, use
 the same path. Add `--communication` to enable communication. Views include the public
 protocol so bots can see message permissions, limits, and the end condition.
@@ -300,9 +306,9 @@ Model options (unknown keys are rejected):
 | `token_limit_parameter` | `"max_tokens"` | Set to `"max_completion_tokens"` for endpoints requiring that field |
 | `request_timeout_seconds` | `60.0` | SDK request timeout |
 | `decision_budget_seconds` | `120.0` | Budget across response repair attempts |
-| `repair_attempts` | `1` | Additional requests for malformed/missing/multiple tool calls (0–3) |
+| `repair_attempts` | `1` | Additional requests for malformed, missing, or oversized tool-call batches (0–3) |
 | `tool_choice` | `"required"` | Use `"auto"` or `null` to omit it for endpoints with limited support |
-| `disable_parallel_tool_calls` | `true` | Sends `parallel_tool_calls=false`; set false to omit the field |
+| `disable_parallel_tool_calls` | `false` | Sends `parallel_tool_calls=false`; set false to omit the field |
 | `strict_tools` | `false` | Opt into server-side strict function schemas where supported |
 | `simplified_tool_schemas` | `false` | Omit enum, range, length, and additional-property constraints for endpoint compatibility; local validation remains active. Cannot combine with `strict_tools`. |
 | `provider_options` | `{}` | Additional provider request-body fields, such as reasoning controls |
@@ -357,7 +363,7 @@ personalities, even when both seats use the same model. For example:
 Use `options.system_prompt` when you want to replace the default game instructions
 for the shared rules. Active mode and match settings are always injected from
 the view, then `strategy_prompt` is appended.
-Tool schemas and one-action validation remain enforced by code. Both resolved
+Tool schemas and per-action validation remain enforced by code. Both resolved
 prompts are recorded in the seat options, and statistics include the hash of the
 combined instructions so prompt variants can be distinguished in experiments.
 
@@ -367,20 +373,21 @@ combined instructions so prompt variants can be distinguished in experiments.
 Choose `"bot": "llm_memory"` to retain a private notebook across decisions,
 plays, and hands within a match. It accepts all `llm` options plus
 `memory_max_chars` (default 4000, range 1–16000).
-Each available tool requires an additional `memory` string containing the
-complete replacement notebook. The model can preserve plans, promises, and
-observations about opponents, or clear the notebook with an empty string.
-Updating memory uses the same response as the move, without a second model call.
-The notebook shares the response's output token budget with the action and reasoning.
+The separate `update_memory` tool accepts a `memory` string containing the complete
+replacement notebook. It may appear at most once per response, anywhere among the
+game calls. Omit it to preserve the notebook, or supply an empty string to clear it.
+Memory-only transactions are allowed and count toward arena action limits.
+Updating memory uses the same response as the moves, without a second model call.
+The notebook shares the output token budget with the actions and reasoning.
 
-Only successfully parsed decisions returned within the bot's decision budget
-replace the notebook. An engine rejection can still follow; the next observation
-includes the rejected action and tells the model to treat its notes as tentative.
+The arena stores the notebook only after all game actions have passed validation.
+If any call fails, no messages, selections, commitments, or memory updates from
+that response are published. The next observation includes failure feedback.
 Notes are bounded summaries written by the model, so they can omit or misinterpret
 facts. They are not a growing conversation or a guarantee of better gameplay.
 Arena runs construct a fresh bot for each match, and notebooks are isolated per seat.
 
-The memory field is stripped before constructing the game action. Other players,
+The memory tool is handled by the arena, separately from game actions. Other players,
 game event logs, and run manifests do not receive notebook contents. Privileged
 model traces contain the notebook in requests and responses, and statistics
 record its format version and configured character limit.
@@ -401,11 +408,10 @@ uv run sixnimmt arena --players-file examples/arena-llm-memory-players.json \
 
 With `--trace-dir`, LLM seats automatically write a privileged
 `<match-log-stem>.model.jsonl` sidecar, separate from game events and action
-records. The `llm_memory` adapter adds its private notebook field to model tools
-only; engine actions carry no notebook or reasoning fields.
+records. The `llm_memory` adapter exposes its private notebook through a separate model tool; engine actions carry no notebook or reasoning fields.
 
 Each model request has a `request` record written before sending, a `response`
-or `provider_error` record when it returns, and an `action_parsed` or
+or `provider_error` record when it returns, and an `action_parsed`, `batch_parsed`, or
 `parse_error` record after interpreting its tool call. Malformed response decoding
 produces `response_parse_error`. Repair requests are separate attempts under the
 same `decision_id`, each with a unique `request_id`. The trace includes match,
