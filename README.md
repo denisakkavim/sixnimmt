@@ -277,6 +277,7 @@ Model options (unknown keys are rejected):
 | `tool_choice` | `"required"` | Use `"auto"` or `null` to omit it for endpoints with limited support |
 | `disable_parallel_tool_calls` | `true` | Sends `parallel_tool_calls=false`; set false to omit the field |
 | `strict_tools` | `false` | Opt into server-side strict function schemas where supported |
+| `provider_options` | `{}` | Additional provider request-body fields, such as reasoning controls |
 | `system_prompt` | Built-in game instructions | Replace the full system instructions for this seat |
 | `strategy_prompt` | `""` | Seat-specific strategy and personality appended to system instructions |
 
@@ -294,8 +295,8 @@ outer deadline remains the backstop. Start with concurrency 1 for a local model.
 
 Tracing records resolved model options, prompt version/hash, returned model
 identifiers, calls, repairs, errors, token usage, and request latency per seat.
-Missing usage is counted explicitly. Monetary cost and raw model transcripts are
-not currently recorded. Model runs are marked non-reproducible; game event logs
+Missing usage is counted explicitly. Monetary cost is not currently calculated. Raw model interactions are recorded
+separately when tracing is enabled. Model runs are marked non-reproducible; game event logs
 still replay without calling a model. The root seed controls deals and scripted
 bots, and is not sent as a claim of model determinism.
 
@@ -325,3 +326,43 @@ entirely. `strategy_prompt` is appended to whichever system prompt that seat use
 Tool schemas and one-action validation remain enforced by code. Both resolved
 prompts are recorded in the seat options, and statistics include the hash of the
 combined instructions so prompt variants can be distinguished in experiments.
+
+
+### Model interaction traces
+
+With `--trace-dir`, LLM seats automatically write a privileged
+`<match-log-stem>.model.jsonl` sidecar, separate from game events and action
+records. No explanation or reasoning fields are added to game tools.
+
+Each model request has a `request` record written before sending, a `response`
+or `provider_error` record when it returns, and an `action_parsed` or
+`parse_error` record after interpreting its tool call. Malformed response decoding
+produces `response_parse_error`. Repair requests are separate attempts under the
+same `decision_id`, each with a unique `request_id`. The trace includes match,
+player ID/display name, hand/play, view ID/version, timestamps, endpoint, prompt
+hash, request settings, HTTP status, provider request ID when available, and
+response latency. Late decisions can append diagnostics after a match has ended;
+`action_parsed` means the adapter parsed an action, not that the engine accepted
+it. Use the game/action logs to determine acceptance or arena timeout.
+
+`request.payload` contains the messages, tools, and generation settings.
+`response.body` contains the complete decoded response body as a string; parse
+it as JSON to query fields such as `choices[0].message.reasoning_content` when
+returned. Raw bodies preserve unknown provider fields, reasoning, ordinary text,
+tool calls, finish reasons, and usage without relying on the SDK's schema.
+Error bodies are preserved too. Authentication headers are not recorded, and the
+configured API key is redacted if echoed in a response. These files contain
+private observations and should be treated as privileged experiment data.
+
+Use per-seat `options.provider_options` for endpoint-specific JSON body fields
+that enable or control reasoning. For example, an endpoint that supports
+`reasoning_effort` can receive `{"reasoning_effort": "low"}`. Consult that
+endpoint's documentation for supported fields and values; the adapter does not
+translate between provider dialects. Standard options, messages, tools, streaming,
+and credentials cannot be overridden through this dictionary. Credentials belong
+in the configured environment variable, never in provider options.
+
+Capture does not request additional explanations. It records reasoning only when
+the endpoint returns it. Non-streaming responses are captured on completion;
+if the process exits with requests outstanding, their `request` records can
+remain without a corresponding response.

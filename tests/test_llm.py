@@ -35,12 +35,15 @@ class Endpoint:
         self.invalid_responses = 0
         self.illegal_card_once = False
         self.status = 200
+        self.raw_body: str | None = None
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         payload = json.loads(request.content)
         self.requests.append(payload)
         self.urls.append(str(request.url))
         self.authorizations.append(request.headers["authorization"])
+        if self.raw_body is not None:
+            return httpx.Response(200, text=self.raw_body)
         if self.status != 200:
             return httpx.Response(self.status, json={"error": {"message": "secret-provider-body"}})
         view = MatchView.model_validate(json.loads(payload["messages"][1]["content"])["view"])
@@ -62,7 +65,16 @@ class Endpoint:
                 "created": 0,
                 "model": "local-model-revision",
                 "choices": [
-                    {"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "tool_calls": calls}}
+                    {
+                        "index": 0,
+                        "finish_reason": "tool_calls",
+                        "message": {
+                            "role": "assistant",
+                            "tool_calls": calls,
+                            "reasoning_content": "Provider reasoning",
+                            "custom_field": {"detail": 7},
+                        },
+                    }
                 ],
                 "usage": {"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110},
             },
@@ -311,7 +323,7 @@ def test_does_not_retry_after_decision_budget_expires(
 ) -> None:
     endpoint.invalid_responses = 1
     clock_values = iter([0.0, 0.0, 0.0, 121.0, 121.0])
-    monkeypatch.setattr("sixnimmt_server.arena.bots.llm.monotonic", lambda: next(clock_values))
+    monkeypatch.setattr("sixnimmt_server.arena.bots.llm.monotonic", lambda: next(clock_values, 121.0))
     bot = LLMBot(1, model="local", base_url="http://localhost:11434/v1")
     with pytest.raises(ModelDecisionError, match="budget exhausted"):
         bot.act(view)
@@ -363,3 +375,92 @@ def test_system_prompt_can_be_replaced_per_seat(endpoint: Endpoint, view: MatchV
     assert endpoint.requests[0]["messages"][0]["content"] == (
         "Custom game instructions.\nStrategy and personality:\nBe cooperative."
     )
+
+
+def test_card_tool_lists_only_current_hand(view: MatchView) -> None:
+    from sixnimmt_server.arena.bots.prompt import action_tools
+
+    tools = action_tools(view, False)
+    assert tools[0]["function"]["parameters"]["properties"]["card"]["enum"] == list(view.you.hand)
+    changed = view.model_copy(update={"you": view.you.model_copy(update={"hand": view.you.hand[1:]})})
+    assert action_tools(changed, True)[0]["function"]["parameters"]["properties"]["card"]["enum"] == list(
+        changed.you.hand
+    )
+
+
+def test_model_trace_preserves_requests_reasoning_and_repairs(endpoint: Endpoint, tmp_path) -> None:
+    endpoint.invalid_responses = 1
+    result = run_arena(
+        [
+            PlayerConfig(
+                bot="llm",
+                display_name="Thinker",
+                options={
+                    "model": "local",
+                    "base_url": "http://localhost:11434/v1",
+                    "provider_options": {"reasoning_effort": "low"},
+                },
+            ),
+            PlayerConfig(bot="greedy"),
+        ],
+        1,
+        123,
+        protocol=MatchProtocol(end_condition="fixed_hands", hands=1),
+        config=RunConfig(trace_dir=tmp_path / "run"),
+    )
+    path = next((tmp_path / "run").glob("*.model.jsonl"))
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    assert result.finished == 1
+    assert [record["kind"] for record in records[:6]] == [
+        "request",
+        "response",
+        "parse_error",
+        "request",
+        "response",
+        "action_parsed",
+    ]
+    requests = [record for record in records if record["kind"] == "request"]
+    assert [record["payload"] for record in requests] == endpoint.requests
+    assert all(record["display_name"] == "Thinker" and record["player_id"] == "player_1" for record in records)
+    assert records[0]["decision_id"] == records[3]["decision_id"]
+    assert records[0]["request_id"] != records[3]["request_id"]
+    assert records[3]["attempt"] == 1
+    body = json.loads(records[1]["body"])
+    assert body["choices"][0]["message"]["reasoning_content"] == "Provider reasoning"
+    assert body["choices"][0]["message"]["custom_field"] == {"detail": 7}
+    assert body["usage"]["prompt_tokens"] == 100
+    assert "decision_summary" not in str(requests[0]["payload"]["tools"])
+
+
+def test_model_trace_records_provider_errors_and_redacts_credential(
+    endpoint: Endpoint, view: MatchView, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    endpoint.status = 401
+    monkeypatch.setenv("TRACE_KEY", "secret-provider-body")
+    records = []
+    bot = LLMBot(1, model="local", base_url="http://localhost:11434/v1", api_key_env="TRACE_KEY")
+    bot.set_trace(records.append)
+    with pytest.raises(ModelDecisionError):
+        bot.act(view)
+    assert [record["kind"] for record in records] == ["request", "provider_error"]
+    assert records[1]["status_code"] == 401
+    assert "secret-provider-body" not in json.dumps(records)
+    assert "[REDACTED]" in records[1]["body"]
+
+
+@pytest.mark.parametrize("field", ["messages", "model", "tools", "stream", "api_key"])
+def test_provider_options_cannot_override_game_request(field: str) -> None:
+    with pytest.raises(ValidationError):
+        LLMOptions(model="local", base_url="http://localhost:11434/v1", provider_options={field: "override"})
+
+
+@pytest.mark.parametrize("body", ["not JSON", '{"unknown": "response"}'])
+def test_raw_malformed_responses_are_preserved(endpoint: Endpoint, view: MatchView, body: str) -> None:
+    endpoint.raw_body = body
+    records = []
+    bot = LLMBot(1, model="local", base_url="http://localhost:11434/v1")
+    bot.set_trace(records.append)
+    with pytest.raises(ModelDecisionError, match="could not be decoded"):
+        bot.act(view)
+    assert [record["kind"] for record in records] == ["request", "response", "response_parse_error"]
+    assert records[1]["body"] == body

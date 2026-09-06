@@ -5,6 +5,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
+from functools import partial
 from typing import Literal
 
 from sixnimmt_server.arena.bots import Bot, Rejection
@@ -233,6 +234,18 @@ class _Match:
         return None
 
 
+def _attach_bot_traces(bots: Sequence[Bot], seats: Sequence[PlayerSeat], sink: EventSink) -> None:
+    record_model = getattr(sink, "record_model", None)
+    for bot, player in zip(bots, seats, strict=True):
+        set_trace = getattr(bot, "set_trace", None)
+        if set_trace is None:
+            continue
+        callback = None
+        if record_model is not None:
+            callback = partial(record_model, player_id=player.player_id, display_name=player.name_or_id)
+        set_trace(callback)
+
+
 def run_match(
     bots: Sequence[Bot],
     seed: int,
@@ -273,6 +286,7 @@ def run_match(
     scheduler = RoundRobinScheduler() if config.scheduler == "round_robin" else SequentialScheduler()
     try:
         match = _Match(seed, match_id, seats, rules, protocol, config, sink, observer)
+        _attach_bot_traces(bots, seats, sink)
         while True:
             seat = match.acting_seat(scheduler)
             result = match.offer(bots[seat], seat, abandoned)

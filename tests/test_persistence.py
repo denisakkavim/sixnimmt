@@ -403,3 +403,13 @@ def test_trace_labels_player_references_and_preserves_events(tmp_path: Path) -> 
     assert _lines(action_log_path(tmp_path, "names"))[0]["player_display_names"] == {"a": "Alice"}
     assert read_event_log(event_log_path(tmp_path, "names")) == [*events, message, revealed]
     assert read_action_log(action_log_path(tmp_path, "names")) == [action]
+
+
+def test_model_diagnostics_can_be_written_after_game_logs_close(tmp_path: Path) -> None:
+    sink = JsonlEventSink(tmp_path, "late")
+    sink.record_model({"kind": "request", "request_id": "r"}, player_id="a", display_name="Alice")
+    sink.close()
+    sink.record_model(
+        {"kind": "response", "request_id": "r", "body": "late response"}, player_id="a", display_name="Alice"
+    )
+    assert [record["kind"] for record in _lines(tmp_path / "late.model.jsonl")] == ["request", "response"]

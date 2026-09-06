@@ -5,6 +5,7 @@ import os
 from collections.abc import Callable, Iterator, Sequence
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
@@ -187,6 +188,8 @@ class JsonlEventSink(EventSink):
         self._events = AtomicJsonlWriter(event_log_path(directory, match_id))
         self._actions = AtomicJsonlWriter(action_log_path(directory, match_id))
         self._closed = False
+        self._model_path = directory / f"{match_id}.model.jsonl"
+        self._model_lock = Lock()
         self._player_names: dict[str, str] = {}
         # A reopened sink must retain the labels learned when the match began.
         for event in read_event_log(event_log_path(directory, match_id)):
@@ -203,6 +206,19 @@ class JsonlEventSink(EventSink):
 
     def record_action(self, record: ActionRecord) -> None:
         self._write(self._actions, [self._with_player_names(record.model_dump(mode="json"))])
+
+    def record_model(self, payload: dict[str, Any], *, player_id: str, display_name: str) -> None:
+        """Write privileged diagnostics, including responses arriving after match timeout.
+
+        Each append owns its handle so late model responses do not use closed
+        game-log handles. The lock serialises requests from different seats.
+        """
+        with self._model_lock:
+            writer = AtomicJsonlWriter(self._model_path)
+            try:
+                writer.write([{**payload, "player_id": player_id, "display_name": display_name}])
+            finally:
+                writer.close()
 
     def _remember_names(self, event: Event) -> None:
         if event.type != "match_created" or event.audience != "public":
