@@ -57,30 +57,19 @@ def decide(
     error = None
     timed_out = False
 
-    def call() -> Action:
-        result = bot.act(view, rejection)
-        if not isinstance(result, (SelectCardAction, CommitAction, UncommitAction, SendMessageAction, ChooseRowAction)):
-            msg = f"bot returned {type(result).__name__}, expected an Action"
-            raise TypeError(msg)
-        return result
-
     if timeout is None:
         try:
-            action = call()
+            action = _call_bot(bot, view, rejection)
         except Exception as caught:
             error = caught
     else:
         replies: Queue[Action | BaseException] = Queue(maxsize=1)
 
-        def work() -> None:
-            try:
-                replies.put(call())
-            except BaseException as caught:
-                replies.put(caught)
-
         # Python cannot interrupt a blocking call. This backstop frees the match
         # worker; providers must still impose their own client-side timeouts.
-        thread = threading.Thread(target=work, daemon=True, name="arena-decision")
+        thread = threading.Thread(
+            target=_queue_decision, args=(bot, view, rejection, replies), daemon=True, name="arena-decision"
+        )
         thread.start()
         try:
             reply = replies.get(timeout=timeout)
@@ -93,3 +82,20 @@ def decide(
             else:
                 action = reply
     return Decision(action, error, timed_out, started_at, datetime.now(UTC), (monotonic() - started) * 1000)
+
+
+def _call_bot(bot: Bot, view: MatchView, rejection: Rejection | None) -> Action:
+    result = bot.act(view, rejection)
+    if not isinstance(result, (SelectCardAction, CommitAction, UncommitAction, SendMessageAction, ChooseRowAction)):
+        msg = f"bot returned {type(result).__name__}, expected an Action"
+        raise TypeError(msg)
+    return result
+
+
+def _queue_decision(
+    bot: Bot, view: MatchView, rejection: Rejection | None, replies: Queue[Action | BaseException]
+) -> None:
+    try:
+        replies.put(_call_bot(bot, view, rejection))
+    except BaseException as error:
+        replies.put(error)

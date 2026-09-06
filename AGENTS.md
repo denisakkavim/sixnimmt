@@ -20,6 +20,7 @@
 * Keep the happy path unindented and easy to follow.
 * Avoid deeply nested logic and large functions with multiple levels of branching.
 * Keep functions focused on one responsibility and prefer small, cohesive functions over large ones.
+* Avoid nested function definitions; prefer standalone functions or class methods unless nesting clearly makes the code easier to understand than the alternative.
 * Use type hints for function parameters, return values, and important variables.
 * Avoid unnecessary mutation; when mutation is useful, make it explicit and local.
 * Comment why code exists or why an approach is necessary, not what straightforward code already does.

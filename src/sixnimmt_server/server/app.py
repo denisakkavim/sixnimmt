@@ -39,19 +39,8 @@ def create_app(admin_token: str | None = None, log_directory: Path | None = None
     app.state.store = MatchStore(tokens, log_directory=log_directory)
     app.include_router(router)
 
-    @app.exception_handler(ApiError)
-    async def _handle_api_error(request: Request, error: ApiError) -> JSONResponse:
-        return _error_response(error)
-
-    @app.exception_handler(RequestValidationError)
-    async def _handle_validation_error(request: Request, error: RequestValidationError) -> JSONResponse:
-        # A hostile or confused agent will send malformed bodies constantly.
-        # They get the same error shape as everything else, never a stack trace.
-        refusal = ApiError(
-            ApiErrorCode.MALFORMED_REQUEST,
-            f"the request body could not be read: {len(error.errors())} problems",
-        )
-        return _error_response(_with_caller_view(request, refusal))
+    app.exception_handler(ApiError)(_handle_api_error)
+    app.exception_handler(RequestValidationError)(_handle_validation_error)
 
     return app
 
@@ -73,3 +62,17 @@ def _with_caller_view(request: Request, error: ApiError) -> ApiError:
     error.legal_actions = view.legal_actions
     error.view_version = view.view_version
     return error
+
+
+async def _handle_api_error(request: Request, error: ApiError) -> JSONResponse:
+    return _error_response(error)
+
+
+async def _handle_validation_error(request: Request, error: RequestValidationError) -> JSONResponse:
+    # A hostile or confused agent will send malformed bodies constantly.
+    # They get the same error shape as everything else, never a stack trace.
+    refusal = ApiError(
+        ApiErrorCode.MALFORMED_REQUEST,
+        f"the request body could not be read: {len(error.errors())} problems",
+    )
+    return _error_response(_with_caller_view(request, refusal))

@@ -63,6 +63,10 @@ async def _commit_alice(live: AsyncMatch) -> int:
     return (await live.state("alice"))["view_version"]
 
 
+async def _poll_into(live: AsyncMatch, version: int, timeout: float, response: dict[str, Any]) -> None:
+    response.update(await live.wait("alice", since=version, timeout=timeout))
+
+
 @pytest.mark.anyio
 async def test_a_long_poll_returns_at_once_while_the_match_waits_on_the_caller(live: AsyncMatch) -> None:
     version = (await live.state("alice"))["view_version"]
@@ -80,11 +84,7 @@ async def test_a_long_poll_returns_when_the_callers_own_stream_advances(live: As
     answered: dict[str, Any] = {}
 
     async with anyio.create_task_group() as tasks:
-
-        async def poll() -> None:
-            answered.update(await live.wait("alice", since=version, timeout=5))
-
-        tasks.start_soon(poll)
+        tasks.start_soon(_poll_into, live, version, 5, answered)
         await anyio.sleep(0.05)
         await live.act("bob", type="select_card", card=bob_hand[0])
 
@@ -102,11 +102,7 @@ async def test_another_players_rejected_action_never_wakes_a_long_poll(live: Asy
     answered: dict[str, Any] = {}
 
     async with anyio.create_task_group() as tasks:
-
-        async def poll() -> None:
-            answered.update(await live.wait("alice", since=version, timeout=1))
-
-        tasks.start_soon(poll)
+        tasks.start_soon(_poll_into, live, version, 1, answered)
         await anyio.sleep(0.05)
         for _ in range(5):
             await live.act("bob", type="commit")
@@ -122,11 +118,7 @@ async def test_a_long_poll_ends_when_the_match_is_abandoned(live: AsyncMatch) ->
     refusal: dict[str, Any] = {}
 
     async with anyio.create_task_group() as tasks:
-
-        async def poll() -> None:
-            refusal.update(await live.wait("alice", since=version, timeout=30))
-
-        tasks.start_soon(poll)
+        tasks.start_soon(_poll_into, live, version, 30, refusal)
         await anyio.sleep(0.05)
         await live.client.delete(f"/matches/{live.match_id}", headers=live.headers("admin"))
 

@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from sixnimmt_server.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt_server.engine.cards import bull_heads
 from sixnimmt_server.engine.errors import ErrorCode
-from sixnimmt_server.engine.views import MatchView
+from sixnimmt_server.engine.views import MatchView, RowView
 
 
 @dataclass(frozen=True)
@@ -72,14 +72,16 @@ class GreedyBot(Bot):
         if "commit" in view.legal_actions:
             return CommitAction()
 
-        def cost(card: int) -> tuple[int, int]:
-            eligible = [row for row in view.rows if row.cards[-1] < card]
-            if not eligible:
-                return min(sum(bull_heads(card) for card in row.cards) for row in view.rows), card
-            row = max(eligible, key=lambda row: row.cards[-1])
-            return (sum(bull_heads(card) for card in row.cards) if len(row.cards) == 5 else 0), card
+        card = min(view.you.hand, key=lambda card: (_immediate_penalty(card, view.rows), card))
+        return SelectCardAction(card=card)
 
-        return SelectCardAction(card=min(view.you.hand, key=cost))
+
+def _immediate_penalty(card: int, rows: tuple[RowView, ...]) -> int:
+    eligible = [row for row in rows if row.cards[-1] < card]
+    if not eligible:
+        return min(sum(bull_heads(card) for card in row.cards) for row in rows)
+    row = max(eligible, key=lambda row: row.cards[-1])
+    return sum(bull_heads(card) for card in row.cards) if len(row.cards) == 5 else 0
 
 
 REGISTRY: dict[str, BotSpec] = {

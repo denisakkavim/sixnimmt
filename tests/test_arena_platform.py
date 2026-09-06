@@ -13,6 +13,7 @@ from sixnimmt_server.analytics.summary import summarise
 from sixnimmt_server.arena.bots import REGISTRY, BotSpec, GreedyBot, RandomBot, Rejection
 from sixnimmt_server.arena.players import PlayerConfig
 from sixnimmt_server.arena.runner import ArenaError, MatchOutcome, RunConfig, resolve, run_arena, run_match
+from sixnimmt_server.arena.scheduling import SequentialScheduler
 from sixnimmt_server.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction, SendMessageAction
 from sixnimmt_server.engine.audience import Viewer, visible_events
 from sixnimmt_server.engine.events import Event
@@ -23,6 +24,42 @@ from sixnimmt_server.engine.state import MatchState, Phase
 from sixnimmt_server.engine.views import MatchView, ViewRole
 from sixnimmt_server.persistence.manifest import ManifestMatch
 from sixnimmt_server.persistence.sink import read_action_log, read_event_log
+
+
+class BadRows(RandomBot):
+    def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
+        if view.phase == Phase.AWAITING_ROW_CHOICE:
+            return ChooseRowAction(row_index=99)
+        return super().act(view, rejection)
+
+
+class Malformed:
+    def act(self, view: MatchView, rejection: Rejection | None = None) -> Any:
+        return {"card": 10}
+
+
+class HiddenSender(RandomBot):
+    def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
+        if view.you.actions_taken_this_play == 0:
+            return SendMessageAction(visibility="direct", to_player="player_2", body="secret")
+        return super().act(view, rejection)
+
+
+class Chatty(RandomBot):
+    def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
+        if view.you.actions_taken_this_play == 0:
+            return SendMessageAction(visibility="direct", to_player="player_2", body="hello")
+        return super().act(view, rejection)
+
+
+def _fail_bot_build(seed: int) -> RandomBot:
+    msg = "invalid provider configuration"
+    raise ValueError(msg)
+
+
+def _fail_scheduler(self: SequentialScheduler, state: MatchState) -> int | None:
+    msg = "scheduler defect"
+    raise RuntimeError(msg)
 
 
 @pytest.fixture
@@ -140,12 +177,6 @@ def test_limit_precedence_counts_rejected_attempts(config: RunConfig, outcome: s
 
 
 def test_row_choice_has_its_own_rejection_budget(short_protocol: MatchProtocol) -> None:
-    class BadRows(RandomBot):
-        def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
-            if view.phase == Phase.AWAITING_ROW_CHOICE:
-                return ChooseRowAction(row_index=99)
-            return super().act(view, rejection)
-
     result = run_match(
         [BadRows(1), BadRows(2)], 123, protocol=short_protocol, config=RunConfig(decision_rejection_limit=3)
     )
@@ -285,11 +316,7 @@ def test_nonfinished_matches_do_not_contribute_scores(monkeypatch: pytest.Monkey
 
 
 def test_first_build_failure_stops_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    def build(seed: int) -> RandomBot:
-        msg = "invalid provider configuration"
-        raise ValueError(msg)
-
-    monkeypatch.setitem(REGISTRY, "bad", BotSpec("bad", build, False, {}))
+    monkeypatch.setitem(REGISTRY, "bad", BotSpec("bad", _fail_bot_build, False, {}))
     with pytest.raises(ArenaError, match="first game's lineup"):
         run_arena([PlayerConfig(bot="bad"), PlayerConfig(bot="random")], 3, 123)
 
@@ -505,10 +532,6 @@ def assert_replayed_state(events: list[Event] | tuple[Event, ...], state: MatchS
 
 
 def test_non_action_return_is_a_recorded_bot_failure(tmp_path: Path) -> None:
-    class Malformed:
-        def act(self, view: MatchView, rejection: Rejection | None = None) -> Any:
-            return {"card": 10}
-
     directory = tmp_path / "trace"
     result = run_match([Malformed(), RandomBot(2)], 123, config=RunConfig(trace_dir=directory))
     assert result.outcome == MatchOutcome.FAILED
@@ -550,13 +573,7 @@ def test_trace_write_failure_stops_run(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 
 def test_scheduler_failure_stops_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    from sixnimmt_server.arena.scheduling import SequentialScheduler
-
-    def broken(self: SequentialScheduler, state: MatchState) -> int | None:
-        msg = "scheduler defect"
-        raise RuntimeError(msg)
-
-    monkeypatch.setattr(SequentialScheduler, "next_seat", broken)
+    monkeypatch.setattr(SequentialScheduler, "next_seat", _fail_scheduler)
     with pytest.raises(ArenaError, match="scheduler defect"):
         run_arena([PlayerConfig(bot="random")] * 2, 3, 123)
 
@@ -606,12 +623,6 @@ def test_hidden_direct_messages_do_not_change_uninvolved_bot_view(short_protocol
         }
     )
     views: list[MatchView] = []
-
-    class HiddenSender(RandomBot):
-        def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
-            if view.you.actions_taken_this_play == 0:
-                return SendMessageAction(visibility="direct", to_player="player_2", body="secret")
-            return super().act(view, rejection)
 
     class Observed(RandomBot):
         def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
@@ -669,12 +680,6 @@ def test_summary_reads_both_surfaces_and_counts_direct_messages_once(
     from conftest import ADMIN_TOKEN
 
     from sixnimmt_server.server.app import create_app
-
-    class Chatty(RandomBot):
-        def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
-            if view.you.actions_taken_this_play == 0:
-                return SendMessageAction(visibility="direct", to_player="player_2", body="hello")
-            return super().act(view, rejection)
 
     protocol = short_protocol.model_copy(update={"negotiation_enabled": True})
     proposed: list[tuple[str, Action]] = []
