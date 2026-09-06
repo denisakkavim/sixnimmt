@@ -53,7 +53,7 @@ def arena(
         ),
     ],
     games: Annotated[int, typer.Option("--games", help="Number of matches to run.")],
-    seed: Annotated[int, typer.Option("--seed", help="Root seed for deterministic matches.")],
+    seed: Annotated[int, typer.Option("--seed", help="Root seed for deterministic matches.")] = 66,
     max_actions_per_match: Annotated[
         int,
         typer.Option("--max-actions-per-match", help="Maximum bot actions allowed in each match."),

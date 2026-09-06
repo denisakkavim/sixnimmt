@@ -23,6 +23,8 @@ uv run sixnimmt arena --players-file examples/arena-players.json --games 10000 -
 
 The players file is an array of structured player configurations, shown below. The `--match-action-limit` (also accepted as `--max-actions-per-match`) defaults to 10,000 attempts, including rejected actions.
 
+The CLI defaults to seed `66`, a nod to the game's penalty-point threshold; use `--seed` to override it.
+
 The command reports the root seed, aggregate hand and action counts, and per-seat wins, ties, total scores, and average scores. Wins count sole winners; ties count matches in which that seat shared the lowest score. Lower scores are better. Finished, abandoned, forfeited, and failed matches are counted separately. Only finished matches contribute scores, wins, and ties. Registered deterministic bots reproduce their results with the same Python runtime and seed, independently of match concurrency.
 
 ## Determinism
