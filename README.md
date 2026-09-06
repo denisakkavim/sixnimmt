@@ -304,6 +304,7 @@ Model options (unknown keys are rejected):
 | `tool_choice` | `"required"` | Use `"auto"` or `null` to omit it for endpoints with limited support |
 | `disable_parallel_tool_calls` | `true` | Sends `parallel_tool_calls=false`; set false to omit the field |
 | `strict_tools` | `false` | Opt into server-side strict function schemas where supported |
+| `simplified_tool_schemas` | `false` | Omit enum, range, length, and additional-property constraints for endpoint compatibility; local validation remains active. Cannot combine with `strict_tools`. |
 | `provider_options` | `{}` | Additional provider request-body fields, such as reasoning controls |
 | `system_prompt` | Built-in game instructions | Replace shared rules; mode and match settings are injected |
 | `strategy_prompt` | `""` | Seat-specific strategy and personality appended to system instructions |

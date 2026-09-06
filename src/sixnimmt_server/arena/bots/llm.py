@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from openai import APIError, OpenAI
 from openai.types.chat import ChatCompletion
-from pydantic import Field, JsonValue, ValidationError, field_validator
+from pydantic import Field, JsonValue, ValidationError, field_validator, model_validator
 
 from sixnimmt_server.arena.bots.base import Bot, BotOptions, Rejection
 from sixnimmt_server.arena.bots.prompt import (
@@ -43,9 +43,17 @@ class LLMOptions(BotOptions):
     tool_choice: Literal["required", "auto"] | None = "required"
     disable_parallel_tool_calls: bool = True
     strict_tools: bool = False
+    simplified_tool_schemas: bool = False
     system_prompt: str = Field(default=SYSTEM_PROMPT, min_length=1)
     strategy_prompt: str = ""
     provider_options: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_schema_options(self) -> LLMOptions:
+        if self.strict_tools and self.simplified_tool_schemas:
+            msg = "strict_tools and simplified_tool_schemas cannot both be enabled"
+            raise ValueError(msg)
+        return self
 
     @field_validator("provider_options")
     @classmethod
@@ -244,11 +252,24 @@ class LLMBot(Bot):
         msg = "model decision produced no action"
         raise ModelDecisionError(msg)
 
+    def _request_tools(self, view: MatchView) -> list[dict[str, Any]]:
+        tools = self._tools(view)
+        if self.options.simplified_tool_schemas:
+            # Apply after subclasses add fields such as private memory. Local
+            # validation still enforces constraints omitted for provider compatibility.
+            for tool in tools:
+                schema = tool["function"]["parameters"]
+                schema.pop("additionalProperties", None)
+                for field in schema["properties"].values():
+                    for constraint in ("enum", "minimum", "maximum", "maxLength"):
+                        field.pop(constraint, None)
+        return tools
+
     def _request(self, messages: list[dict[str, Any]], view: MatchView, timeout: float, context: dict[str, Any]) -> Any:
         parameters: dict[str, Any] = {
             "model": self.options.model,
             "messages": messages,
-            "tools": self._tools(view),
+            "tools": self._request_tools(view),
             self.options.token_limit_parameter: self.options.max_tokens,
         }
         if self.options.temperature is not None:

@@ -794,3 +794,51 @@ def test_model_seats_exchange_messages_revise_selection_and_finish_communication
     assert replayed.model_dump(exclude={"undealt_remainder"}) == result.final_state.model_dump(
         exclude={"undealt_remainder"}
     )
+
+
+@pytest.mark.parametrize("memory", ["A plan", None, "x" * 4001])
+def test_simplified_schemas_preserve_local_memory_validation(endpoint: Endpoint, view: MatchView, memory: Any) -> None:
+    arguments = {"card": min(view.you.hand), "memory": memory}
+    endpoint.raw_body = json.dumps({
+        "id": "test",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "test",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call",
+                            "type": "function",
+                            "function": {"name": "select_card", "arguments": json.dumps(arguments)},
+                        }
+                    ],
+                },
+            }
+        ],
+    })
+    bot = LLMMemoryBot(1, model="test", base_url="http://localhost/v1", simplified_tool_schemas=True)
+    if memory == "A plan":
+        action = bot.act(view)
+        assert isinstance(action, SelectCardAction)
+        assert action.card == min(view.you.hand)
+    else:
+        with pytest.raises(ModelDecisionError):
+            bot.act(view)
+    schema = endpoint.requests[0]["tools"][0]["function"]["parameters"]
+    assert schema["required"] == ["card", "memory"]
+    assert "additionalProperties" not in schema
+    assert schema["properties"]["card"]["type"] == "integer"
+    assert "description" in schema["properties"]["card"]
+    assert "enum" not in schema["properties"]["card"]
+    assert "maxLength" not in schema["properties"]["memory"]
+    assert "enum" in bot._tools(view)[0]["function"]["parameters"]["properties"]["card"]
+
+
+def test_rejects_strict_and_simplified_schemas_together() -> None:
+    with pytest.raises(ValidationError, match="cannot both be enabled"):
+        LLMOptions(model="test", base_url="http://localhost/v1", strict_tools=True, simplified_tool_schemas=True)
