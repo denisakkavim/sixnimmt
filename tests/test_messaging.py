@@ -1,4 +1,4 @@
-"""Negotiation communication, accounting, and audience-derived views."""
+"""Communication communication, accounting, and audience-derived views."""
 
 from pathlib import Path
 
@@ -25,13 +25,13 @@ from sixnimmt_server.engine.views import ViewRole
 from sixnimmt_server.persistence.sink import read_event_log
 
 RULES = GameRules()
-NEGOTIATION = MatchProtocol(negotiation_enabled=True)
+COMMUNICATION = MatchProtocol(communication_enabled=True)
 
 
 @pytest.mark.parametrize("body", ["", "hello", "🐂é\n你好"])
 def test_table_message_changes_only_the_senders_action_count(body: str) -> None:
-    state, _ = create_match("m", ["alice", "bob"], 12345, protocol=NEGOTIATION)
-    updated, events = transition(state, "alice", SendMessageAction(visibility="table", body=body), NEGOTIATION, RULES)
+    state, _ = create_match("m", ["alice", "bob"], 12345, protocol=COMMUNICATION)
+    updated, events = transition(state, "alice", SendMessageAction(visibility="table", body=body), COMMUNICATION, RULES)
     expected = state.model_copy(
         update={
             "players": (
@@ -50,7 +50,7 @@ def test_table_message_changes_only_the_senders_action_count(body: str) -> None:
 
 @pytest.mark.parametrize("existence", ["visible", "hidden"])
 def test_direct_message_emits_separate_content_copies_and_optional_occurrence(existence: str) -> None:
-    protocol = MatchProtocol(negotiation_enabled=True, information_policy={"private_message_existence": existence})
+    protocol = MatchProtocol(communication_enabled=True, information_policy={"private_message_existence": existence})
     state, _ = create_match("m", ["alice", "bob", "cara"], 12345, protocol=protocol)
     _, events = transition(
         state, "bob", SendMessageAction(visibility="direct", to_player="cara", body="secret"), protocol, RULES
@@ -70,7 +70,7 @@ def test_direct_message_emits_separate_content_copies_and_optional_occurrence(ex
 @pytest.mark.parametrize(
     ("settings", "phase", "message", "code"),
     [
-        ({"negotiation_enabled": False}, Phase.SELECTING, {}, ErrorCode.NEGOTIATION_DISABLED),
+        ({"communication_enabled": False}, Phase.SELECTING, {}, ErrorCode.COMMUNICATION_DISABLED),
         ({}, Phase.RESOLVING, {}, ErrorCode.WRONG_PHASE),
         ({}, Phase.SELECTING, {"visibility": "direct", "to_player": "alice"}, ErrorCode.MALFORMED_REQUEST),
         ({}, Phase.SELECTING, {"visibility": "direct", "to_player": "absent"}, ErrorCode.RECIPIENT_NOT_FOUND),
@@ -85,7 +85,7 @@ def test_direct_message_emits_separate_content_copies_and_optional_occurrence(ex
     ],
 )
 def test_message_rejection_preserves_state(settings: dict, phase: Phase, message: dict, code: ErrorCode) -> None:
-    protocol = MatchProtocol.model_validate({"negotiation_enabled": True, **settings})
+    protocol = MatchProtocol.model_validate({"communication_enabled": True, **settings})
     state, _ = create_match("m", ["alice", "bob"], 12345, protocol=protocol)
     state = state.model_copy(
         update={
@@ -117,7 +117,7 @@ def test_every_player_must_wait_for_row_choice_before_messaging(actor: str) -> N
         }
     )
     with pytest.raises(EngineRejection) as rejected:
-        transition(state, actor, SendMessageAction(visibility="table", body=""), NEGOTIATION, RULES)
+        transition(state, actor, SendMessageAction(visibility="table", body=""), COMMUNICATION, RULES)
     assert rejected.value.code == ErrorCode.NOT_YOUR_TURN
 
 
@@ -141,10 +141,10 @@ def test_message_model_refuses_lone_surrogates(field: str) -> None:
 def test_each_role_counts_a_direct_message_exactly_once(
     role: ViewRole, player_id: str | None, content: int, occurrence: int
 ) -> None:
-    state, log = create_match("m", ["alice", "bob", "cara"], 12345, protocol=NEGOTIATION)
+    state, log = create_match("m", ["alice", "bob", "cara"], 12345, protocol=COMMUNICATION)
     for _ in range(MAX_VIEW_MESSAGES + 1):
         state, events = transition(
-            state, "bob", SendMessageAction(visibility="direct", to_player="cara", body="secret"), NEGOTIATION, RULES
+            state, "bob", SendMessageAction(visibility="direct", to_player="cara", body="secret"), COMMUNICATION, RULES
         )
         log.extend(events)
     view = build_view(log, Viewer(role=role, player_id=player_id))
@@ -159,7 +159,7 @@ def test_each_role_counts_a_direct_message_exactly_once(
 @pytest.mark.parametrize("budget", [None, 1, 2])
 def test_hidden_messages_including_budget_exhaustion_leave_nonparty_view_identical(budget: int | None) -> None:
     protocol = MatchProtocol(
-        negotiation_enabled=True,
+        communication_enabled=True,
         max_actions_per_play=budget,
         information_policy={"private_message_existence": "hidden"},
     )
@@ -180,14 +180,14 @@ def test_hidden_messages_including_budget_exhaustion_leave_nonparty_view_identic
 
 
 def test_cap_combines_content_and_occurrences_and_resets_next_play() -> None:
-    state, log = create_match("m", ["alice", "bob", "cara"], 12345, protocol=NEGOTIATION)
+    state, log = create_match("m", ["alice", "bob", "cara"], 12345, protocol=COMMUNICATION)
     for index in range(105):
         message = (
             SendMessageAction(visibility="table", body=str(index))
             if index % 2 == 0
             else SendMessageAction(visibility="direct", to_player="cara", body=str(index))
         )
-        state, events = transition(state, "bob", message, NEGOTIATION, RULES)
+        state, events = transition(state, "bob", message, COMMUNICATION, RULES)
         log.extend(events)
     for viewer in (Viewer(role=ViewRole.PLAYER, player_id="alice"), Viewer(role=ViewRole.PUBLIC_SPECTATOR)):
         view = build_view(log, viewer)
@@ -199,8 +199,8 @@ def test_cap_combines_content_and_occurrences_and_resets_next_play() -> None:
         assert reset.messages_omitted == 0
 
 
-def test_replay_and_own_accounting_match_after_every_negotiation_action() -> None:
-    protocol = MatchProtocol(negotiation_enabled=True, end_condition="fixed_hands", hands=1, max_actions_per_play=100)
+def test_replay_and_own_accounting_match_after_every_communication_action() -> None:
+    protocol = MatchProtocol(communication_enabled=True, end_condition="fixed_hands", hands=1, max_actions_per_play=100)
     state, log = create_match("m", ["alice", "bob"], 12345, protocol=protocol)
     # Include actions a basic select/commit bot never exercises.
     initial = [
@@ -232,22 +232,22 @@ def test_replay_and_own_accounting_match_after_every_negotiation_action() -> Non
                 assert view.messages == ()
 
 
-@pytest.mark.parametrize("negotiated", [False, True])
-def test_legacy_logs_preserve_selection_only_counts(negotiated: bool) -> None:
-    name = "legacy_negotiated.jsonl" if negotiated else "legacy_classic.jsonl"
+@pytest.mark.parametrize("communication", [False, True])
+def test_legacy_logs_preserve_selection_only_counts(communication: bool) -> None:
+    name = "legacy_communication.jsonl" if communication else "legacy_classic.jsonl"
     log = read_event_log(Path(__file__).parent / "fixtures" / name)
     assert all(event.type != "action_counted" for event in log)
     replay = replay_events(log).state
     view = build_view(log, Viewer(role=ViewRole.PLAYER, player_id="alice"))
-    # Negotiated logs historically omitted explicit commits and uncommits from
+    # Communication logs historically omitted explicit commits and uncommits from
     # accounting. Compatibility preserves that undercount, not the live total 3.
     assert replay.players[0].actions_taken_this_play == view.you.actions_taken_this_play == 1
     assert view.you.actions_remaining_this_play == 9
-    assert replay.players[0].selection == view.you.selection == (None if negotiated else 96)
+    assert replay.players[0].selection == view.you.selection == (None if communication else 96)
 
 
 def test_budget_exhaustion_does_not_hide_a_required_row_choice() -> None:
-    protocol = MatchProtocol(negotiation_enabled=True, max_actions_per_play=2)
+    protocol = MatchProtocol(communication_enabled=True, max_actions_per_play=2)
     state, log = create_match("m", ["alice", "bob", "cara"], 12345, protocol=protocol)
     for player in state.players:
         for action in (SelectCardAction(card=player.hand[0]), CommitAction()):
@@ -262,9 +262,9 @@ def test_budget_exhaustion_does_not_hide_a_required_row_choice() -> None:
 
 
 def test_hidden_messages_do_not_displace_interleaved_visible_entries_at_cap() -> None:
-    visible_protocol = NEGOTIATION
+    visible_protocol = COMMUNICATION
     hidden_protocol = MatchProtocol(
-        negotiation_enabled=True, information_policy={"private_message_existence": "hidden"}
+        communication_enabled=True, information_policy={"private_message_existence": "hidden"}
     )
     state, log = create_match("m", ["alice", "bob", "cara"], 12345, protocol=visible_protocol)
     baseline = list(log)
@@ -292,7 +292,7 @@ def test_hidden_messages_do_not_displace_interleaved_visible_entries_at_cap() ->
 
 @pytest.mark.parametrize("body,accepted", [("🐂é", True), ("🐂éx", False)])
 def test_message_length_counts_unicode_code_points(body: str, accepted: bool) -> None:
-    protocol = MatchProtocol(negotiation_enabled=True, max_message_length=2)
+    protocol = MatchProtocol(communication_enabled=True, max_message_length=2)
     state, _ = create_match("m", ["alice", "bob"], 12345, protocol=protocol)
     action = SendMessageAction(visibility="table", body=body)
     if accepted:
@@ -314,7 +314,7 @@ def test_message_length_counts_unicode_code_points(body: str, accepted: bool) ->
 )
 def test_recipient_checks_precede_length_and_exhausted_budget(recipient: str, code: ErrorCode) -> None:
     protocol = MatchProtocol(
-        negotiation_enabled=True, allow_direct_messages=False, max_actions_per_play=1, max_message_length=1
+        communication_enabled=True, allow_direct_messages=False, max_actions_per_play=1, max_message_length=1
     )
     state, _ = create_match("m", ["alice", "bob"], 12345, protocol=protocol)
     state, _ = transition(state, "alice", SendMessageAction(visibility="table", body=""), protocol, RULES)

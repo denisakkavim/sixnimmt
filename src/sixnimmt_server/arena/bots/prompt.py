@@ -11,8 +11,8 @@ from sixnimmt_server.engine.actions import Action
 from sixnimmt_server.engine.cards import bull_heads
 from sixnimmt_server.engine.views import MatchView, MessageView, PrivateMessageView
 
-PROMPT_VERSION = "4"
-OBSERVATION_VERSION = "2"
+PROMPT_VERSION = "5"
+OBSERVATION_VERSION = "3"
 SYSTEM_PROMPT = """You are playing 6 nimmt!, a simultaneous card-selection game. Finish with the fewest penalty points.
 
 Game flow:
@@ -38,9 +38,10 @@ Your decisions:
 
 def system_instructions(view: MatchView, rules_prompt: str, strategy_prompt: str) -> str:
     protocol = view.protocol
-    if protocol.negotiation_enabled:
+    if protocol.communication_enabled:
         mode = (
-            "Negotiation mode: You may message and select or change your card before committing. "
+            "Communication enabled: You may send messages and select or change your card before committing. "
+            "Messaging is optional. "
             "Selection alone does not commit, unless your action budget forces commitment. "
             "Use commit to finalise your selection. Once committed, the scheduler offers you no further "
             "decisions that play. Everyone must commit for play to proceed."
@@ -51,7 +52,7 @@ def system_instructions(view: MatchView, rules_prompt: str, strategy_prompt: str
         settings = f"Match ends after {protocol.hands} hands; lowest score wins (ties share victory)."
     else:
         settings = f"Match ends after a hand when anyone reaches {view.target_score} banked points; lowest score wins (ties share victory)."
-    if protocol.negotiation_enabled:
+    if protocol.communication_enabled:
         permissions = "table and direct messages" if protocol.allow_direct_messages else "table messages only"
         budget = "unlimited" if protocol.max_actions_per_play is None else str(protocol.max_actions_per_play)
         settings += f" Messaging: {permissions}, maximum {protocol.max_message_length} characters. Actions per player per play: {budget}."
@@ -83,7 +84,7 @@ def _message_text(message: MessageView | PrivateMessageView) -> str:
     return f"{message.from_player} → {recipient}: {body}"
 
 
-def _negotiation_observation(view: MatchView) -> list[str]:
+def _communication_observation(view: MatchView) -> list[str]:
     selection = "none" if view.you.selection is None else str(view.you.selection)
     lines = [f"Your selection: {selection}; committed: {'yes' if view.you.committed else 'no'}."]
     if view.you.actions_remaining_this_play is not None:
@@ -153,8 +154,8 @@ def observation_text(view: MatchView, rejection: Rejection | None = None) -> str
         lines.append("Decision: Choose a row to take.")
         if view.awaiting_card is not None:
             lines.append(f"Your played card: {view.awaiting_card}.")
-    elif view.protocol.negotiation_enabled:
-        lines.append("Decision: Negotiate, select a card, or commit using an available tool.")
+    elif view.protocol.communication_enabled:
+        lines.append("Decision: Choose an available action: send a message, select a card, or commit.")
     else:
         lines.append("Decision: Choose one card from your hand.")
     lines.extend([f"Your cards: {_cards(sorted(view.you.hand))}", "", "Table:"])
@@ -175,8 +176,8 @@ def observation_text(view: MatchView, rejection: Rejection | None = None) -> str
     if history:
         lines.append("Revealed/captured this hand, outside the current rows: " + _cards(sorted(history)))
     lines.extend(_play_history(view))
-    if view.protocol.negotiation_enabled:
-        lines.extend(["", *_negotiation_observation(view)])
+    if view.protocol.communication_enabled:
+        lines.extend(["", *_communication_observation(view)])
     return "\n".join(lines)
 
 

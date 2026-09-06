@@ -15,7 +15,7 @@ class ErrorCode(StrEnum):
     CARD_NOT_IN_HAND = "card_not_in_hand"
     NO_SELECTION_TO_COMMIT = "no_selection_to_commit"
     CANNOT_UNCOMMIT_WHEN_ALL_COMMITTED = "cannot_uncommit_when_all_committed"
-    NEGOTIATION_DISABLED = "negotiation_disabled"
+    COMMUNICATION_DISABLED = "communication_disabled"
     ACTION_BUDGET_EXHAUSTED = "action_budget_exhausted"
     INVALID_ROW_INDEX = "invalid_row_index"
     INVALID_PLAYER_COUNT = "invalid_player_count"

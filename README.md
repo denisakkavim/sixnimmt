@@ -118,7 +118,7 @@ when matches run concurrently.
 
 ```bash
 uv run sixnimmt arena --players-file examples/arena-players.json --games 1000 --seed 1234 \
-  --negotiation --scheduler round_robin --concurrency 8 --trace-dir traces/run-1234
+  --communication --scheduler round_robin --concurrency 8 --trace-dir traces/run-1234
 uv run sixnimmt summarise traces/run-1234/<match-log>.jsonl
 uv run sixnimmt replay traces/run-1234/<match-log>.jsonl
 ```
@@ -134,13 +134,13 @@ measurements in arena records and is unavailable for HTTP records.
 Without tracing, the arena retains only aggregate results across games. Use
 that mode for smoke tests and volume checks; keep traces for experiments.
 
-Negotiation defaults to `round_robin`, offering uncommitted seats in rotation.
-Classic defaults to `sequential`; pairing it with negotiation is refused because
+With communication enabled, scheduling defaults to `round_robin`, offering uncommitted seats in rotation.
+Classic defaults to `sequential`; pairing that scheduler with communication is refused because
 one noncommitting seat could starve everyone else. Required row choices always
 go directly to the awaited player. The stock schedulers skip committed seats,
 so those seats cannot initiate an uncommit through these scheduling policies.
 
-`--play-action-limit` defaults to 200 in negotiation and is unset in classic.
+`--play-action-limit` defaults to 200 with communication enabled and is unset in classic.
 It counts attempts across all seats and resets on the next play. It is separate
 from the engine's per-player `MatchProtocol.max_actions_per_play` game rule.
 `--decision-rejection-limit` and `--match-action-limit` bound retries and matches.
@@ -190,15 +190,22 @@ uv run ruff check .
 uv run ty check
 ```
 
-## Negotiation messaging
+## Communication and commitment
 
-Set `protocol.negotiation_enabled` to `true` when creating an HTTP match to enable
+Set `protocol.communication_enabled` to `true` when creating an HTTP match to enable
 explicit commitment, uncommit, table messages, and direct messages. Send a message
 through `/matches/{id}/message` (or `/actions` with `type: "send_message"`):
 
 ```json
 {"visibility": "direct", "to_player": "bob", "body": "Which row would you take?", "action_id": "message-1"}
 ```
+
+Messaging is optional; players can select a card and commit without sending any
+messages. The CLI flag is `--communication`, and the disabled-mode error code is
+`COMMUNICATION_DISABLED` (`communication_disabled` in engine rejections).
+The former mode name is not accepted as an alias. Update existing configurations
+and the protocol keys in saved logs before building views from them; unknown
+protocol settings are rejected rather than silently selecting classic mode.
 
 For a table message, use `visibility: "table"` and omit `to_player`. Messages are
 accepted only during selection. Self-directed messages are refused. Empty bodies
@@ -234,7 +241,7 @@ record every count; older logs retain their historical selection-only accounting
 The message cap bounds response size, not server resource use: live event history
 and subscriber queues remain unbounded, and subscribers can accumulate queued events. Views on both surfaces advance
 incrementally as events arrive. Harnesses must still bound experiments and
-abandon stalled matches. Negotiation is available through both HTTP and the arena.
+abandon stalled matches. Communication is available through both HTTP and the arena.
 
 ## LLM arena players
 
@@ -271,15 +278,15 @@ in the system message, followed by the seat personality. A separate user message
 renders the filtered view as text: sorted hand, rows and penalties, scores, and
 visible-card history. Both `llm` and `llm_memory` receive the same shared game
 observation, including recent public moves with player attribution, hand/play
-numbers, placement order, pending placements, and captured cards. Negotiation
+numbers, placement order, pending placements, and captured cards. Communication
 adds selections, commitments, recent visible messages and remaining action
 budget; row choices identify the triggering card. Rejections include the proposed
 action. Transport metadata is excluded from the observation. The `llm` bot starts
 fresh each decision, while `llm_memory` also retains a private notebook.
 Only currently available action types are offered as
 tools. Exactly one function call is accepted; the arena then regains control.
-Classic selection and row choice, and negotiation messaging and commitment, use
-the same path. Add `--negotiation` to enable negotiation. Views include the public
+Classic selection and row choice, and messaging and explicit commitment, use
+the same path. Add `--communication` to enable communication. Views include the public
 protocol so bots can see message permissions, limits, and the end condition.
 
 Model options (unknown keys are rejected):
@@ -337,11 +344,11 @@ personalities, even when both seats use the same model. For example:
 ```json
 {
   "bot": "llm",
-  "display_name": "Assertive negotiator",
+  "display_name": "Assertive communicator",
   "options": {
     "model": "qwen3.5:0.8b-mlx",
     "base_url": "http://localhost:11434/v1",
-    "strategy_prompt": "Take calculated risks. Negotiate assertively and propose mutually beneficial deals."
+    "strategy_prompt": "Take calculated risks. Communicate assertively and propose mutually beneficial deals."
   }
 }
 ```
@@ -384,7 +391,7 @@ tool-capable model before running:
 
 ```bash
 uv run sixnimmt arena --players-file examples/arena-llm-memory-players.json \
-  --games 1 --seed 1234 --decision-timeout 130 --negotiation \
+  --games 1 --seed 1234 --decision-timeout 130 --communication \
   --trace-dir traces/memory-comparison
 ```
 

@@ -24,15 +24,15 @@ def resolve(config: RunConfig, protocol: MatchProtocol) -> RunConfig:
     """Resolve mode-dependent defaults and reject invalid harness settings."""
     scheduler = config.scheduler
     if scheduler is None:
-        scheduler = "round_robin" if protocol.negotiation_enabled else "sequential"
+        scheduler = "round_robin" if protocol.communication_enabled else "sequential"
     if scheduler not in ("sequential", "round_robin"):
         msg = f"unknown scheduler {scheduler!r}; available: sequential, round_robin"
         raise ValueError(msg)
-    if scheduler == "sequential" and protocol.negotiation_enabled:
-        msg = "sequential scheduling would starve later seats under negotiation; use round_robin"
+    if scheduler == "sequential" and protocol.communication_enabled:
+        msg = "sequential scheduling would starve later seats under communication; use round_robin"
         raise ValueError(msg)
     play_limit = config.play_action_limit
-    if play_limit is None and protocol.negotiation_enabled:
+    if play_limit is None and protocol.communication_enabled:
         play_limit = 200
     abandoned_limit = config.max_abandoned_decisions
     if abandoned_limit is None:

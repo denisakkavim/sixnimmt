@@ -118,11 +118,11 @@ with `AWAITING_ROW_CHOICE` hanging off resolution. During `AWAITING_ROW_CHOICE`
 only one named player may act, and only `choose_row`; everything else is rejected
 with `NOT_YOUR_TURN` (§8).
 
-**Two modes, one engine.** Classic is `negotiation_enabled = false`: selecting a
-card commits it, `uncommit` is illegal, messaging is off. Negotiation allows
+**Two modes, one engine.** Classic is `communication_enabled = false`: selecting a
+card commits it, `uncommit` is illegal, messaging is off. Communication allows
 messages, re-selection and uncommitting during `SELECTING`, and the play proceeds
 only when every player has committed. This matters constantly below, because
-classic has exactly one player who can act at any moment and negotiation has no
+classic has exactly one player who can act at any moment and communication has no
 such thing.
 
 ---
@@ -135,7 +135,7 @@ starting; they are 240 lines together.
 - `run_match` (`runner.py:103`) hardcodes `GameRules()` and `MatchProtocol()` at
   lines 122–123, so every arena match is classic with default rules.
 - `_acting_seat` (`runner.py:62`) returns the first uncommitted seat and the loop
-  takes exactly one action from it. Under negotiation there is no such seat.
+  takes exactly one action from it. Under communication there is no such seat.
 - `observe_player` (`runner.py:75`) hand-builds a `BotObservation` from
   `MatchState`: hand, rows, hand and play numbers. No scores, piles, commitment
   flags or messages.
@@ -173,7 +173,7 @@ built by `build_view(events, viewer)` — the same object, from the same code, t
 an HTTP client gets from `GET /state`.**
 
 `observe_player` is the projection-and-blank pattern §9.2 forbids. It is safe
-today only because somebody picked safe fields, and it must grow for negotiation
+today only because somebody picked safe fields, and it must grow for communication
 — messages, commitment flags, scores, piles — which is exactly the growth during
 which such a thing leaks. Folding instead makes the arena's information
 discipline structural, and lets the existing §5 leak tests cover arena seats
@@ -242,7 +242,7 @@ turn and when the arena gives up — and they live in `RunConfig` and the manife
 ## D3 — Scheduling
 
 Classic has no scheduling problem: one seat can act and it is the one the engine
-is waiting on. Negotiation has no "whose turn it is" — during `SELECTING` every
+is waiting on. Communication has no "whose turn it is" — during `SELECTING` every
 uncommitted player may act, repeatedly, in any order — so the arena must choose
 who is *offered* a turn, and that choice is part of the experiment.
 
@@ -254,8 +254,8 @@ class Scheduler(Protocol):
 ```
 
 - **`SequentialScheduler`** — the classic rule: the first seat that has not
-  committed. **Valid only when `negotiation_enabled` is false.** Under
-  negotiation a seat that never commits stays the first uncommitted seat forever,
+  committed. **Valid only when `communication_enabled` is false.** Under
+  communication a seat that never commits stays the first uncommitted seat forever,
   so every later seat starves and the play never reaches unanimity. Refuse this
   combination when the run is configured, naming the starvation — a starved run
   looks exactly like a slow one, and you will not diagnose it later.
@@ -272,7 +272,7 @@ the awaited player and only that player may act. Put this branch in the runner,
 not in each scheduler, so a future scheduler cannot get it wrong. `next_seat` is
 only ever called during `SELECTING`.
 
-Default: `round_robin` under negotiation, `sequential` otherwise, resolved from
+Default: `round_robin` under communication, `sequential` otherwise, resolved from
 the protocol (see `resolve()` in the pinned interfaces).
 
 The scheduler decides who is offered a turn. It never decides legality.
@@ -373,7 +373,7 @@ disambiguate them from `MatchProtocol.max_actions_per_play`.
 | Setting | Default | Counts | Resets | Effect |
 |---|---|---|---|---|
 | `match_action_limit` | 10 000 | attempts, accepted and rejected alike | never | match abandoned |
-| `play_action_limit` | `None` classic, 200 negotiation | attempts in the current play | on `play_started` | match abandoned |
+| `play_action_limit` | `None` classic, 200 communication | attempts in the current play | on `play_started` | match abandoned |
 | `decision_rejection_limit` | 8 | consecutive rejections in one decision | every new offer, any accepted action | seat forfeits (D4) |
 
 **They count attempts, not accepted actions.** What they bound is an agent doing
@@ -456,14 +456,14 @@ exception.
 Two bots ship:
 
 - **`random`** — today's `RandomBot`, ported to the view interface: it selects
-  from `view.you.hand` and chooses from `view.rows`. Under negotiation it must
+  from `view.you.hand` and chooses from `view.rows`. Under communication it must
   also **commit**: select if it has no selection, commit otherwise. A bot that
-  only ever selects would abandon every negotiation match and leave the mode
+  only ever selects would abandon every communication match and leave the mode
   untested by its own volume suite.
 - **`greedy`** — a scripted strategy: play the card that would take the fewest
   bull heads against the current board; on a row choice, take the row with the
   fewest heads; break ties toward the lower card and the lower row index. **It
-  holds no RNG**, so `deterministic: true` is honest. Under negotiation it
+  holds no RNG**, so `deterministic: true` is honest. Under communication it
   commits its choice immediately and sends no messages. Its quality as a player
   is not a goal — admitting real strategies through the interface is.
 
@@ -664,7 +664,7 @@ own record and has no audience problem.
 
 ## D11 — Command line
 
-`sixnimmt arena` gains `--negotiation`, `--scheduler`, `--trace-dir`,
+`sixnimmt arena` gains `--communication`, `--scheduler`, `--trace-dir`,
 `--concurrency`, `--decision-timeout`, `--play-action-limit`,
 `--match-action-limit`, `--decision-rejection-limit`, `--max-abandoned-decisions`
 and `--stop-on-failure`. Existing flags keep their behaviour, and
@@ -721,7 +721,7 @@ class RunConfig:
 
     scheduler: str | None = None  # None until resolved against the protocol
     match_action_limit: int = 10_000
-    play_action_limit: int | None = None  # resolved to 200 under negotiation
+    play_action_limit: int | None = None  # resolved to 200 under communication
     decision_rejection_limit: int = 8
     decision_timeout_seconds: float | None = None
     max_abandoned_decisions: int | None = None  # default 4 * concurrency
@@ -734,7 +734,7 @@ def resolve(config: RunConfig, protocol: MatchProtocol) -> RunConfig:
     """Fill mode-dependent defaults, then validate.
 
     Called by run_arena and run_match, so no caller can reach the runner with
-    sequential scheduling on a negotiation match.
+    sequential scheduling on a communication match.
     """
 
 
@@ -883,7 +883,7 @@ Each commit leaves the suite green and is independently complete. Run
    the per-decision budget, forfeit and failure outcomes, `MatchOutcome`, the
    result types, and the parity test against the server's §9.4 error body. Fixes
    a live defect in classic runs.
-6. `feat(arena): run negotiation matches under an explicit schedule`
+6. `feat(arena): run communication matches under an explicit schedule`
    — rules and protocol as parameters, `arena/scheduling.py`, both schedulers,
    the classic-only guard on `sequential`, the row-choice bypass, the action
    limits and their precedence, abandonment. `random` learns to commit.
@@ -905,7 +905,7 @@ Each commit leaves the suite green and is independently complete. Run
     — the new flags, outcome counts in the output, CLI tests.
 11. `test(arena): pin the information contract and termination for arena play`
     — leak tests over arena seats, trace equivalence with a server log, replay
-    after every accepted transition, the pathological-bot suite, negotiation
+    after every accepted transition, the pathological-bot suite, communication
     volume (marked `arena_slow`).
 
 ---
@@ -961,7 +961,7 @@ mocking of things that can be exercised directly.
   after the seat offered the last turn
 - a never-committing seat under `round_robin` does not starve the others: every
   other seat is offered turns, and the play ends on the action limit
-- `sequential` with negotiation is refused from `run_arena` and `run_match` as
+- `sequential` with communication is refused from `run_arena` and `run_match` as
   well as the CLI; an omitted scheduler resolves by mode
 - during `AWAITING_ROW_CHOICE` only the awaited player is offered a turn, under
   both schedulers and both modes
@@ -1016,7 +1016,7 @@ mocking of things that can be exercised directly.
 *Determinism and volume*
 - two runs of the same root seed with deterministic line-ups produce identical
   logs, ignoring timestamps
-- 1 000 games at 2, 3, 5 and 10 players in negotiation mode with messaging bots:
+- 1 000 games at 2, 3, 5 and 10 players in communication mode with messaging bots:
   every row holds 1–5 cards and is strictly increasing, every card is in exactly
   one place, every hand empties, every match terminates, replay matches live
   state, information boundaries hold. Mark `arena_slow`.

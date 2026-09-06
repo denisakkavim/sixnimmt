@@ -1,4 +1,4 @@
-"""Negotiation-shaped selection, commitment, and action budgets."""
+"""Card selection, explicit commitment, and action budgets with communication enabled."""
 
 import pytest
 from pydantic import TypeAdapter
@@ -12,18 +12,18 @@ from sixnimmt_server.engine.state import MatchState, Phase, PlayerState, Resolut
 from sixnimmt_server.engine.transition import transition
 
 _ACTION_ADAPTER: TypeAdapter[Action] = TypeAdapter(Action)
-_NEGOTIATION = MatchProtocol(negotiation_enabled=True)
+_COMMUNICATION = MatchProtocol(communication_enabled=True)
 
 
 def _select(card: int) -> Action:
     return _ACTION_ADAPTER.validate_python({"type": "select_card", "card": card})
 
 
-def test_negotiation_selection_stays_uncommitted_and_in_hand() -> None:
+def test_communication_selection_stays_uncommitted_and_in_hand() -> None:
     state, _ = create_match("m_01", ["alice", "bob"], match_seed=12345)
     card = state.players[0].hand[0]
 
-    selected, events = transition(state, "alice", _select(card), _NEGOTIATION, GameRules())
+    selected, events = transition(state, "alice", _select(card), _COMMUNICATION, GameRules())
 
     alice = selected.players[0]
     assert alice.selection == card
@@ -50,7 +50,7 @@ def test_reselection_clears_only_the_callers_commitment() -> None:
         prepared,
         "alice",
         _select(alice_replacement),
-        _NEGOTIATION,
+        _COMMUNICATION,
         GameRules(),
     )
 
@@ -71,11 +71,11 @@ def test_final_explicit_commit_emits_commitment_before_reveal() -> None:
     state, _ = create_match("m_01", ["alice", "bob"], match_seed=12345)
     alice_card = state.players[0].hand[0]
     bob_card = state.players[1].hand[0]
-    state, _ = transition(state, "alice", _select(alice_card), _NEGOTIATION, GameRules())
-    state, _ = transition(state, "bob", _select(bob_card), _NEGOTIATION, GameRules())
-    state, _ = transition(state, "alice", CommitAction(), _NEGOTIATION, GameRules())
+    state, _ = transition(state, "alice", _select(alice_card), _COMMUNICATION, GameRules())
+    state, _ = transition(state, "bob", _select(bob_card), _COMMUNICATION, GameRules())
+    state, _ = transition(state, "alice", CommitAction(), _COMMUNICATION, GameRules())
 
-    committed, events = transition(state, "bob", CommitAction(), _NEGOTIATION, GameRules())
+    committed, events = transition(state, "bob", CommitAction(), _COMMUNICATION, GameRules())
 
     event_types = [event.type for event in events]
     assert event_types[:4] == ["action_counted", "player_committed", "play_committed", "cards_revealed"]
@@ -88,10 +88,10 @@ def test_final_explicit_commit_emits_commitment_before_reveal() -> None:
 def test_uncommit_clears_selection_while_another_player_is_uncommitted() -> None:
     state, _ = create_match("m_01", ["alice", "bob"], match_seed=12345)
     card = state.players[0].hand[0]
-    selected, _ = transition(state, "alice", _select(card), _NEGOTIATION, GameRules())
-    committed, _ = transition(selected, "alice", CommitAction(), _NEGOTIATION, GameRules())
+    selected, _ = transition(state, "alice", _select(card), _COMMUNICATION, GameRules())
+    committed, _ = transition(selected, "alice", CommitAction(), _COMMUNICATION, GameRules())
 
-    uncommitted, events = transition(committed, "alice", UncommitAction(), _NEGOTIATION, GameRules())
+    uncommitted, events = transition(committed, "alice", UncommitAction(), _COMMUNICATION, GameRules())
 
     alice = uncommitted.players[0]
     assert alice.selection is None
@@ -112,7 +112,7 @@ def test_uncommit_rejects_an_all_committed_selecting_state() -> None:
     )
 
     with pytest.raises(EngineRejection) as exc_info:
-        transition(prepared, "alice", UncommitAction(), _NEGOTIATION, GameRules())
+        transition(prepared, "alice", UncommitAction(), _COMMUNICATION, GameRules())
 
     assert exc_info.value.code == ErrorCode.CANNOT_UNCOMMIT_WHEN_ALL_COMMITTED
 
@@ -120,7 +120,7 @@ def test_uncommit_rejects_an_all_committed_selecting_state() -> None:
 def test_action_budget_rejects_the_next_selection_without_mutating_state() -> None:
     state, _ = create_match("m_01", ["alice", "bob"], match_seed=12345)
     first_card, second_card = state.players[0].hand[:2]
-    protocol = MatchProtocol(negotiation_enabled=True, max_actions_per_play=1)
+    protocol = MatchProtocol(communication_enabled=True, max_actions_per_play=1)
     selected, _ = transition(state, "alice", _select(first_card), protocol, GameRules())
     frozen = selected.model_dump_json()
 
@@ -133,7 +133,7 @@ def test_action_budget_rejects_the_next_selection_without_mutating_state() -> No
 
 def test_unlimited_action_budget_allows_repeated_reselection() -> None:
     state, _ = create_match("m_01", ["alice", "bob"], match_seed=12345)
-    protocol = MatchProtocol(negotiation_enabled=True)
+    protocol = MatchProtocol(communication_enabled=True)
     current = state
 
     for card in state.players[0].hand[:4]:
@@ -180,10 +180,10 @@ def test_required_row_choice_is_exempt_from_the_action_budget() -> None:
 def test_reselecting_the_same_card_is_publicly_indistinguishable_from_a_change() -> None:
     state, _ = create_match("m_01", ["alice", "bob"], match_seed=12345)
     original, replacement = state.players[0].hand[:2]
-    selected, _ = transition(state, "alice", _select(original), _NEGOTIATION, GameRules())
+    selected, _ = transition(state, "alice", _select(original), _COMMUNICATION, GameRules())
 
-    _, repeat_events = transition(selected, "alice", _select(original), _NEGOTIATION, GameRules())
-    _, change_events = transition(selected, "alice", _select(replacement), _NEGOTIATION, GameRules())
+    _, repeat_events = transition(selected, "alice", _select(original), _COMMUNICATION, GameRules())
+    _, change_events = transition(selected, "alice", _select(replacement), _COMMUNICATION, GameRules())
 
     public_repeat = [event.type for event in repeat_events if event.audience == "public"]
     public_change = [event.type for event in change_events if event.audience == "public"]

@@ -18,7 +18,7 @@ pytestmark = pytest.mark.anyio
 
 @dataclass
 class AsyncMatch:
-    """A negotiation-mode match driven over concurrent connections."""
+    """A communication-mode match driven over concurrent connections."""
 
     client: httpx2.AsyncClient
     match_id: str
@@ -37,7 +37,7 @@ class AsyncMatch:
 
 
 @pytest.fixture
-async def negotiating(app: FastAPI) -> AsyncIterator[AsyncMatch]:
+async def communicating(app: FastAPI) -> AsyncIterator[AsyncMatch]:
     """Three players, explicit commitment, so a final commit can be raced."""
     transport = httpx2.ASGITransport(app=app)
     async with httpx2.AsyncClient(transport=transport, base_url="http://server") as client:
@@ -47,7 +47,7 @@ async def negotiating(app: FastAPI) -> AsyncIterator[AsyncMatch]:
             json={
                 "players": [{"id": "alice"}, {"id": "bob"}, {"id": "cara"}],
                 "seed": 12345,
-                "protocol": {"negotiation_enabled": True},
+                "protocol": {"communication_enabled": True},
             },
             headers=admin,
         )
@@ -81,32 +81,32 @@ async def _run_together(*calls: Any) -> list[Any]:
     return [results[index] for index in range(len(calls))]
 
 
-async def test_two_final_commits_arriving_together_resolve_the_play_once(negotiating: AsyncMatch) -> None:
-    await _select_all(negotiating)
-    await _commit_all_but(negotiating, held_back=["bob", "cara"])
+async def test_two_final_commits_arriving_together_resolve_the_play_once(communicating: AsyncMatch) -> None:
+    await _select_all(communicating)
+    await _commit_all_but(communicating, held_back=["bob", "cara"])
 
     responses = await _run_together(
-        lambda: negotiating.act("bob", type="commit"),
-        lambda: negotiating.act("cara", type="commit"),
+        lambda: communicating.act("bob", type="commit"),
+        lambda: communicating.act("cara", type="commit"),
     )
 
     assert [response.status_code for response in responses] == [200, 200]
-    table = await negotiating.state("alice")
+    table = await communicating.state("alice")
     # One reveal, not two: whichever commit linearized last resolved the play,
     # and the other could not resolve it again.
     assert len(table["revealed_this_hand"]) == 1
 
 
-async def test_a_final_commit_racing_an_uncommit_yields_one_consistent_outcome(negotiating: AsyncMatch) -> None:
-    await _select_all(negotiating)
-    await _commit_all_but(negotiating, held_back=["cara"])
+async def test_a_final_commit_racing_an_uncommit_yields_one_consistent_outcome(communicating: AsyncMatch) -> None:
+    await _select_all(communicating)
+    await _commit_all_but(communicating, held_back=["cara"])
 
     commit, uncommit = await _run_together(
-        lambda: negotiating.act("cara", type="commit"),
-        lambda: negotiating.act("alice", type="uncommit"),
+        lambda: communicating.act("cara", type="commit"),
+        lambda: communicating.act("alice", type="uncommit"),
     )
 
-    table = await negotiating.state("bob")
+    table = await communicating.state("bob")
     if commit.status_code == 200 and uncommit.status_code != 200:
         # The commit linearized first: the play is irrevocably committed, and no
         # later action can withdraw a selection from it.
@@ -117,17 +117,17 @@ async def test_a_final_commit_racing_an_uncommit_yields_one_consistent_outcome(n
         assert table["revealed_this_hand"] == []
 
 
-async def test_a_final_commit_racing_a_selection_yields_one_consistent_outcome(negotiating: AsyncMatch) -> None:
-    await _select_all(negotiating)
-    await _commit_all_but(negotiating, held_back=["cara"])
-    alice_hand = (await negotiating.state("alice"))["you"]["hand"]
+async def test_a_final_commit_racing_a_selection_yields_one_consistent_outcome(communicating: AsyncMatch) -> None:
+    await _select_all(communicating)
+    await _commit_all_but(communicating, held_back=["cara"])
+    alice_hand = (await communicating.state("alice"))["you"]["hand"]
 
     commit, select = await _run_together(
-        lambda: negotiating.act("cara", type="commit"),
-        lambda: negotiating.act("alice", type="select_card", card=alice_hand[1]),
+        lambda: communicating.act("cara", type="commit"),
+        lambda: communicating.act("alice", type="select_card", card=alice_hand[1]),
     )
 
-    table = await negotiating.state("bob")
+    table = await communicating.state("bob")
     if commit.status_code == 200 and select.status_code != 200:
         assert len(table["revealed_this_hand"]) == 1
     else:
@@ -136,14 +136,14 @@ async def test_a_final_commit_racing_a_selection_yields_one_consistent_outcome(n
         assert table["revealed_this_hand"] == []
 
 
-async def test_a_final_commit_racing_a_message_leaves_the_match_consistent(negotiating: AsyncMatch) -> None:
+async def test_a_final_commit_racing_a_message_leaves_the_match_consistent(communicating: AsyncMatch) -> None:
     """A message belongs to the selecting play at its serialization point."""
-    await _select_all(negotiating)
-    await _commit_all_but(negotiating, held_back=["cara"])
+    await _select_all(communicating)
+    await _commit_all_but(communicating, held_back=["cara"])
 
     commit, message = await _run_together(
-        lambda: negotiating.act("cara", type="commit"),
-        lambda: negotiating.act("alice", type="send_message", visibility="table", body="please take row 2"),
+        lambda: communicating.act("cara", type="commit"),
+        lambda: communicating.act("alice", type="send_message", visibility="table", body="please take row 2"),
     )
 
     assert commit.status_code == 200
@@ -151,40 +151,40 @@ async def test_a_final_commit_racing_a_message_leaves_the_match_consistent(negot
         assert message.json()["error"]["code"] in {"NOT_YOUR_TURN", "MATCH_FINISHED"}
     else:
         assert message.json()["messages"][-1]["body"] == "please take row 2"
-    table = await negotiating.state("bob")
+    table = await communicating.state("bob")
     assert len(table["revealed_this_hand"]) == 1
 
 
-async def test_a_stale_expected_view_version_is_refused(negotiating: AsyncMatch) -> None:
-    view = await negotiating.state("alice")
+async def test_a_stale_expected_view_version_is_refused(communicating: AsyncMatch) -> None:
+    view = await communicating.state("alice")
 
-    response = await negotiating.act(
+    response = await communicating.act(
         "alice", type="select_card", card=view["you"]["hand"][0], expected_view_version=view["view_version"] - 1
     )
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "VERSION_CONFLICT"
-    assert (await negotiating.state("alice"))["you"]["selection"] is None
+    assert (await communicating.state("alice"))["you"]["selection"] is None
 
 
-async def test_a_current_expected_view_version_is_accepted(negotiating: AsyncMatch) -> None:
-    view = await negotiating.state("alice")
+async def test_a_current_expected_view_version_is_accepted(communicating: AsyncMatch) -> None:
+    view = await communicating.state("alice")
 
-    response = await negotiating.act(
+    response = await communicating.act(
         "alice", type="select_card", card=view["you"]["hand"][0], expected_view_version=view["view_version"]
     )
 
     assert response.status_code == 200
 
 
-async def test_a_visible_action_landing_first_turns_the_guard_into_a_conflict(negotiating: AsyncMatch) -> None:
+async def test_a_visible_action_landing_first_turns_the_guard_into_a_conflict(communicating: AsyncMatch) -> None:
     """The check runs at the linearization point, so nothing can slip in behind it."""
-    alice = await negotiating.state("alice")
-    bob_hand = (await negotiating.state("bob"))["you"]["hand"]
+    alice = await communicating.state("alice")
+    bob_hand = (await communicating.state("bob"))["you"]["hand"]
 
     bob, guarded = await _run_together(
-        lambda: negotiating.act("bob", type="select_card", card=bob_hand[0]),
-        lambda: negotiating.act(
+        lambda: communicating.act("bob", type="select_card", card=bob_hand[0]),
+        lambda: communicating.act(
             "alice",
             type="select_card",
             card=alice["you"]["hand"][0],
@@ -195,11 +195,11 @@ async def test_a_visible_action_landing_first_turns_the_guard_into_a_conflict(ne
     assert bob.status_code == 200
     if guarded.status_code == 200:
         # Alice linearized first, so nothing she could see had changed.
-        assert (await negotiating.state("alice"))["you"]["selection"] == alice["you"]["hand"][0]
+        assert (await communicating.state("alice"))["you"]["selection"] == alice["you"]["hand"][0]
     else:
         # Bob's selection_registered is public, so Alice's cursor had moved.
         assert guarded.json()["error"]["code"] == "VERSION_CONFLICT"
-        assert (await negotiating.state("alice"))["you"]["selection"] is None
+        assert (await communicating.state("alice"))["you"]["selection"] is None
 
 
 class SlowSink:
@@ -283,20 +283,20 @@ async def test_a_caller_that_gives_up_mid_write_still_completes_its_transition(a
 
 @pytest.mark.parametrize("message_first", [True, False])
 async def test_guarded_message_and_final_commit_have_one_serialized_winner(
-    negotiating: AsyncMatch, message_first: bool
+    communicating: AsyncMatch, message_first: bool
 ) -> None:
-    await _select_all(negotiating)
-    await _commit_all_but(negotiating, held_back=["cara"])
-    version = (await negotiating.state("cara"))["view_version"]
-    message = lambda: negotiating.act(
+    await _select_all(communicating)
+    await _commit_all_but(communicating, held_back=["cara"])
+    version = (await communicating.state("cara"))["view_version"]
+    message = lambda: communicating.act(
         "cara", type="send_message", visibility="table", body="wait", expected_view_version=version
     )
-    commit = lambda: negotiating.act("cara", type="commit", expected_view_version=version)
+    commit = lambda: communicating.act("cara", type="commit", expected_view_version=version)
     calls = (message, commit) if message_first else (commit, message)
     results = await _run_together(*calls)
     assert sorted(response.status_code for response in results) == [200, 409]
     rejected = next(response for response in results if response.status_code == 409)
     assert rejected.json()["error"]["code"] == "VERSION_CONFLICT"
     message_result = results[0 if message_first else 1]
-    table = await negotiating.state("alice")
+    table = await communicating.state("alice")
     assert len(table["revealed_this_hand"]) == (0 if message_result.status_code == 200 else 1)

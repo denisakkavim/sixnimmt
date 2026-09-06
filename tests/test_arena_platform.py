@@ -101,13 +101,13 @@ class MessagingBot:
         return SendMessageAction(visibility="table", body="still thinking")
 
 
-@pytest.mark.parametrize("negotiation", [False, True])
-def test_every_offer_can_recover_from_a_private_rejection(short_protocol: MatchProtocol, negotiation: bool) -> None:
+@pytest.mark.parametrize("communication", [False, True])
+def test_every_offer_can_recover_from_a_private_rejection(short_protocol: MatchProtocol, communication: bool) -> None:
     bots = [InvalidThenLegal(1), InvalidThenLegal(2)]
     result = run_match(
         bots,
         123,
-        protocol=short_protocol.model_copy(update={"negotiation_enabled": negotiation}),
+        protocol=short_protocol.model_copy(update={"communication_enabled": communication}),
         config=RunConfig(decision_rejection_limit=2),
     )
     assert result.outcome == MatchOutcome.FINISHED
@@ -203,7 +203,7 @@ def test_play_counter_resets_before_limit_check(short_protocol: MatchProtocol) -
 def test_round_robin_offers_every_noncommitting_seat() -> None:
     bots = [MessagingBot(), MessagingBot(), MessagingBot()]
     result = run_match(
-        bots, 123, protocol=MatchProtocol(negotiation_enabled=True), config=RunConfig(play_action_limit=12)
+        bots, 123, protocol=MatchProtocol(communication_enabled=True), config=RunConfig(play_action_limit=12)
     )
     assert result.outcome == MatchOutcome.ABANDONED
     assert result.reason == "play_action_limit"
@@ -211,8 +211,8 @@ def test_round_robin_offers_every_noncommitting_seat() -> None:
 
 
 @pytest.mark.parametrize("surface", ["match", "arena"])
-def test_sequential_negotiation_is_rejected_before_play(surface: str) -> None:
-    protocol = MatchProtocol(negotiation_enabled=True)
+def test_sequential_communication_is_rejected_before_play(surface: str) -> None:
+    protocol = MatchProtocol(communication_enabled=True)
     config = RunConfig(scheduler="sequential")
     with pytest.raises(ValueError, match="starve"):
         if surface == "match":
@@ -221,16 +221,16 @@ def test_sequential_negotiation_is_rejected_before_play(surface: str) -> None:
             run_arena([PlayerConfig(bot="random")] * 2, 1, 123, protocol=protocol, config=config)
 
 
-@pytest.mark.parametrize("negotiation, scheduler, limit", [(False, "sequential", None), (True, "round_robin", 200)])
-def test_configuration_defaults_follow_mode(negotiation: bool, scheduler: str, limit: int | None) -> None:
-    config = resolve(RunConfig(concurrency=3), MatchProtocol(negotiation_enabled=negotiation))
+@pytest.mark.parametrize("communication, scheduler, limit", [(False, "sequential", None), (True, "round_robin", 200)])
+def test_configuration_defaults_follow_mode(communication: bool, scheduler: str, limit: int | None) -> None:
+    config = resolve(RunConfig(concurrency=3), MatchProtocol(communication_enabled=communication))
     assert config.scheduler == scheduler
     assert config.play_action_limit == limit
     assert config.max_abandoned_decisions == 12
 
 
-@pytest.mark.parametrize("negotiation", [False, True])
-def test_live_folds_and_replay_match_every_transition(short_protocol: MatchProtocol, negotiation: bool) -> None:
+@pytest.mark.parametrize("communication", [False, True])
+def test_live_folds_and_replay_match_every_transition(short_protocol: MatchProtocol, communication: bool) -> None:
     viewers = [Viewer(role) for role in ViewRole if role != ViewRole.PLAYER]
     viewers += [Viewer(ViewRole.PLAYER, f"player_{i + 1}") for i in range(3)]
     folders = {viewer: ViewFolder(viewer) for viewer in viewers}
@@ -261,7 +261,7 @@ def test_live_folds_and_replay_match_every_transition(short_protocol: MatchProto
         [RandomBot(1), RandomBot(2), GreedyBot()],
         123,
         observer=inspect,
-        protocol=short_protocol.model_copy(update={"negotiation_enabled": negotiation}),
+        protocol=short_protocol.model_copy(update={"communication_enabled": communication}),
     )
 
 
@@ -547,7 +547,7 @@ def test_engine_action_budget_is_distinct_from_harness_limit() -> None:
     result = run_match(
         [MessagingBot(), MessagingBot()],
         123,
-        protocol=MatchProtocol(negotiation_enabled=True, max_actions_per_play=1),
+        protocol=MatchProtocol(communication_enabled=True, max_actions_per_play=1),
         config=RunConfig(play_action_limit=100, decision_rejection_limit=2),
     )
     assert result.actions_accepted == 2
@@ -618,7 +618,7 @@ def test_hidden_direct_messages_do_not_change_uninvolved_bot_view(short_protocol
 
     protocol = short_protocol.model_copy(
         update={
-            "negotiation_enabled": True,
+            "communication_enabled": True,
             "information_policy": InformationPolicy(private_message_existence="hidden"),
         }
     )
@@ -649,7 +649,7 @@ def test_live_folder_applies_each_visible_event_once(monkeypatch: pytest.MonkeyP
     from sixnimmt_server.engine.setup import create_match
     from sixnimmt_server.engine.transition import transition
 
-    protocol = MatchProtocol(negotiation_enabled=True)
+    protocol = MatchProtocol(communication_enabled=True)
     state, initial = create_match("messages", ["a", "b"], 123, protocol=protocol)
     applied = 0
     original = fold._apply
@@ -681,7 +681,7 @@ def test_summary_reads_both_surfaces_and_counts_direct_messages_once(
 
     from sixnimmt_server.server.app import create_app
 
-    protocol = short_protocol.model_copy(update={"negotiation_enabled": True})
+    protocol = short_protocol.model_copy(update={"communication_enabled": True})
     proposed: list[tuple[str, Action]] = []
 
     class Recording(RandomBot):

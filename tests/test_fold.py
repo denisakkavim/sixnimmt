@@ -191,8 +191,8 @@ def test_only_the_awaited_player_may_choose_a_row() -> None:
         assert view.legal_actions == expected
 
 
-def test_negotiation_offers_commit_and_uncommit_in_the_right_order() -> None:
-    protocol = MatchProtocol(negotiation_enabled=True)
+def test_communication_offers_commit_and_uncommit_in_the_right_order() -> None:
+    protocol = MatchProtocol(communication_enabled=True)
     state, events = create_match("m_01", PLAYERS, match_seed=12345, protocol=protocol)
     log = list(events)
 
@@ -239,7 +239,7 @@ def test_scores_folded_from_events_match_the_heads_actually_captured() -> None:
 
 
 def test_uncommitting_clears_the_public_commitment_in_every_view() -> None:
-    protocol = MatchProtocol(negotiation_enabled=True)
+    protocol = MatchProtocol(communication_enabled=True)
     state, events = create_match("m_01", PLAYERS, match_seed=12345, protocol=protocol)
     log = list(events)
     state, produced = transition(state, "alice", SelectCardAction(card=state.players[0].hand[0]), protocol, GameRules())
@@ -262,7 +262,7 @@ def test_uncommitting_clears_the_public_commitment_in_every_view() -> None:
 
 
 def test_uncommit_is_offered_only_while_someone_else_is_uncommitted() -> None:
-    protocol = MatchProtocol(negotiation_enabled=True)
+    protocol = MatchProtocol(communication_enabled=True)
     state, events = create_match("m_01", PLAYERS, match_seed=12345, protocol=protocol)
     log = list(events)
     for player in state.players[:2]:
@@ -277,7 +277,7 @@ def test_uncommit_is_offered_only_while_someone_else_is_uncommitted() -> None:
 
 
 def test_an_action_budget_is_reported_as_remaining_actions() -> None:
-    protocol = MatchProtocol(negotiation_enabled=True, max_actions_per_play=3)
+    protocol = MatchProtocol(communication_enabled=True, max_actions_per_play=3)
     state, events = create_match("m_01", PLAYERS, match_seed=12345, protocol=protocol)
     log = list(events)
 

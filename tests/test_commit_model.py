@@ -144,7 +144,7 @@ def test_commit_without_selection_is_rejected() -> None:
     assert exc_info.value.code == ErrorCode.NO_SELECTION_TO_COMMIT
 
 
-def test_uncommit_and_message_are_rejected_when_negotiation_disabled() -> None:
+def test_uncommit_and_message_are_rejected_when_communication_disabled() -> None:
     state, _ = _two_player_match()
     card = state.players[0].hand[0]
     selected, _ = transition(
@@ -153,7 +153,7 @@ def test_uncommit_and_message_are_rejected_when_negotiation_disabled() -> None:
 
     with pytest.raises(EngineRejection) as exc_info:
         transition(selected, "alice", UncommitAction(), MatchProtocol(), GameRules())
-    assert exc_info.value.code == ErrorCode.NEGOTIATION_DISABLED
+    assert exc_info.value.code == ErrorCode.COMMUNICATION_DISABLED
 
     with pytest.raises(EngineRejection) as exc_info:
         transition(
@@ -163,7 +163,7 @@ def test_uncommit_and_message_are_rejected_when_negotiation_disabled() -> None:
             MatchProtocol(),
             GameRules(),
         )
-    assert exc_info.value.code == ErrorCode.NEGOTIATION_DISABLED
+    assert exc_info.value.code == ErrorCode.COMMUNICATION_DISABLED
 
 
 def test_rejection_leaves_state_unchanged_and_emits_nothing() -> None:

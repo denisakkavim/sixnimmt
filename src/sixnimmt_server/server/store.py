@@ -574,7 +574,7 @@ class MatchStore:
         """
         withdrawable = code in (ApiErrorCode.WRONG_PHASE, ApiErrorCode.NOT_YOUR_TURN)
         committed_play = record.state.phase in (Phase.RESOLVING, Phase.AWAITING_ROW_CHOICE)
-        if record.protocol.negotiation_enabled and withdrawable and committed_play:
+        if record.protocol.communication_enabled and withdrawable and committed_play:
             return ApiErrorCode.CANNOT_UNCOMMIT_WHEN_ALL_COMMITTED
         return code
 

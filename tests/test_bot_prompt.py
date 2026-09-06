@@ -11,10 +11,10 @@ from sixnimmt_server.engine.setup import create_match
 from sixnimmt_server.engine.views import MessageView, PlayHistoryView, PrivateMessageView, RevealedCardView, ViewRole
 
 
-@pytest.mark.parametrize("negotiation", [False, True])
-def test_injects_only_active_mode_and_actual_settings(negotiation: bool) -> None:
+@pytest.mark.parametrize("communication", [False, True])
+def test_injects_only_active_mode_and_actual_settings(communication: bool) -> None:
     protocol = MatchProtocol(
-        negotiation_enabled=negotiation,
+        communication_enabled=communication,
         end_condition="fixed_hands",
         hands=3,
         allow_direct_messages=False,
@@ -26,10 +26,11 @@ def test_injects_only_active_mode_and_actual_settings(negotiation: bool) -> None
     text = system_instructions(view, SYSTEM_PROMPT, "Be diplomatic.")
     assert "3 hands" in text
     assert "66 banked" not in text
-    assert ("Negotiation mode:" in text) == negotiation
-    assert ("Classic mode:" in text) != negotiation
-    assert ("maximum 73 characters" in text) == negotiation
-    assert ("table messages only" in text) == negotiation
+    assert ("Communication enabled:" in text) == communication
+    assert ("Messaging is optional." in text) == communication
+    assert ("Classic mode:" in text) != communication
+    assert ("maximum 73 characters" in text) == communication
+    assert ("table messages only" in text) == communication
     assert text.endswith("Strategy and personality: Be diplomatic.")
 
 
@@ -49,8 +50,8 @@ def test_observation_omits_metadata_and_keeps_visible_history() -> None:
     assert "Your selection" not in text
 
 
-def test_negotiation_renders_message_audiences_and_budget() -> None:
-    _, events = create_match("prompt", ["a", "b", "c"], 123, protocol=MatchProtocol(negotiation_enabled=True))
+def test_communication_renders_message_audiences_and_budget() -> None:
+    _, events = create_match("prompt", ["a", "b", "c"], 123, protocol=MatchProtocol(communication_enabled=True))
     view = build_view(events, Viewer(ViewRole.PLAYER, "a"))
     view = view.model_copy(
         update={
@@ -117,7 +118,7 @@ def test_row_tool_enumerates_displayed_rows(strict: bool) -> None:
 @pytest.mark.parametrize("direct", [False, True])
 @pytest.mark.parametrize("strict", [False, True])
 def test_message_tool_exposes_permissions_recipients_and_length(direct: bool, strict: bool) -> None:
-    protocol = MatchProtocol(negotiation_enabled=True, allow_direct_messages=direct, max_message_length=73)
+    protocol = MatchProtocol(communication_enabled=True, allow_direct_messages=direct, max_message_length=73)
     _, events = create_match("prompt", ["a", "b", "c"], 123, protocol=protocol)
     view = build_view(events, Viewer(ViewRole.PLAYER, "a"))
     tool = next(tool for tool in action_tools(view, strict) if tool["function"]["name"] == "send_message")

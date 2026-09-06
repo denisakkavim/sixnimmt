@@ -33,12 +33,12 @@ def test_information_policy_defaults_hide_cards_and_show_message_facts() -> None
     assert policy.private_message_existence == PrivateMessageExistence.VISIBLE
 
 
-def test_match_protocol_defaults_play_to_66_without_negotiation() -> None:
+def test_match_protocol_defaults_play_to_66_without_communication() -> None:
     protocol = MatchProtocol()
 
     assert protocol.end_condition == EndCondition.TARGET_SCORE
     assert protocol.hands is None
-    assert protocol.negotiation_enabled is False
+    assert protocol.communication_enabled is False
     assert protocol.information_policy == InformationPolicy()
     assert protocol.allow_direct_messages is True
     assert protocol.max_actions_per_play is None
@@ -73,6 +73,11 @@ def test_rules_models_round_trip_through_json() -> None:
 
     assert restored == protocol
     assert restored.hands == 4
+
+
+def test_unknown_protocol_flags_are_rejected_instead_of_selecting_classic_mode() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        MatchProtocol.model_validate({"unknown_mode_enabled": True})
 
 
 def test_rules_models_are_immutable() -> None:

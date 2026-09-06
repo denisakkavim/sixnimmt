@@ -58,7 +58,10 @@ def arena(
         int,
         typer.Option("--max-actions-per-match", help="Maximum bot actions allowed in each match."),
     ] = 10_000,
-    negotiation: Annotated[bool, typer.Option("--negotiation")] = False,
+    communication: Annotated[
+        bool,
+        typer.Option("--communication", help="Allow optional messages and card changes before explicit commitment."),
+    ] = False,
     scheduler: Annotated[str | None, typer.Option("--scheduler")] = None,
     trace_dir: Annotated[
         Path | None,
@@ -88,7 +91,7 @@ def arena(
             _read_players(players_file),
             games,
             seed,
-            protocol=MatchProtocol(negotiation_enabled=negotiation),
+            protocol=MatchProtocol(communication_enabled=communication),
             config=RunConfig(
                 scheduler=scheduler,
                 trace_dir=trace_dir,

@@ -59,7 +59,7 @@ class _Fold:
     play_number: int = 1
     target_score: int = 66
     protocol: MatchProtocol = field(default_factory=MatchProtocol)
-    negotiation_enabled: bool = False
+    communication_enabled: bool = False
     anonymise_display_names: bool = False
     max_actions_per_play: int | None = None
     seats: dict[str, _Seat] = field(default_factory=dict)
@@ -92,7 +92,7 @@ def _apply_match_created(state: _Fold, data: dict) -> None:
     protocol = data.get("protocol", {})
     state.protocol = MatchProtocol.model_validate(protocol)
     state.target_score = rules.get("target_score", state.target_score)
-    state.negotiation_enabled = protocol.get("negotiation_enabled", False)
+    state.communication_enabled = protocol.get("communication_enabled", False)
     state.anonymise_display_names = protocol.get("anonymise_display_names", False)
     state.max_actions_per_play = protocol.get("max_actions_per_play")
     for entry in data.get("players", []):
@@ -297,7 +297,7 @@ def _legal_actions(state: _Fold, viewer: Viewer) -> tuple[str, ...]:
     if state.max_actions_per_play is not None and state.own_actions >= state.max_actions_per_play:
         return ()
     actions = ["select_card"]
-    if state.negotiation_enabled:
+    if state.communication_enabled:
         if state.own_selection is not None and not seat.committed:
             actions.append("commit")
         if seat.committed and not all(other.committed for other in state.seats.values()):

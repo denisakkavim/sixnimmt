@@ -165,7 +165,7 @@ def test_provider_compatibility_flags_can_be_omitted(endpoint: Endpoint, view: M
     assert payload["tools"][0]["function"]["strict"] is True
 
 
-@pytest.mark.parametrize("protocol", [MatchProtocol(), MatchProtocol(negotiation_enabled=True)])
+@pytest.mark.parametrize("protocol", [MatchProtocol(), MatchProtocol(communication_enabled=True)])
 @pytest.mark.parametrize("bot_type", [LLMBot, LLMMemoryBot])
 def test_model_matches_finish_and_replay(endpoint: Endpoint, protocol: MatchProtocol, bot_type: type[LLMBot]) -> None:
     bot = bot_type(1, model="local", base_url="http://localhost:11434/v1")
@@ -235,7 +235,7 @@ def test_rejects_invalid_model_configuration(options: dict) -> None:
 
 
 def test_view_carries_public_protocol_limits() -> None:
-    protocol = MatchProtocol(negotiation_enabled=True, allow_direct_messages=False, max_message_length=73)
+    protocol = MatchProtocol(communication_enabled=True, allow_direct_messages=False, max_message_length=73)
     _, events = create_match("protocol", ["a", "b"], 123, protocol=protocol)
     view = build_view(events, Viewer(ViewRole.PLAYER, "a"))
     assert view.protocol == protocol
@@ -361,7 +361,7 @@ def test_seats_use_independent_strategy_and_personality_prompts(endpoint: Endpoi
         2,
         model="local",
         base_url="http://localhost:11434/v1",
-        strategy_prompt="Take calculated risks and negotiate assertively.",
+        strategy_prompt="Take calculated risks and communicate assertively.",
     )
     cautious.act(view)
     bold.act(view)
@@ -369,7 +369,7 @@ def test_seats_use_independent_strategy_and_personality_prompts(endpoint: Endpoi
     bold_prompt = endpoint.requests[1]["messages"][0]["content"]
     assert "Play cautiously and speak diplomatically." in cautious_prompt
     assert "Take calculated risks" not in cautious_prompt
-    assert "Take calculated risks and negotiate assertively." in bold_prompt
+    assert "Take calculated risks and communicate assertively." in bold_prompt
     assert "Play cautiously" not in bold_prompt
     assert cautious.stats()["prompt_sha256"] != bold.stats()["prompt_sha256"]
 
@@ -691,7 +691,7 @@ def test_memory_options_reject_invalid_limits(limit: Any) -> None:
         })
 
 
-class NegotiatingEndpoint(Endpoint):
+class CommunicatingEndpoint(Endpoint):
     """Script a request/reply and revised selection, then finish the hand."""
 
     def __init__(self) -> None:
@@ -748,19 +748,19 @@ class NegotiatingEndpoint(Endpoint):
         return httpx.Response(200, json=body)
 
 
-def test_model_seats_exchange_messages_revise_selection_and_finish_negotiated_match(
+def test_model_seats_exchange_messages_revise_selection_and_finish_communication_match(
     endpoint: Endpoint, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    negotiation = NegotiatingEndpoint()
+    communication = CommunicatingEndpoint()
     # Reuse the real SDK and HTTP transport fixture; only endpoint responses are scripted.
-    monkeypatch.setattr(endpoint, "handle", negotiation.handle)
+    monkeypatch.setattr(endpoint, "handle", communication.handle)
     bots = [
         LLMBot(seed, model=model, base_url="http://localhost:11434/v1") for seed, model in enumerate(("alice", "bob"))
     ]
     result = run_match(
         bots,
         123,
-        protocol=MatchProtocol(negotiation_enabled=True, end_condition="fixed_hands", hands=1),
+        protocol=MatchProtocol(communication_enabled=True, end_condition="fixed_hands", hands=1),
         config=RunConfig(match_action_limit=100),
     )
 
@@ -782,10 +782,10 @@ def test_model_seats_exchange_messages_revise_selection_and_finish_negotiated_ma
         for event in first_play
         if event.type == "selection_made" and event.data["player_id"] == "player_1"
     ]
-    assert alice_selections == [negotiation.alice_initial_card, negotiation.alice_revised_card]
+    assert alice_selections == [communication.alice_initial_card, communication.alice_revised_card]
     assert alice_selections[0] != alice_selections[1]
     reveal = next(event for event in first_play if event.type == "cards_revealed")
-    assert reveal.data["selections"]["player_1"] == negotiation.alice_revised_card
+    assert reveal.data["selections"]["player_1"] == communication.alice_revised_card
     commits = [event for event in first_play if event.type == "player_committed"]
     assert {event.data["player_id"] for event in commits} == {"player_1", "player_2"}
     assert all(event.seq < reveal.seq for event in commits)

@@ -141,9 +141,9 @@ def test_replay_reports_a_missing_log(tmp_path: Path) -> None:
     assert "no match log" in result.stderr
 
 
-def test_negotiation_cli_traces_and_summarises(tmp_path: Path, players_file: Path) -> None:
+def test_communication_cli_traces_and_summarises(tmp_path: Path, players_file: Path) -> None:
     directory = tmp_path / "trace"
-    result = invoke_arena(players_file, "--negotiation", "--concurrency", "2", "--trace-dir", str(directory))
+    result = invoke_arena(players_file, "--communication", "--concurrency", "2", "--trace-dir", str(directory))
     assert result.exit_code == 0, result.output
     assert "finished=1 abandoned=0 forfeited=0 failed=0" in result.stdout
     logs = [path for path in directory.glob("*.jsonl") if not path.name.endswith(".actions.jsonl")]
@@ -154,7 +154,7 @@ def test_negotiation_cli_traces_and_summarises(tmp_path: Path, players_file: Pat
 
 
 def test_cli_refuses_starving_schedule(players_file: Path) -> None:
-    result = invoke_arena(players_file, "--negotiation", "--scheduler", "sequential")
+    result = invoke_arena(players_file, "--communication", "--scheduler", "sequential")
     assert result.exit_code == 2
     assert "starve" in result.stderr
 

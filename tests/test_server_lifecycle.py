@@ -19,7 +19,7 @@ DOCUMENTED_CODES = {
     ApiErrorCode.CARD_NOT_IN_HAND,
     ApiErrorCode.NO_SELECTION_TO_COMMIT,
     ApiErrorCode.CANNOT_UNCOMMIT_WHEN_ALL_COMMITTED,
-    ApiErrorCode.NEGOTIATION_DISABLED,
+    ApiErrorCode.COMMUNICATION_DISABLED,
     ApiErrorCode.INVALID_ROW_INDEX,
     ApiErrorCode.ROW_ALREADY_CHOSEN,
     ApiErrorCode.ACTION_BUDGET_EXHAUSTED,
@@ -44,8 +44,8 @@ def play_until_row_choice(match: Match) -> str:
     raise AssertionError(msg)
 
 
-def negotiate_until_row_choice(match: Match) -> None:
-    """Play a negotiation match until a row choice pauses a committed play."""
+def communicate_until_row_choice(match: Match) -> None:
+    """Play a communication match until a row choice pauses a committed play."""
     for _ in range(500):
         if match.state(match.players[0])["awaiting"] is not None:
             return
@@ -157,7 +157,7 @@ def test_every_documented_error_code_is_produced_by_a_real_scenario(client: Test
     unheld = next(card for card in range(1, 105) if card not in hand)
     note(unstarted.act("alice", type="select_card", card=unheld))  # CARD_NOT_IN_HAND
     note(unstarted.act("alice", type="commit"))  # NO_SELECTION_TO_COMMIT
-    note(unstarted.act("alice", type="uncommit"))  # NEGOTIATION_DISABLED
+    note(unstarted.act("alice", type="uncommit"))  # COMMUNICATION_DISABLED
     note(unstarted.act("alice", type="choose_row", row_index=0))  # WRONG_PHASE
     note(unstarted.act("alice", type="wave"))  # UNKNOWN_ACTION_TYPE
     note(unstarted.act("alice", type="select_card"))  # MALFORMED_REQUEST
@@ -165,16 +165,18 @@ def test_every_documented_error_code_is_produced_by_a_real_scenario(client: Test
     unstarted.act("alice", type="select_card", card=hand[0], action_id="dup")
     note(unstarted.act("alice", type="select_card", card=hand[1], action_id="dup"))  # IDEMPOTENCY_KEY_REUSED
 
-    negotiating = open_match(client, ["alice", "bob"], protocol={"negotiation_enabled": True})
-    negotiating.start()
-    note(negotiating.act("alice", type="send_message", visibility="table", body="x" * 3000))  # MESSAGE_TOO_LONG
-    note(negotiating.act("alice", type="send_message", visibility="direct", to_player="ghost", body="hi"))
-    negotiate_until_row_choice(negotiating)
+    communicating = open_match(client, ["alice", "bob"], protocol={"communication_enabled": True})
+    communicating.start()
+    note(communicating.act("alice", type="send_message", visibility="table", body="x" * 3000))  # MESSAGE_TOO_LONG
+    note(communicating.act("alice", type="send_message", visibility="direct", to_player="ghost", body="hi"))
+    communicate_until_row_choice(communicating)
     # Everyone has committed and the play is mid-resolution, so there is nothing
     # left for anyone to withdraw.
-    note(negotiating.act("alice", type="uncommit"))  # CANNOT_UNCOMMIT_WHEN_ALL_COMMITTED
+    note(communicating.act("alice", type="uncommit"))  # CANNOT_UNCOMMIT_WHEN_ALL_COMMITTED
 
-    quiet = open_match(client, ["alice", "bob"], protocol={"allow_direct_messages": False, "negotiation_enabled": True})
+    quiet = open_match(
+        client, ["alice", "bob"], protocol={"allow_direct_messages": False, "communication_enabled": True}
+    )
     quiet.start()
     note(quiet.act("alice", type="send_message", visibility="direct", to_player="bob", body="hi"))
 
@@ -271,7 +273,7 @@ def test_a_pathological_agent_leaves_the_match_playable(match: Match) -> None:
 
 
 def test_a_bot_that_flips_between_commit_and_uncommit_cannot_stall_the_server(client: TestClient) -> None:
-    flipping = open_match(client, ["alice", "bob"], protocol={"negotiation_enabled": True})
+    flipping = open_match(client, ["alice", "bob"], protocol={"communication_enabled": True})
     flipping.start()
     card = flipping.state("bob")["you"]["hand"][0]
 

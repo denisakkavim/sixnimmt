@@ -217,7 +217,7 @@ def _select_card(
         _public_player_event(state, SelectionRegisteredEvent, player.player_id),
     ])
 
-    if protocol.negotiation_enabled:
+    if protocol.communication_enabled:
         return selected, events
 
     committed = _replace_player(selected, player_index, committed=True)
@@ -238,9 +238,9 @@ def _commit(
     if player.selection is None:
         msg = "cannot commit without a selected card"
         raise EngineRejection(ErrorCode.NO_SELECTION_TO_COMMIT, msg)
-    if not protocol.negotiation_enabled:
+    if not protocol.communication_enabled:
         msg = "committing is implicit in card selection"
-        raise EngineRejection(ErrorCode.NEGOTIATION_DISABLED, msg)
+        raise EngineRejection(ErrorCode.COMMUNICATION_DISABLED, msg)
     if player.committed:
         msg = f"player {player.player_id} is already committed"
         raise EngineRejection(ErrorCode.WRONG_PHASE, msg)
@@ -257,9 +257,9 @@ def _uncommit(
     player_index: int,
     protocol: MatchProtocol,
 ) -> tuple[MatchState, list[Event]]:
-    if not protocol.negotiation_enabled:
-        msg = "uncommit needs negotiation, which is disabled"
-        raise EngineRejection(ErrorCode.NEGOTIATION_DISABLED, msg)
+    if not protocol.communication_enabled:
+        msg = "uncommit needs communication, which is disabled"
+        raise EngineRejection(ErrorCode.COMMUNICATION_DISABLED, msg)
     if state.phase != Phase.SELECTING:
         msg = f"cannot uncommit during {state.phase.value}"
         raise EngineRejection(ErrorCode.WRONG_PHASE, msg)
@@ -319,9 +319,9 @@ def _check_message_recipient(
 def _send_message(
     state: MatchState, player_index: int, action: SendMessageAction, protocol: MatchProtocol
 ) -> tuple[MatchState, list[Event]]:
-    if not protocol.negotiation_enabled:
-        msg = "messaging needs negotiation, which is disabled"
-        raise EngineRejection(ErrorCode.NEGOTIATION_DISABLED, msg)
+    if not protocol.communication_enabled:
+        msg = "messaging needs communication, which is disabled"
+        raise EngineRejection(ErrorCode.COMMUNICATION_DISABLED, msg)
     if state.phase != Phase.SELECTING:
         msg = f"cannot send messages during {state.phase.value}"
         raise EngineRejection(ErrorCode.WRONG_PHASE, msg)

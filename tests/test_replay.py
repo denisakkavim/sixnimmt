@@ -11,7 +11,7 @@ from sixnimmt_server.engine.state import MatchState, Phase, PlayerSeat
 from sixnimmt_server.engine.transition import transition
 
 CLASSIC = MatchProtocol()
-NEGOTIATED = MatchProtocol(negotiation_enabled=True)
+COMMUNICATION = MatchProtocol(communication_enabled=True)
 
 
 def _next_decision(state: MatchState, row_choice: int) -> tuple[str, Action]:
@@ -22,7 +22,7 @@ def _next_decision(state: MatchState, row_choice: int) -> tuple[str, Action]:
     unselected = next((player for player in state.players if player.selection is None), None)
     if unselected is not None:
         return unselected.player_id, SelectCardAction(card=unselected.hand[0])
-    # Only reachable with negotiation on, where selecting does not commit.
+    # Only reachable with communication on, where selecting does not commit.
     uncommitted = next(player for player in state.players if not player.committed)
     return uncommitted.player_id, CommitAction()
 
@@ -155,6 +155,6 @@ def test_replay_carries_the_agent_metadata_the_admin_log_recorded() -> None:
     assert replayed.state.players == state.players
 
 
-def test_every_field_replays_after_each_negotiation_transition() -> None:
-    for live, log in _checkpoints(["alice", "bob"], seed=77, protocol=NEGOTIATED):
+def test_every_field_replays_after_each_communication_transition() -> None:
+    for live, log in _checkpoints(["alice", "bob"], seed=77, protocol=COMMUNICATION):
         assert _comparable(replay_events(log).state) == _comparable(live)

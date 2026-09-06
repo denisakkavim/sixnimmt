@@ -245,18 +245,18 @@ def _assert_replay_matches(log: list[Event], live: MatchState) -> None:
     assert replayed.model_dump(exclude={"undealt_remainder"}) == live.model_dump(exclude={"undealt_remainder"})
 
 
-def _validate_matches(player_count: int, games: int, negotiation: bool = False) -> None:
+def _validate_matches(player_count: int, games: int, communication: bool = False) -> None:
     for game in range(games):
         ledger = MatchLedger(player_count)
         seed = derive_seed(1234, "match", game)
-        bot_type = NegotiatingBot if negotiation else RandomBot
+        bot_type = CommunicatingBot if communication else RandomBot
         bots = [bot_type(derive_seed(1234, "bot", game, seat)) for seat in range(player_count)]
         result = run_match(
             bots,
             seed,
             match_id=f"arena_{game}",
             observer=ledger,
-            protocol=MatchProtocol(negotiation_enabled=negotiation),
+            protocol=MatchProtocol(communication_enabled=communication),
         )
         assert result.final_state.phase == Phase.FINISHED
         assert ledger.finished
@@ -277,7 +277,7 @@ def test_thousand_random_matches_preserve_intermediate_invariants(player_count: 
     _validate_matches(player_count, 1000)
 
 
-class NegotiatingBot(RandomBot):
+class CommunicatingBot(RandomBot):
     """Exercise messages and revised selections before each commitment."""
 
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
@@ -290,11 +290,11 @@ class NegotiatingBot(RandomBot):
 
 
 @pytest.mark.parametrize("player_count", [2, 3, 5, 10])
-def test_negotiated_matches_preserve_intermediate_invariants(player_count: int) -> None:
-    _validate_matches(player_count, 3, negotiation=True)
+def test_communication_matches_preserve_intermediate_invariants(player_count: int) -> None:
+    _validate_matches(player_count, 3, communication=True)
 
 
 @pytest.mark.arena_slow
 @pytest.mark.parametrize("player_count", [2, 3, 5, 10])
-def test_thousand_negotiated_matches_preserve_intermediate_invariants(player_count: int) -> None:
-    _validate_matches(player_count, 1000, negotiation=True)
+def test_thousand_communication_matches_preserve_intermediate_invariants(player_count: int) -> None:
+    _validate_matches(player_count, 1000, communication=True)

@@ -82,11 +82,12 @@ class GameRules(BaseModel):
 class MatchProtocol(BaseModel):
     """Protocol-level overrides for controlled comparisons."""
 
-    model_config = ConfigDict(frozen=True)
+    # A stale mode flag must not silently fall back to classic play.
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     end_condition: EndCondition = EndCondition.TARGET_SCORE
     hands: int | None = None
-    negotiation_enabled: bool = False
+    communication_enabled: bool = False
     information_policy: InformationPolicy = Field(default_factory=InformationPolicy)
     allow_direct_messages: bool = True
     max_actions_per_play: int | None = Field(default=None, ge=1)

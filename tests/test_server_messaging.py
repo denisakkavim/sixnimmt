@@ -22,7 +22,7 @@ def test_unrepresentable_messages_cannot_poison_live_or_persisted_reads(
 ) -> None:
     app = create_app(admin_token=ADMIN_TOKEN, log_directory=tmp_path)
     with TestClient(app) as client:
-        match = open_match(client, protocol={"negotiation_enabled": True})
+        match = open_match(client, protocol={"communication_enabled": True})
         match.start()
         record = app.state.store.record_for(match.match_id)
         before = record.state.model_dump_json()
@@ -56,7 +56,7 @@ def test_persisted_direct_messages_obey_role_filtered_reads(tmp_path: Path, exis
     with TestClient(app) as client:
         match = open_match(
             client,
-            protocol={"negotiation_enabled": True, "information_policy": {"private_message_existence": existence}},
+            protocol={"communication_enabled": True, "information_policy": {"private_message_existence": existence}},
         )
         match.start()
         response = match.act("bob", type="send_message", visibility="direct", to_player="cara", body="private words")
@@ -86,7 +86,7 @@ def test_hidden_dm_neither_changes_nonparty_responses_nor_notifies_subscriptions
     match = open_match(
         client,
         protocol={
-            "negotiation_enabled": True,
+            "communication_enabled": True,
             "max_actions_per_play": budget,
             "information_policy": {"private_message_existence": "hidden"},
         },
@@ -118,7 +118,7 @@ def test_hidden_dm_neither_changes_nonparty_responses_nor_notifies_subscriptions
 def test_message_idempotency_returns_cached_view_and_rejects_changed_payload(
     client: TestClient, endpoint: str, change: dict
 ) -> None:
-    match = open_match(client, protocol={"negotiation_enabled": True})
+    match = open_match(client, protocol={"communication_enabled": True})
     match.start()
     payload = {
         "type": "send_message",
@@ -139,7 +139,7 @@ def test_message_idempotency_returns_cached_view_and_rejects_changed_payload(
 
 
 def test_rejected_message_retries_return_the_cached_rejection(client: TestClient) -> None:
-    match = open_match(client, protocol={"negotiation_enabled": True, "max_message_length": 1})
+    match = open_match(client, protocol={"communication_enabled": True, "max_message_length": 1})
     match.start()
     payload = {"type": "send_message", "visibility": "table", "body": "too long", "action_id": "rejected"}
     first = match.act("alice", **payload)
@@ -152,7 +152,7 @@ def test_rejected_message_retries_return_the_cached_rejection(client: TestClient
 
 
 def test_phase_rejection_precedes_message_length_validation(client: TestClient) -> None:
-    match = open_match(client, protocol={"negotiation_enabled": True, "max_message_length": 1})
+    match = open_match(client, protocol={"communication_enabled": True, "max_message_length": 1})
     response = match.act("alice", type="send_message", visibility="table", body="too long")
     assert response.json()["error"]["code"] == "MATCH_NOT_STARTED"
     match.start()
@@ -169,7 +169,7 @@ def test_phase_rejection_precedes_message_length_validation(client: TestClient) 
 def test_five_hundred_messages_have_a_bounded_view_and_complete_log(tmp_path: Path) -> None:
     app = create_app(admin_token=ADMIN_TOKEN, log_directory=tmp_path)
     with TestClient(app) as client:
-        match = open_match(client, protocol={"negotiation_enabled": True})
+        match = open_match(client, protocol={"communication_enabled": True})
         match.start()
         for index in range(500):
             response = match.act("alice", type="send_message", visibility="table", body=str(index))
@@ -187,7 +187,7 @@ def test_five_hundred_messages_have_a_bounded_view_and_complete_log(tmp_path: Pa
 @pytest.mark.parametrize("guarded", [True, False])
 def test_message_before_final_commit_conflicts_or_exhausts_its_budget(client: TestClient, guarded: bool) -> None:
     match = open_match(
-        client, players=["alice", "bob"], protocol={"negotiation_enabled": True, "max_actions_per_play": 2}
+        client, players=["alice", "bob"], protocol={"communication_enabled": True, "max_actions_per_play": 2}
     )
     match.start()
     for who in match.players:
@@ -203,7 +203,7 @@ def test_message_before_final_commit_conflicts_or_exhausts_its_budget(client: Te
 @pytest.mark.parametrize("guarded", [True, False])
 def test_final_commit_before_message_uses_new_play_and_reset_budget(client: TestClient, guarded: bool) -> None:
     match = open_match(
-        client, players=["alice", "bob"], protocol={"negotiation_enabled": True, "max_actions_per_play": 2}
+        client, players=["alice", "bob"], protocol={"communication_enabled": True, "max_actions_per_play": 2}
     )
     match.start()
     for who in match.players:
@@ -238,7 +238,7 @@ def test_schema_exports_internal_event_discriminators_and_message_view(client: T
 def test_unknown_recipient_diagnostic_is_ascii_escaped_and_safe_to_persist(tmp_path: Path) -> None:
     app = create_app(admin_token=ADMIN_TOKEN, log_directory=tmp_path)
     with TestClient(app) as client:
-        match = open_match(client, protocol={"negotiation_enabled": True})
+        match = open_match(client, protocol={"communication_enabled": True})
         match.start()
         response = match.act("alice", type="send_message", visibility="direct", to_player="🐂", body="hello")
         assert response.json()["error"]["code"] == "RECIPIENT_NOT_FOUND"

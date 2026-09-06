@@ -92,7 +92,7 @@ def test_move_history_survives_new_hands_and_is_bounded_and_replayable() -> None
     ],
 )
 def test_message_history_retains_only_authorized_information_across_plays(existence: str, viewer: Viewer) -> None:
-    protocol = MatchProtocol(negotiation_enabled=True, information_policy={"private_message_existence": existence})
+    protocol = MatchProtocol(communication_enabled=True, information_policy={"private_message_existence": existence})
     state, events = create_match("history", ["a", "b", "c"], 123, protocol=protocol)
     _, messages = transition(
         state,
@@ -127,7 +127,7 @@ def test_message_history_retains_only_authorized_information_across_plays(existe
 
 
 def test_message_history_is_bounded_across_play_resets() -> None:
-    protocol = MatchProtocol(negotiation_enabled=True)
+    protocol = MatchProtocol(communication_enabled=True)
     state, events = create_match("history", ["a", "b"], 123, protocol=protocol)
     folder = ViewFolder(Viewer(ViewRole.PLAYER, "a"))
     folder.apply(events)

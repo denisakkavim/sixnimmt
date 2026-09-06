@@ -13,12 +13,12 @@ This version is intended to be implemented as written. The rules, the informatio
 v5 described a game server that happened to contain an arena, introduced as a
 volume test harness in phase 2 and never revisited. That was the wrong emphasis.
 The arena is where experiments are run — line-ups of scripted, LLM and other
-bots, played in volume, in classic and negotiation modes, with full traces kept
+bots, played in volume, in classic and communication modes, with full traces kept
 — and it is a first-class surface over the same engine as the server. This
 revision says so, and pins the consequences.
 
 - **§1 is rewritten.** Two surfaces, one engine, and the three "one X" rules that follow.
-- **The arena has its own section, §16**: the bot interface, scheduling under negotiation, what happens when a bot acts illegally or fails, and what a run records. The old §16 is now §17.
+- **The arena has its own section, §16**: the bot interface, scheduling under communication, what happens when a bot acts illegally or fails, and what a run records. The old §16 is now §17.
 - **Bots observe `MatchView`**, folded from their own audience-filtered stream — the same object an HTTP client reads. A separate in-process observation type is prohibited: a hand-copied subset of match state is the projection-and-blank pattern §9.2 forbids, and it passes every test written against the fields it happens to copy while leaking the first one somebody adds.
 - **A rejected bot action is not a crash** (§16.4). `on_invalid_action = "reject"` is a rule about matches, not about transport, so it binds the arena exactly as it binds the server.
 - **One trace format from both surfaces** (§11.3), which is why persistence stops living under `server/` (§13).
@@ -62,7 +62,7 @@ implementation proved.
   changed** (§14). The original wording admitted an implementation that leaked
   exactly that.
 - **An open question is recorded** about a player's own action count under
-  negotiation (§10.4), rather than left to be discovered mid-implementation.
+  communication (§10.4), rather than left to be discovered mid-implementation.
 
 ## 0.2 What changed since v3
 
@@ -122,14 +122,14 @@ convenience, and each is specified so that it cannot be.
 
 1. **One information model.** A bot in the arena receives a `MatchView` folded from its own audience-filtered event stream — the same object, built by the same code, that an HTTP client gets from `GET /state`. There is no second, more convenient observation type for in-process play. Convenience is exactly how a leak gets in (§5, §9.2, §16.2).
 2. **One trace format.** Every match, from either surface, writes the same JSONL event log and the same action records (§11.3). Replay and analytics read one format and cannot tell which surface produced a log.
-3. **One place an experiment is configured.** `MatchProtocol` says what kind of match this is — classic or negotiation, budgets, information policy, anonymisation. The arena varies it, the server exposes it at match creation, and neither invents a setting of its own (§6, §16.1). A knob the server could not also express would produce results that say nothing about real play.
+3. **One place an experiment is configured.** `MatchProtocol` says what kind of match this is — classic or communication, budgets, information policy, anonymisation. The arena varies it, the server exposes it at match creation, and neither invents a setting of its own (§6, §16.1). A knob the server could not also express would produce results that say nothing about real play.
 
 Two modes, one engine:
 
 - **Classic.** Every player secretly picks a card; picking commits it. When all have committed, cards are revealed and resolved. This is the board game, and this is what the first working version must do correctly.
-- **Negotiation.** Before commitment, players exchange messages and may change their card freely. The play proceeds only once every player has committed.
+- **Communication.** Before commitment, players exchange messages and may change their card freely. The play proceeds only once every player has committed.
 
-Build classic first, on the negotiation-shaped state machine. Classic mode is negotiation mode with messaging switched off and "select implies commit" — a config flag and roughly twenty lines. Retrofitting revocable selections onto a select-and-reveal loop means rewriting the play lifecycle. Defer the *features* of negotiation; do not defer the *shape*.
+Build classic first, on the communication-shaped state machine. Classic mode is communication mode with messaging switched off and "select implies commit" — a config flag and roughly twenty lines. Retrofitting revocable selections onto a select-and-reveal loop means rewriting the play lifecycle. Defer the *features* of communication; do not defer the *shape*.
 
 ### Out of scope
 
@@ -319,7 +319,7 @@ transition(state, action) -> (new_state, [events])   |   Rejection(code, message
 | `end_condition` | `"target_score"` | Play until someone reaches the target. |
 | `target_score` | `66` | The real game's threshold. |
 | `hands` | `null` | Used only when `end_condition = "fixed_hands"`. |
-| `negotiation_enabled` | `false` initially | Turns on messaging and revocable selections. |
+| `communication_enabled` | `false` initially | Turns on messaging and revocable selections. |
 | `information_policy.card_selection` | `"hidden"` | Nobody sees another's card before reveal. |
 | `information_policy.private_message_existence` | `"visible"` | Others see *that* Alice messaged Bob, never the text. |
 | `allow_direct_messages` | `true` | |
@@ -328,7 +328,7 @@ transition(state, action) -> (new_state, [events])   |   Rejection(code, message
 | `on_invalid_action` | `"reject"` | Rejected, counted, retried; never costs the turn. |
 | `anonymise_display_names` | `false` | When true, players see opponents as "Player 2" etc. |
 
-Note on the action budget: because it is `null` by default and there is no clock, **the server cannot guarantee a play terminates**. Two accommodating models can negotiate forever. This is a deliberate choice; the harness must impose its own limit and abandon stalled matches. Implement the counting and the cap check anyway so switching it on is a config change, not a redesign. The state view always reports actions taken, and reports remaining as `null` when unlimited.
+Note on the action budget: because it is `null` by default and there is no clock, **the server cannot guarantee a play terminates**. Two accommodating models can communicate forever. This is a deliberate choice; the harness must impose its own limit and abandon stalled matches. Implement the counting and the cap check anyway so switching it on is a config change, not a redesign. The state view always reports actions taken, and reports remaining as `null` when unlimited.
 
 ---
 
@@ -411,7 +411,7 @@ GameRules(
 MatchProtocol(
     end_condition="target_score",  # or "fixed_hands"
     hands=None,
-    negotiation_enabled=False,
+    communication_enabled=False,
     information_policy=InformationPolicy(...),
     max_actions_per_play=None,
     on_invalid_action="reject",
@@ -452,7 +452,7 @@ Rules:
 
 This makes committing a real commitment: you cannot commit to bait a reaction and then withdraw, unless your `uncommit` is serialized before the other player's final `commit`.
 
-In classic mode (`negotiation_enabled = false`), `select_card` commits implicitly, `uncommit` is not offered, and messaging is disabled. Same code path, no window in which anyone can react.
+In classic mode (`communication_enabled = false`), `select_card` commits implicitly, `uncommit` is not offered, and messaging is disabled. Same code path, no window in which anyone can react.
 
 ### 7.3 Messages
 
@@ -463,7 +463,7 @@ A message has a sender, a visibility, and a body.
 
 Plain text, capped at `max_message_length`. The server does not interpret, validate, or moderate. A player claiming to hold a low card may be lying; that is the point.
 
-Messages are legal only during SELECTING, keeping the negotiation window well defined.
+Messages are legal only during SELECTING, keeping the communication window well defined.
 
 When `private_message_existence = "visible"`, emit two events: a content-bearing one addressed to sender and recipient, and a content-free `private_message_occurred` addressed publicly, naming only the two parties. When hidden, emit only the first — and note that §5.3 is what stops the omission from being detectable.
 
@@ -522,7 +522,7 @@ Returns the match ID, the fully resolved rules and protocol with defaults filled
 
 **`POST /matches/{id}/start`** — deals the first hand, opens the first play.
 **`GET /matches`** — list with status and scores.
-**`DELETE /matches/{id}`** — abandon (§11.4). This is how the harness disposes of a stalled negotiation.
+**`DELETE /matches/{id}`** — abandon (§11.4). This is how the harness disposes of a stalled communication.
 
 ### 9.2 Reading state
 
@@ -636,7 +636,7 @@ Every action returns the caller's updated state view, so one round trip per move
 }
 ```
 
-Minimum codes: `MATCH_NOT_FOUND`, `NOT_AUTHORIZED`, `MATCH_NOT_STARTED`, `MATCH_ALREADY_STARTED`, `MATCH_FINISHED`, `MATCH_ABANDONED`, `WRONG_PHASE`, `NOT_YOUR_TURN`, `CARD_NOT_IN_HAND`, `NO_SELECTION_TO_COMMIT`, `CANNOT_UNCOMMIT_WHEN_ALL_COMMITTED`, `NEGOTIATION_DISABLED`, `INVALID_ROW_INDEX`, `ROW_ALREADY_CHOSEN`, `ACTION_BUDGET_EXHAUSTED`, `MESSAGE_TOO_LONG`, `DIRECT_MESSAGES_DISABLED`, `RECIPIENT_NOT_FOUND`, `VERSION_CONFLICT`, `IDEMPOTENCY_KEY_REUSED`, `MALFORMED_REQUEST`, `UNKNOWN_ACTION_TYPE`.
+Minimum codes: `MATCH_NOT_FOUND`, `NOT_AUTHORIZED`, `MATCH_NOT_STARTED`, `MATCH_ALREADY_STARTED`, `MATCH_FINISHED`, `MATCH_ABANDONED`, `WRONG_PHASE`, `NOT_YOUR_TURN`, `CARD_NOT_IN_HAND`, `NO_SELECTION_TO_COMMIT`, `CANNOT_UNCOMMIT_WHEN_ALL_COMMITTED`, `COMMUNICATION_DISABLED`, `INVALID_ROW_INDEX`, `ROW_ALREADY_CHOSEN`, `ACTION_BUDGET_EXHAUSTED`, `MESSAGE_TOO_LONG`, `DIRECT_MESSAGES_DISABLED`, `RECIPIENT_NOT_FOUND`, `VERSION_CONFLICT`, `IDEMPOTENCY_KEY_REUSED`, `MALFORMED_REQUEST`, `UNKNOWN_ACTION_TYPE`.
 
 `MATCH_NOT_FOUND` and `NOT_AUTHORIZED` must be **indistinguishable** when a token is used against a match it has no rights to: same code, same shape, same latency class. Otherwise a token becomes a probe for which match IDs exist. Return `MATCH_NOT_FOUND` for both.
 
@@ -693,7 +693,7 @@ Implement the cursor as an index into the viewer's filtered stream, so gap-freen
 
 **Fold incrementally for a live match.** A viewer's view is the fold of their
 filtered stream, but rebuilding it from event one on every read makes the cost of
-a match quadratic in its own length — and negotiation, where a play may carry
+a match quadratic in its own length — and communication, where a play may carry
 hundreds of messages, is where that stops being theoretical. Keep a live folder
 per viewer, advance it with the events just appended, and project when asked.
 Folding a whole log from the start remains the operation replay and analytics
@@ -759,16 +759,16 @@ Game events record what happened, not derived statistics. `match_ended` carries 
 
 ---
 
-### 10.4 Open question: a player's own action count under negotiation
+### 10.4 Open question: a player's own action count under communication
 
 §5.1 grants a player their own action count and remaining budget, and §9.2 puts
 both in the view. Under classic rules this folds cleanly from the player's own
-visible events. Under negotiation it does not: an explicit `commit` emits only
+visible events. Under communication it does not: an explicit `commit` emits only
 the public `player_committed`, and attaching a count to a public event would
 publish an opponent's action count, which §5.2 forbids unless a budget is in
 force.
 
-Resolve this when negotiation is built (phase 6), not before. The likely answer
+Resolve this when communication is built (phase 6), not before. The likely answer
 is a private counterpart to `player_committed` addressed to the actor, in the
 same shape as `selection_made` alongside `selection_registered`. Whatever is
 chosen, it must not make an opponent's activity observable.
@@ -1013,7 +1013,7 @@ Acceptance criteria, not suggestions.
 - The play commits at the exact moment the last player commits, and not before.
 - `select_card` clears the caller's committed flag and nobody else's.
 - `uncommit` succeeds while another player is uncommitted and fails when the caller is the last one.
-- Classic mode: `select_card` commits implicitly and `uncommit` returns `NEGOTIATION_DISABLED`.
+- Classic mode: `select_card` commits implicitly and `uncommit` returns `COMMUNICATION_DISABLED`.
 - Four concurrent races, each producing exactly one valid serialized outcome and consistent state: final `commit` against another final `commit`; against `uncommit`; against `select_card`; against `send_message`.
 
 **Information contract** — one test per clause of §5.1 and §5.2
@@ -1065,7 +1065,7 @@ Acceptance criteria, not suggestions.
 - Outstanding `wait` and `stream` requests terminate with `MATCH_ABANDONED` rather than hanging.
 - Subsequent actions are rejected; the log survives on disk.
 
-**High-volume arena** — 1000 games at each of 2, 3, 5 and 10 players with random bots, asserting: no impossible states, the §2.8 invariants throughout, every player finishes each hand with zero cards, every match terminates, replay matches live state, scores non-negative and consistent, information boundaries hold. Run the same suite in negotiation mode with bots that message, re-select and uncommit.
+**High-volume arena** — 1000 games at each of 2, 3, 5 and 10 players with random bots, asserting: no impossible states, the §2.8 invariants throughout, every player finishes each hand with zero cards, every match terminates, replay matches live state, scores non-negative and consistent, information boundaries hold. Run the same suite in communication mode with bots that message, re-select and uncommit.
 
 **Arena** — the §16 criteria
 
@@ -1074,8 +1074,8 @@ Acceptance criteria, not suggestions.
 - **A rejected bot is told why.** The `rejection` passed to the retry carries the same code, message and `legal_actions` the HTTP server returns for the identical refusal — asserted against the server's own error body, not against a copy of it. A bot that corrects itself from the message completes its match; a bot that ignores it forfeits.
 - A bot that returns only illegal actions exhausts its rejection budget and forfeits; the match is recorded as forfeited naming the seat and the error code, and the run continues to the next game.
 - A bot that raises ends its match as `failed`, naming the seat, game index, seed and exception, and **the run continues** — asserted with a seat that raises on a known game index in a multi-game run. Under stop-on-failure the run instead stops, and says where.
-- `sequential` paired with negotiation is refused before the first game, naming the starvation it would cause.
-- **Negotiation terminates under the arena's caps.** Bots that never commit, and bots that message forever, both end in an abandoned match rather than a hang — and abandoned is counted separately from finished, never silently as a result.
+- `sequential` paired with communication is refused before the first game, naming the starvation it would cause.
+- **Communication terminates under the arena's caps.** Bots that never commit, and bots that message forever, both end in an abandoned match rather than a hang — and abandoned is counted separately from finished, never silently as a result.
 - Under `round_robin`, a committed seat is not offered a turn until somebody uncommits; during `AWAITING_ROW_CHOICE` only the awaited player is offered one, in either mode.
 - **Trace equivalence.** A log written by an arena match and a log written by a server match fold through the same `replay` and the same `MatchSummary`; a fixture of each is asserted to differ in no structural way.
 - **Action records cover every attempt.** A match containing rejected actions produces records for all of them, contiguously numbered, in submission order, from both surfaces alike.
@@ -1107,7 +1107,7 @@ Fold the event stream independently of the engine and assert the folded board, h
 
 **Phase 0 — model.** Define `State`, `Action`, `Event`, `View`, `GameRules`, `MatchProtocol`. Get the types right before any logic.
 
-**Phase 1 — pure classic engine.** Cards, setup and dealing, the commit model (select / commit / uncommit, unanimity, with negotiation off), resolution including the row-choice pause, scoring, the 66 termination check. All rule, invariant and determinism tests green. No server.
+**Phase 1 — pure classic engine.** Cards, setup and dealing, the commit model (select / commit / uncommit, unanimity, with communication off), resolution including the row-choice pause, scoring, the 66 termination check. All rule, invariant and determinism tests green. No server.
 
 **Phase 2 — minimal arena runner.** `sixnimmt arena --players random random --games 10000 --seed 1234`, in-process, no HTTP. Run the high-volume suite. This is what establishes that the game is actually correct. Classic only, random bots only, aggregate counters only — phase 7 generalises it into the experiment platform §16 describes.
 
@@ -1117,10 +1117,10 @@ Fold the event stream independently of the engine and assert the folded board, h
 
 **Phase 5 — analytics module.** Derived summaries over the log (§12). Deferrable only until there are experiment traces to derive from; phase 7 is what makes it load-bearing.
 
-**Phase 6 — negotiation.** Switch on messaging, the information policy, direct messages, and the budget mechanism. The commit machinery is already there from Phase 1, so this phase adds communication and nothing structural.
+**Phase 6 — communication.** Switch on messaging, the information policy, direct messages, and the budget mechanism. The commit machinery is already there from Phase 1, so this phase adds communication and nothing structural.
 
 **Phase 7 — the arena as an experiment platform** (§16). Rules and protocol as run
-parameters, view-based observations, incremental folding, negotiation scheduling,
+parameters, view-based observations, incremental folding, communication scheduling,
 rejections that explain themselves, forfeit and failure outcomes, concurrent
 matches, per-match traces and a run manifest, a bot registry with scripted
 strategies, and `MatchSummary` so the traces have a reader. This is the phase
@@ -1154,9 +1154,9 @@ settings — they decide who is *offered* a turn and when the arena gives up, an
 manifest precisely because they shape a result without being rules.
 
 Both modes run here, and a comparison between them varies only the protocol.
-Classic is `negotiation_enabled = false`. Negotiation is the same run with
+Classic is `communication_enabled = false`. Communication is the same run with
 messaging, revocable selections and optionally an action budget switched on —
-which is exactly what §1 promised when it said classic is negotiation with
+which is exactly what §1 promised when it said classic is communication with
 features off, and the arena is where that claim gets exercised rather than
 asserted.
 
@@ -1168,7 +1168,7 @@ class Bot(Protocol):
 ```
 
 - **A bot receives a `MatchView` and nothing else.** It is produced by folding that seat's audience-filtered event stream, through the same code path as `GET /state` (§9.2, §10.2). There is no arena observation type. Hand-copying a subset of `MatchState` is the projection-and-blank pattern §9.2 forbids: it passes every test written against the fields it happens to copy, and leaks the first field somebody adds later.
-- **A bot may return any `Action`.** Not a narrowed union. Under negotiation the legal set includes `send_message`, `uncommit` and repeated `select_card`, and a bot restricted to `select_card` and `choose_row` cannot play the mode at all.
+- **A bot may return any `Action`.** Not a narrowed union. Under communication the legal set includes `send_message`, `uncommit` and repeated `select_card`, and a bot restricted to `select_card` and `choose_row` cannot play the mode at all.
 - **`legal_actions` is advisory here for the same reason it is advisory over HTTP** (§9.2). The engine revalidates everything. A bot that only ever emits actions it found in `legal_actions` is still not trusted to be right.
 - **A bot is told why its last action was refused.** `rejection` is `None` on a first attempt and carries §9.4's payload — code, message, `legal_actions` — on a retry. Without it the arena would re-present a view identical to the one that produced the illegal action, and a retry loop that shows an agent nothing new is not a retry loop (§16.4).
 - **A bot is trusted code, not a sandbox.** It runs in-process with the engine. The limits in §16.3 exist to stop a match running forever, not to contain hostile code, and nothing here should be read as a security boundary.
@@ -1182,7 +1182,7 @@ A trace read six months later then says what produced it, without a side channel
 LLM seats are assumed throughout, not accommodated as a special case. What such
 a seat needs is exactly what is specified above and in §16.4 and §16.6: an
 observation that is a real player view rather than a summary someone wrote for
-bots; the whole action surface, because negotiation is the interesting mode;
+bots; the whole action surface, because communication is the interesting mode;
 tolerance of illegal actions *with a usable explanation*, because models produce
 them; somewhere to record which model played and what it cost; survival of the
 run when a provider returns an error; and honesty about reproducibility (§11.2).
@@ -1191,14 +1191,14 @@ The arena calls `act` and neither knows nor cares what happens inside it.
 ### 16.3 Scheduling
 
 Classic has no scheduling problem: exactly one seat can act, and it is the one
-the engine is waiting on. Negotiation has no such thing as "whose turn it is" —
+the engine is waiting on. Communication has no such thing as "whose turn it is" —
 during SELECTING every uncommitted player may act, repeatedly, in any order — so
 the arena must choose who is offered a turn, and that choice is part of the
 experiment rather than an implementation detail.
 
 A **scheduler** answers "who acts next" from the state. Two are specified:
 
-- `sequential` — the classic rule: the single seat the engine is waiting on, which under `select`-implies-`commit` is the first seat that has not committed. **It is valid only in classic mode.** Under negotiation a seat that never commits stays the first uncommitted seat forever, so every later seat starves and the play never reaches unanimity. A run that pairs `sequential` with `negotiation_enabled` is refused at configuration time rather than left to starve, because a starved run looks like a slow one.
+- `sequential` — the classic rule: the single seat the engine is waiting on, which under `select`-implies-`commit` is the first seat that has not committed. **It is valid only in classic mode.** Under communication a seat that never commits stays the first uncommitted seat forever, so every later seat starves and the play never reaches unanimity. A run that pairs `sequential` with `communication_enabled` is refused at configuration time rather than left to starve, because a starved run looks like a slow one.
 - `round_robin` — during SELECTING, cycle over the seats that have not committed, resuming after the seat offered the last turn, until the play commits or the play's action limit is spent. A seat declines by committing; a committed seat is skipped until somebody uncommits. Valid in both modes, and in classic it degenerates exactly to `sequential`, since committing is what selecting does there.
 
 `AWAITING_ROW_CHOICE` bypasses the scheduler in both modes: the engine names the
@@ -1211,7 +1211,7 @@ decides who is *offered* a turn, and the engine alone decides what they may
 legally do with it.
 
 **Termination is the arena's problem.** §4 is explicit that with no budget and no
-clock, two accommodating models can negotiate forever, and that the harness must
+clock, two accommodating models can communicate forever, and that the harness must
 impose the limit. In the arena, the arena is the harness:
 
 | Limit | Counts | Resets | Effect |
@@ -1431,7 +1431,7 @@ that the manifest records verbatim and nothing interprets — the same treatment
 
 ```
 sixnimmt arena --players random random greedy --games 1000 --seed 1234 \
-    --negotiation --scheduler round_robin --concurrency 8 --trace-dir traces/
+    --communication --scheduler round_robin --concurrency 8 --trace-dir traces/
 ```
 
 Bot names resolve through a registry, which is the only place a name maps to an
