@@ -254,8 +254,13 @@ from `OPENAI_API_KEY`; selecting a different endpoint cannot silently reuse it.
 When `api_key_env` is set, an absent or empty variable fails before matches start.
 Never put credentials in `options`, `agent_metadata`, or the URL.
 
-Each decision sends fresh instructions, the player's filtered view, row penalties,
-and the previous action and any rejection. There is no growing conversation or
+Each decision sends concise rules with the active mode and actual match settings
+in the system message, followed by the seat personality. A separate user message
+renders the filtered view as text: sorted hand, rows and penalties, scores, and
+compact visible-card history. Negotiation adds selections, commitments, visible
+messages and remaining action budget; row choices identify the triggering card.
+Rejections appear prominently. Transport metadata and previous successful actions
+are excluded from the observation. There is no growing conversation or
 persistent model memory. Only currently available action types are offered as
 tools. Exactly one function call is accepted; the arena then regains control.
 Classic selection and row choice, and negotiation messaging and commitment, use
@@ -278,7 +283,7 @@ Model options (unknown keys are rejected):
 | `disable_parallel_tool_calls` | `true` | Sends `parallel_tool_calls=false`; set false to omit the field |
 | `strict_tools` | `false` | Opt into server-side strict function schemas where supported |
 | `provider_options` | `{}` | Additional provider request-body fields, such as reasoning controls |
-| `system_prompt` | Built-in game instructions | Replace the full system instructions for this seat |
+| `system_prompt` | Built-in game instructions | Replace shared rules; mode and match settings are injected |
 | `strategy_prompt` | `""` | Seat-specific strategy and personality appended to system instructions |
 
 Local parsing always rejects extra fields and incorrect argument types, regardless
@@ -322,7 +327,8 @@ personalities, even when both seats use the same model. For example:
 ```
 
 Use `options.system_prompt` when you want to replace the default game instructions
-entirely. `strategy_prompt` is appended to whichever system prompt that seat uses.
+for the shared rules. Active mode and match settings are always injected from
+the view, then `strategy_prompt` is appended.
 Tool schemas and one-action validation remain enforced by code. Both resolved
 prompts are recorded in the seat options, and statistics include the hash of the
 combined instructions so prompt variants can be distinguished in experiments.
@@ -340,7 +346,7 @@ or `provider_error` record when it returns, and an `action_parsed` or
 produces `response_parse_error`. Repair requests are separate attempts under the
 same `decision_id`, each with a unique `request_id`. The trace includes match,
 player ID/display name, hand/play, view ID/version, timestamps, endpoint, prompt
-hash, request settings, HTTP status, provider request ID when available, and
+hash, observation format version, request settings, HTTP status, provider request ID when available, and
 response latency. Late decisions can append diagnostics after a match has ended;
 `action_parsed` means the adapter parsed an action, not that the engine accepted
 it. Use the game/action logs to determine acceptance or arena timeout.

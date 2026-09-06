@@ -87,6 +87,7 @@ class MatchView(BaseModel):
     players: tuple[OpponentView, ...] = ()
     revealed_this_hand: tuple[tuple[int, ...], ...] = ()
     awaiting: str | None = None
+    awaiting_card: int | None = None
     # Advisory presentation hint for clients. The server revalidates everything.
     legal_actions: tuple[str, ...] = ()
     target_score: int = 66

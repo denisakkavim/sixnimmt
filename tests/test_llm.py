@@ -46,13 +46,17 @@ class Endpoint:
             return httpx.Response(200, text=self.raw_body)
         if self.status != 200:
             return httpx.Response(self.status, json={"error": {"message": "secret-provider-body"}})
-        view = MatchView.model_validate(json.loads(payload["messages"][1]["content"])["view"])
-        action = GreedyBot().act(view).model_dump(mode="json")
-        name = action.pop("type")
-        arguments = {k: v for k, v in action.items() if k not in ("action_id", "from_view", "expected_view_version")}
-        if self.illegal_card_once:
-            arguments = {"card": next(card for card in range(1, 105) if card not in view.you.hand)}
-            self.illegal_card_once = False
+        tools = {tool["function"]["name"]: tool["function"] for tool in payload["tools"]}
+        if "choose_row" in tools:
+            name, arguments = "choose_row", {"row_index": 0}
+        elif "commit" in tools:
+            name, arguments = "commit", {}
+        else:
+            hand = tools["select_card"]["parameters"]["properties"]["card"]["enum"]
+            name, arguments = "select_card", {"card": min(hand)}
+            if self.illegal_card_once:
+                arguments = {"card": next(card for card in range(1, 105) if card not in hand)}
+                self.illegal_card_once = False
         calls = [{"id": "call_1", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]
         if self.invalid_responses > 0:
             self.invalid_responses -= 1
@@ -105,9 +109,10 @@ def test_calls_configured_endpoint_with_only_available_tools(endpoint: Endpoint,
     assert [tool["function"]["name"] for tool in payload["tools"]] == ["select_card"]
     assert "temperature" not in payload
     assert payload["parallel_tool_calls"] is False
-    observation = json.loads(payload["messages"][1]["content"])
-    assert observation["view"] == view.model_dump(mode="json")
-    assert "hand" not in observation["view"]["players"][0]
+    observation = payload["messages"][1]["content"]
+    assert "Your cards: " + ", ".join(map(str, sorted(view.you.hand))) in observation
+    assert view.view_id not in observation
+    assert "view_version" not in observation
 
 
 def test_repairs_missing_tool_call_once(endpoint: Endpoint, view: MatchView) -> None:
@@ -174,9 +179,8 @@ def test_engine_rejection_is_returned_to_model(endpoint: Endpoint) -> None:
     result = run_match([LLMBot(1, model="local", base_url="http://localhost:11434/v1"), GreedyBot()], 123)
     assert result.outcome == "finished"
     assert result.actions_rejected == 1
-    retry = json.loads(endpoint.requests[1]["messages"][1]["content"])
-    assert retry["rejection"] is not None
-    assert retry["previous_action"]["type"] == "select_card"
+    retry = endpoint.requests[1]["messages"][1]["content"]
+    assert "Previous action rejected (card_not_in_hand)" in retry
 
 
 def test_configured_credentials_stay_out_of_manifest(
@@ -372,9 +376,10 @@ def test_system_prompt_can_be_replaced_per_seat(endpoint: Endpoint, view: MatchV
         strategy_prompt="Be cooperative.",
     )
     bot.act(view)
-    assert endpoint.requests[0]["messages"][0]["content"] == (
-        "Custom game instructions.\nStrategy and personality:\nBe cooperative."
-    )
+    instructions = endpoint.requests[0]["messages"][0]["content"]
+    assert instructions.startswith("Custom game instructions.")
+    assert "Classic mode:" in instructions
+    assert instructions.endswith("Strategy and personality: Be cooperative.")
 
 
 def test_card_tool_lists_only_current_hand(view: MatchView) -> None:

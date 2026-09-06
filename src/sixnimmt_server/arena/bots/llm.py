@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 from collections.abc import Callable
-from dataclasses import asdict
 from datetime import UTC, datetime
 from time import monotonic
 from typing import Any, Literal
@@ -18,9 +17,16 @@ from openai.types.chat import ChatCompletion
 from pydantic import Field, JsonValue, ValidationError, field_validator
 
 from sixnimmt_server.arena.bots.base import Bot, BotOptions, Rejection
-from sixnimmt_server.arena.bots.prompt import ACTION_ADAPTER, PROMPT_VERSION, SYSTEM_PROMPT, action_tools
+from sixnimmt_server.arena.bots.prompt import (
+    ACTION_ADAPTER,
+    OBSERVATION_VERSION,
+    PROMPT_VERSION,
+    SYSTEM_PROMPT,
+    action_tools,
+    observation_text,
+    system_instructions,
+)
 from sixnimmt_server.engine.actions import Action
-from sixnimmt_server.engine.cards import bull_heads
 from sixnimmt_server.engine.views import MatchView
 
 
@@ -120,7 +126,6 @@ class LLMBot(Bot):
                 raise ValueError(msg)
             self._api_key = key
         self._trace: Callable[[dict[str, Any]], None] | None = None
-        self._last_action: dict[str, Any] | None = None
         self._stats: dict[str, Any] = {
             "calls": 0,
             "repairs": 0,
@@ -132,7 +137,8 @@ class LLMBot(Bot):
             "model": self.options.model,
             "response_models": [],
             "prompt_version": PROMPT_VERSION,
-            "prompt_sha256": hashlib.sha256(self._instructions().encode()).hexdigest(),
+            "prompt_sha256": None,
+            "observation_version": OBSERVATION_VERSION,
         }
 
     def set_trace(self, callback: Callable[[dict[str, Any]], None] | None) -> None:
@@ -149,23 +155,15 @@ class LLMBot(Bot):
             encoded = encoded.replace(json.dumps(self._api_key)[1:-1], "[REDACTED]")
         self._trace(json.loads(encoded))
 
-    def _instructions(self) -> str:
-        return self.options.system_prompt + "\nStrategy and personality:\n" + self.options.strategy_prompt
-
     def stats(self) -> dict[str, Any]:
         return {**self._stats, "response_models": list(self._stats["response_models"])}
 
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
-        observation = {
-            "available_cards": list(view.you.hand),
-            "view": view.model_dump(mode="json"),
-            "row_penalties": {str(row.index): sum(bull_heads(card) for card in row.cards) for row in view.rows},
-            "previous_action": self._last_action,
-            "rejection": asdict(rejection) if rejection is not None else None,
-        }
+        instructions = system_instructions(view, self.options.system_prompt, self.options.strategy_prompt)
+        self._stats["prompt_sha256"] = hashlib.sha256(instructions.encode()).hexdigest()
         messages = [
-            {"role": "system", "content": self._instructions()},
-            {"role": "user", "content": json.dumps(observation)},
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": observation_text(view, rejection)},
         ]
         decision_id = str(uuid4())
         deadline = monotonic() + self.options.decision_budget_seconds
@@ -185,6 +183,7 @@ class LLMBot(Bot):
                 "request_id": str(uuid4()),
                 "attempt": attempt,
                 "prompt_version": PROMPT_VERSION,
+                "observation_version": OBSERVATION_VERSION,
                 "prompt_sha256": self._stats["prompt_sha256"],
             }
             response = self._request(messages, view, min(remaining, self.options.request_timeout_seconds), context)
@@ -208,7 +207,6 @@ class LLMBot(Bot):
                 self._record(context, "decision_expired")
                 msg = "model decision budget exhausted"
                 raise ModelDecisionError(msg)
-            self._last_action = action.model_dump(mode="json")
             return action
         msg = "model decision produced no action"
         raise ModelDecisionError(msg)

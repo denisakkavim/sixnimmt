@@ -70,6 +70,7 @@ class _Fold:
     message_count: int = 0
     revealed_this_hand: list[tuple[int, ...]] = field(default_factory=list)
     awaiting: str | None = None
+    awaiting_card: int | None = None
     winners: list[str] = field(default_factory=list)
 
 
@@ -112,6 +113,7 @@ def _start_play(state: _Fold, play_number: int) -> None:
     state.own_actions = 0
     state.own_remaining = state.max_actions_per_play
     state.awaiting = None
+    state.awaiting_card = None
     state.messages.clear()
     state.message_count = 0
     for seat in state.seats.values():
@@ -221,9 +223,11 @@ def _apply(state: _Fold, event: Event, viewer: Viewer) -> None:  # noqa: C901
         case "row_choice_required":
             state.phase = Phase.AWAITING_ROW_CHOICE
             state.awaiting = data["player_id"]
+            state.awaiting_card = data["card"]
         case "row_choice_made":
             state.phase = Phase.RESOLVING
             state.awaiting = None
+            state.awaiting_card = None
         case "hand_ended":
             _bank_hand(state, data["totals"])
         case "match_ended":
@@ -357,6 +361,7 @@ def _project(state: _Fold, viewer: Viewer, version: int) -> MatchView:
         players=others,
         revealed_this_hand=tuple(state.revealed_this_hand),
         awaiting=state.awaiting,
+        awaiting_card=state.awaiting_card,
         legal_actions=_legal_actions(state, viewer),
         target_score=state.target_score,
         protocol=state.protocol,
