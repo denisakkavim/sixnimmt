@@ -11,10 +11,9 @@
   },
   {
     "bot": "llm_memory",
-    "display_name": "Gemini 3.1 Flash Lite",
+    "display_name": "GPT 5.6 Terra",
     "options": {
-      "model": "google/gemini-3.1-flash-lite",
-      "simplified_tool_schemas": true,
+      "model": "openai/gpt-5.6-terra",
       "base_url": "https://openrouter.ai/api/v1",
       "api_key_env": "OPENROUTER_API_KEY",
       "memory_max_chars": 4000
@@ -22,9 +21,9 @@
   },
   {
     "bot": "llm_memory",
-    "display_name": "Claude Haiku 4.5",
+    "display_name": "GPT 5.6 Sol",
     "options": {
-      "model": "anthropic/claude-haiku-4.5",
+      "model": "openai/gpt-5.6-sol",
       "base_url": "https://openrouter.ai/api/v1",
       "api_key_env": "OPENROUTER_API_KEY",
       "memory_max_chars": 4000
