@@ -1,8 +1,24 @@
 # Tooling
 * Use uv for Python environment and dependency management.
 
-# Style Guidance
-* `IMPLEMENTATION_SPEC.md` is for you to know what to implement - any code, tests, comments, or commit messages must stand on their own, and you should not need to read the spec to understand what is being done.
+# Project Scope
+* The distribution and Python import package are named `sixnimmt`.
+* This project provides a deterministic 6 nimmt! rules engine and an in-process arena for trusted bots.
+* The engine owns game rules and state transitions. Bot execution, scheduling, and operational limits belong in the arena.
+
+# Documentation
+* Start with `docs/README.md` for documentation and `CONTRIBUTING.md` for the development workflow.
+* Update the relevant guide when changing public APIs, configuration, or observable behavior.
+* Keep README.md focused on the overview and quick start.
+* Code, tests, comments, and commit messages must be understandable without historical planning documents.
+
+# Validation
+* Run focused tests while iterating and the default suite before handing off code changes.
+* `uv run pytest` excludes the `arena_slow` tests.
+* For changes affecting gameplay, scheduling, determinism, or information boundaries, run the relevant volume tests as well.
+* `uv run pytest -o addopts=''` runs all tests.
+* Report which checks ran; distinguish default-suite results from full-suite results.
+* For documentation-only changes, check links and run changed examples instead of rerunning unrelated tests.
 
 # Commit Style
 * Follow Conventional Commits: <type>(<scope>): <description>.

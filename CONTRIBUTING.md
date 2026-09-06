@@ -1,126 +1,95 @@
-# Contributing to `sixnimmt-server`
+# Contributing to sixnimmt
 
-Contributions are welcome, and they are greatly appreciated!
-Every little bit helps, and credit will always be given.
+Use the repository's issue tracker for bug reports and focused feature proposals.
+For bugs, include the Python version, operating system, reproduction command,
+seed, player configuration, and expected versus actual outcome. For model-related
+problems, also include the endpoint type, model, timeout settings, and relevant
+sanitized errors. Trace files contain private observations and model output;
+remove credentials and sensitive content before sharing them.
 
-You can contribute in many ways:
+## Set up development
 
-# Types of Contributions
-
-## Report Bugs
-
-Report bugs at https://github.com/denisakkavim/sixnimmt-server/issues
-
-If you are reporting a bug, please include:
-
-- Your operating system name and version.
-- Any details about your local setup that might be helpful in troubleshooting.
-- Detailed steps to reproduce the bug.
-
-## Fix Bugs
-
-Look through the GitHub issues for bugs.
-Anything tagged with "bug" and "help wanted" is open to whoever wants to implement a fix for it.
-
-## Implement Features
-
-Look through the GitHub issues for features.
-Anything tagged with "enhancement" and "help wanted" is open to whoever wants to implement it.
-
-## Write Documentation
-
-sixnimmt-server could always use more documentation, whether as part of the official docs, in docstrings, or even on the web in blog posts, articles, and such.
-
-## Submit Feedback
-
-The best way to send feedback is to file an issue at https://github.com/denisakkavim/sixnimmt-server/issues.
-
-If you are proposing a new feature:
-
-- Explain in detail how it would work.
-- Keep the scope as narrow as possible, to make it easier to implement.
-- Remember that this is a volunteer-driven project, and that contributions
-  are welcome :)
-
-# Get Started!
-
-Ready to contribute? Here's how to set up `sixnimmt-server` for local development.
-Please note this documentation assumes you already have `uv` and `Git` installed and ready to go.
-
-1. Fork the `sixnimmt-server` repo on GitHub.
-
-2. Clone your fork locally:
+Install Git, Python 3.13 or newer, and `uv`. Clone your fork using its GitHub clone
+URL, then run these commands from the repository root:
 
 ```bash
-cd <directory_in_which_repo_should_be_created>
-git clone git@github.com:YOUR_NAME/sixnimmt-server.git
-```
-
-3. Now we need to install the environment. Navigate into the directory
-
-```bash
-cd sixnimmt-server
-```
-
-Then, install and activate the environment with:
-
-```bash
-uv sync
-```
-
-4. Install pre-commit to run linters/formatters at commit time:
-
-```bash
+uv sync --all-groups
 uv run pre-commit install
+git switch -c fix/describe-the-change
 ```
 
-5. Create a branch for local development:
+`uv sync` creates or updates `.venv`; use `uv run` to execute tools in it.
+Read [AGENTS.md](AGENTS.md) for Python and test style, and
+[the architecture guide](docs/development.md) for the source layout.
+
+## Make and check changes
+
+Keep changes focused. Add or adapt behavior tests when changing functionality;
+documentation-only changes generally need link and example checks instead.
+Preserve deterministic seed vectors and legacy replay fixtures unless the change
+deliberately changes that compatibility.
+
+Run the relevant tests while iterating, then the default suite and quality checks:
 
 ```bash
-git checkout -b name-of-your-bugfix-or-feature
-```
-
-Now you can make your changes locally.
-
-6. Don't forget to add test cases for your added functionality to the `tests` directory.
-
-7. When you're done making changes, check that your changes pass the formatting tests.
-
-```bash
+uv run pytest
 make check
 ```
 
-Now, validate that all unit tests are passing:
+`make check` checks lockfile consistency, runs pre-commit hooks, and checks types.
+Some hooks format files automatically; review their changes before committing.
+To run formatting, linting, and type checks individually:
 
 ```bash
-make test
+uv run ruff format --check .
+uv run ruff check . --no-fix
+uv run ty check
 ```
 
-9. Before raising a pull request you should also run tox.
-   This will run the tests across different versions of Python:
+`make test` runs the default suite with coverage. Both it and `uv run pytest`
+exclude `arena_slow`. For changes affecting gameplay, scheduling, determinism,
+or information boundaries, run the relevant volume tests as well:
 
 ```bash
-tox
+uv run pytest -m arena_slow
 ```
 
-This requires you to have multiple versions of python installed.
-This step is also triggered in the CI/CD pipeline, so you could also choose to skip this step locally.
-
-10. Commit your changes and push your branch to GitHub:
+To run all tests in one invocation:
 
 ```bash
-git add .
-git commit -m "Your detailed description of your changes."
-git push origin name-of-your-bugfix-or-feature
+uv run pytest -o addopts=''
 ```
 
-11. Submit a pull request through the GitHub website.
+The volume suite checks 8,000 matches across classic and communication modes and
+can take tens of minutes. Do not describe a default-suite pass as a full-suite pass.
 
-# Pull Request Guidelines
+CI currently tests Python 3.13 and invokes pytest and type checking directly,
+with a separate quality job running `make check`. Its pytest command also excludes
+the volume tests. The optional tox configuration targets Python 3.13 only:
 
-Before you submit a pull request, check that it meets these guidelines:
+```bash
+uv run tox
+```
 
-1. The pull request should include tests.
+When changing dependencies, use `uv add` or `uv remove` and commit the updated
+`pyproject.toml` and `uv.lock` together.
 
-2. If the pull request adds functionality, the docs should be updated.
-   Put your new functionality into a function with a docstring, and add the feature to the list in `README.md`.
+## Documentation and pull requests
+
+Update the relevant guide in [docs/](docs/README.md) when behavior or configuration
+changes. Keep README focused on the overview and quick start. Check local links
+and run any changed examples; avoid duplicating detailed reference tables across
+documents.
+
+Use a concise Conventional Commit message:
+
+```text
+fix(arena): preserve outcome after timeout
+docs(bots): explain atomic action batches
+```
+
+Stage the intended files, review the staged diff, commit, and push your branch.
+The pull request should explain the problem, resulting behavior, and validation
+performed, including whether volume tests ran. Mention compatibility changes and
+any remaining limitations. Code, tests, comments, and commit messages should be
+understandable without historical planning documents.
