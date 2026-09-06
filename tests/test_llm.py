@@ -469,3 +469,108 @@ def test_raw_malformed_responses_are_preserved(endpoint: Endpoint, view: MatchVi
         bot.act(view)
     assert [record["kind"] for record in records] == ["request", "response", "response_parse_error"]
     assert records[1]["body"] == body
+
+
+class NegotiatingEndpoint(Endpoint):
+    """Script a request/reply and revised selection, then finish the hand."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.offers = {"alice": 0, "bob": 0}
+        self.alice_initial_card: int | None = None
+        self.alice_revised_card: int | None = None
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        response = super().handle(request)
+        payload = self.requests[-1]
+        model = payload["model"]
+        observation = payload["messages"][1]["content"]
+        tools = {tool["function"]["name"]: tool["function"] for tool in payload["tools"]}
+        offer = self.offers[model]
+        self.offers[model] += 1
+        body = response.json()
+        function = body["choices"][0]["message"]["tool_calls"][0]["function"]
+
+        if model == "alice" and offer == 0:
+            hand = tools["select_card"]["parameters"]["properties"]["card"]["enum"]
+            self.alice_initial_card = min(hand)
+            self.alice_revised_card = max(hand)
+        elif model == "alice" and offer == 1:
+            assert f"Your selection: {self.alice_initial_card}; committed: no." in observation
+            function.update(
+                name="send_message",
+                arguments=json.dumps({
+                    "visibility": "table",
+                    "body": "Should I switch to my highest card?",
+                }),
+            )
+        elif model == "bob" and offer == 1:
+            assert 'player_1 → table: "Should I switch to my highest card?"' in observation
+            function.update(
+                name="send_message",
+                arguments=json.dumps({
+                    "visibility": "direct",
+                    "to_player": "player_1",
+                    "body": "Yes, switch to your highest card.",
+                }),
+            )
+        elif model == "alice" and offer == 2:
+            assert 'player_2 → player_1: "Yes, switch to your highest card."' in observation
+            assert f"Your selection: {self.alice_initial_card}; committed: no." in observation
+            function.update(name="select_card", arguments=json.dumps({"card": self.alice_revised_card}))
+        elif model == "bob" and offer == 2:
+            assert "player_1: selected, not committed." in observation
+            assert function["name"] == "commit"
+        elif model == "alice" and offer == 3:
+            assert f"Your selection: {self.alice_revised_card}; committed: no." in observation
+            assert "player_2: committed." in observation
+            assert function["name"] == "commit"
+        return httpx.Response(200, json=body)
+
+
+def test_model_seats_exchange_messages_revise_selection_and_finish_negotiated_match(
+    endpoint: Endpoint, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    negotiation = NegotiatingEndpoint()
+    # Reuse the real SDK and HTTP transport fixture; only endpoint responses are scripted.
+    monkeypatch.setattr(endpoint, "handle", negotiation.handle)
+    bots = [
+        LLMBot(seed, model=model, base_url="http://localhost:11434/v1") for seed, model in enumerate(("alice", "bob"))
+    ]
+    result = run_match(
+        bots,
+        123,
+        protocol=MatchProtocol(negotiation_enabled=True, end_condition="fixed_hands", hands=1),
+        config=RunConfig(match_action_limit=100),
+    )
+
+    assert result.outcome == "finished", result.reason
+    assert result.actions_rejected == 0
+    assert all(bot.stats()["repairs"] == 0 for bot in bots)
+    first_play = [event for event in result.events if event.play == 1]
+    messages = [event for event in first_play if event.type == "message_sent"]
+    assert [
+        (event.data["from"], event.data["body"])
+        for event in messages
+        if event.audience in ("public", "player:player_1")
+    ] == [
+        ("player_1", "Should I switch to my highest card?"),
+        ("player_2", "Yes, switch to your highest card."),
+    ]
+    alice_selections = [
+        event.data["card"]
+        for event in first_play
+        if event.type == "selection_made" and event.data["player_id"] == "player_1"
+    ]
+    assert alice_selections == [negotiation.alice_initial_card, negotiation.alice_revised_card]
+    assert alice_selections[0] != alice_selections[1]
+    reveal = next(event for event in first_play if event.type == "cards_revealed")
+    assert reveal.data["selections"]["player_1"] == negotiation.alice_revised_card
+    commits = [event for event in first_play if event.type == "player_committed"]
+    assert {event.data["player_id"] for event in commits} == {"player_1", "player_2"}
+    assert all(event.seq < reveal.seq for event in commits)
+    replayed = replay_events(result.events).state
+    assert sorted(replayed.undealt_remainder) == sorted(result.final_state.undealt_remainder)
+    assert replayed.model_dump(exclude={"undealt_remainder"}) == result.final_state.model_dump(
+        exclude={"undealt_remainder"}
+    )
