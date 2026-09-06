@@ -215,3 +215,7 @@ __marimo__/
 
 # Match logs written by `sixnimmt serve`
 logs/
+
+# Extracted arena data; archived separately through Git LFS.
+/experiments/**/*.jsonl
+/experiments/**/manifest.json
