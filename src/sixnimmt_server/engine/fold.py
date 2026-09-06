@@ -299,14 +299,33 @@ def _self_view(state: _Fold, viewer: Viewer) -> PlayerSelfView:
     )
 
 
-def build_view(events: Sequence[Event], viewer: Viewer) -> MatchView:
-    """Fold the viewer's visible events into the view they are entitled to."""
-    visible = visible_events(events, viewer)
-    # Whole logs come from one writer version; old logs counted selections only.
-    state = _Fold(explicit_counts=any(event.type == "action_counted" for event in visible))
-    for event in visible:
-        _apply(state, event, viewer)
+class ViewFolder:
+    """Incrementally fold a viewer's stream without retaining hidden events."""
 
+    def __init__(self, viewer: Viewer, *, explicit_counts: bool = True) -> None:
+        # Live writers emit count markers; legacy whole-log readers choose below.
+        self._viewer = viewer
+        self._state = _Fold(explicit_counts=explicit_counts)
+        self._version = 0
+
+    def apply(self, events: Sequence[Event]) -> None:
+        for event in visible_events(events, self._viewer):
+            _apply(self._state, event, self._viewer)
+            self._version += 1
+
+    def view(self) -> MatchView:
+        return _project(self._state, self._viewer, self._version)
+
+
+def build_view(events: Sequence[Event], viewer: Viewer) -> MatchView:
+    """Read current or legacy logs through the same fold used by live matches."""
+    visible = visible_events(events, viewer)
+    folder = ViewFolder(viewer, explicit_counts=any(event.type == "action_counted" for event in visible))
+    folder.apply(visible)
+    return folder.view()
+
+
+def _project(state: _Fold, viewer: Viewer, version: int) -> MatchView:
     others = tuple(
         OpponentView(
             player_id=seat.player_id,
@@ -322,7 +341,6 @@ def build_view(events: Sequence[Event], viewer: Viewer) -> MatchView:
         for seat in [state.seats[player_id]]
         if player_id != viewer.player_id
     )
-    version = len(visible)
     return MatchView(
         match_id=state.match_id,
         view_version=version,

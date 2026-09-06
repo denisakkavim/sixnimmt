@@ -11,7 +11,7 @@ import pytest
 from conftest import ADMIN_TOKEN
 from fastapi import FastAPI
 
-from sixnimmt_server.server.sink import NullEventSink
+from sixnimmt_server.persistence.sink import NullEventSink
 
 pytestmark = pytest.mark.anyio
 

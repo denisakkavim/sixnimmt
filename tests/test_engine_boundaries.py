@@ -1,5 +1,6 @@
 """Engine boundaries: purity, layering, and rejection behavior."""
 
+import ast
 import pathlib
 
 import pytest
@@ -68,3 +69,29 @@ def test_finished_match_rejects_every_action() -> None:
             MatchProtocol(),
             GameRules(),
         )
+
+
+@pytest.mark.parametrize(
+    "package, allowed",
+    [
+        ("common", {"common"}),
+        ("engine", {"common", "engine"}),
+        ("persistence", {"common", "engine", "persistence"}),
+        ("arena", {"common", "engine", "persistence", "arena"}),
+        ("server", {"common", "engine", "persistence", "server"}),
+    ],
+)
+def test_packages_respect_dependency_direction(package: str, allowed: set[str]) -> None:
+    root = pathlib.Path(__file__).resolve().parent.parent / "src" / "sixnimmt_server"
+    for path in (root / package).rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            modules = []
+            if isinstance(node, ast.Import):
+                modules = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                modules = [node.module]
+            for module in modules:
+                if module.startswith("sixnimmt_server."):
+                    assert module.split(".")[1] in allowed, (path, module)
+                if package != "server":
+                    assert module.split(".")[0] not in {"fastapi", "starlette", "uvicorn"}, (path, module)

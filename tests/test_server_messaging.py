@@ -11,8 +11,8 @@ from starlette.testclient import TestClient
 from sixnimmt_server.engine.audience import Viewer, visible_events
 from sixnimmt_server.engine.fold import build_view
 from sixnimmt_server.engine.views import ViewRole
+from sixnimmt_server.persistence.sink import action_log_path, event_log_path, read_action_log, read_event_log
 from sixnimmt_server.server.app import create_app
-from sixnimmt_server.server.sink import action_log_path, event_log_path, read_action_log, read_event_log
 
 
 @pytest.mark.parametrize("endpoint", ["actions", "message"])

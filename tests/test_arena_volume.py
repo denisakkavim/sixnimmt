@@ -5,12 +5,17 @@ from itertools import pairwise
 
 import pytest
 
-from sixnimmt_server.arena.bots import RandomBot
-from sixnimmt_server.arena.runner import derive_seed, observe_player, run_match
+from sixnimmt_server.arena.bots import RandomBot, Rejection
+from sixnimmt_server.arena.runner import derive_seed, run_match
+from sixnimmt_server.engine.actions import Action, SelectCardAction, SendMessageAction
+from sixnimmt_server.engine.audience import Viewer
 from sixnimmt_server.engine.cards import bull_heads
 from sixnimmt_server.engine.events import Event
+from sixnimmt_server.engine.fold import ViewFolder
 from sixnimmt_server.engine.replay import replay_events
+from sixnimmt_server.engine.rules import MatchProtocol
 from sixnimmt_server.engine.state import MatchState, Phase
+from sixnimmt_server.engine.views import MatchView, ViewRole
 
 
 class MatchLedger:
@@ -39,6 +44,7 @@ class MatchLedger:
         self.finished = False
         # Kept whole so the match can be rebuilt from it once it is over.
         self.log: list[Event] = []
+        self.folders = {pid: ViewFolder(Viewer(ViewRole.PLAYER, pid)) for pid in self.ids}
 
     def _check_cards(self) -> None:
         cards = [card for hand in self.hands.values() for card in hand]
@@ -198,6 +204,8 @@ class MatchLedger:
 
     def __call__(self, state: MatchState, events: tuple[Event, ...]) -> None:
         self.log.extend(events)
+        for folder in self.folders.values():
+            folder.apply(events)
         for event in events:
             self._fold(event)
         assert [list(row.cards) for row in state.rows] == self.rows
@@ -213,9 +221,9 @@ class MatchLedger:
             else:
                 assert list(player.penalty_cards) == self.piles[player.player_id]
                 assert player.score_this_hand == sum(bull_heads(card) for card in player.penalty_cards)
-            observation = observe_player(state, player.player_id)
-            assert observation.hand == player.hand
-            visible = set(observation.hand)
+            observation = self.folders[player.player_id].view()
+            assert observation.you.hand == player.hand
+            visible = set(observation.you.hand)
             visible.update(card for row in observation.rows for card in row.cards)
             assert visible.isdisjoint(state.undealt_remainder)
             assert all(visible.isdisjoint(other.hand) for other in state.players if other.player_id != player.player_id)
@@ -237,12 +245,19 @@ def _assert_replay_matches(log: list[Event], live: MatchState) -> None:
     assert replayed.model_dump(exclude={"undealt_remainder"}) == live.model_dump(exclude={"undealt_remainder"})
 
 
-def _validate_matches(player_count: int, games: int) -> None:
+def _validate_matches(player_count: int, games: int, negotiation: bool = False) -> None:
     for game in range(games):
         ledger = MatchLedger(player_count)
         seed = derive_seed(1234, "match", game)
-        bots = [RandomBot(derive_seed(1234, "bot", game, seat)) for seat in range(player_count)]
-        result = run_match(bots, seed, match_id=f"arena_{game}", observer=ledger)
+        bot_type = NegotiatingBot if negotiation else RandomBot
+        bots = [bot_type(derive_seed(1234, "bot", game, seat)) for seat in range(player_count)]
+        result = run_match(
+            bots,
+            seed,
+            match_id=f"arena_{game}",
+            observer=ledger,
+            protocol=MatchProtocol(negotiation_enabled=negotiation),
+        )
         assert result.final_state.phase == Phase.FINISHED
         assert ledger.finished
         assert ledger.placements == ledger.completed_hands * 10 * player_count
@@ -260,3 +275,26 @@ def test_random_matches_preserve_intermediate_invariants(player_count: int) -> N
 @pytest.mark.parametrize("player_count", [2, 3, 5, 10])
 def test_thousand_random_matches_preserve_intermediate_invariants(player_count: int) -> None:
     _validate_matches(player_count, 1000)
+
+
+class NegotiatingBot(RandomBot):
+    """Exercise messages and revised selections before each commitment."""
+
+    def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
+        if view.phase == Phase.SELECTING:
+            if view.you.actions_taken_this_play == 1:
+                return SendMessageAction(visibility="table", body="I might change my card.")
+            if view.you.actions_taken_this_play == 2:
+                return SelectCardAction(card=view.you.hand[-1])
+        return super().act(view, rejection)
+
+
+@pytest.mark.parametrize("player_count", [2, 3, 5, 10])
+def test_negotiated_matches_preserve_intermediate_invariants(player_count: int) -> None:
+    _validate_matches(player_count, 3, negotiation=True)
+
+
+@pytest.mark.arena_slow
+@pytest.mark.parametrize("player_count", [2, 3, 5, 10])
+def test_thousand_negotiated_matches_preserve_intermediate_invariants(player_count: int) -> None:
+    _validate_matches(player_count, 1000, negotiation=True)

@@ -31,8 +31,8 @@ from sixnimmt_server.server.schemas import (
     WaitResponse,
     serialise_event,
 )
-from sixnimmt_server.server.sink import SinkClosed
 from sixnimmt_server.server.store import MatchRecord, MatchStore
+from sixnimmt_server.server.stream import SinkClosed
 
 DEFAULT_WAIT_SECONDS = 30.0
 MAX_WAIT_SECONDS = 60.0

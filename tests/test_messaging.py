@@ -22,7 +22,7 @@ from sixnimmt_server.engine.setup import create_match
 from sixnimmt_server.engine.state import Phase, ResolutionState
 from sixnimmt_server.engine.transition import transition
 from sixnimmt_server.engine.views import ViewRole
-from sixnimmt_server.server.sink import read_event_log
+from sixnimmt_server.persistence.sink import read_event_log
 
 RULES = GameRules()
 NEGOTIATION = MatchProtocol(negotiation_enabled=True)

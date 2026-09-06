@@ -32,21 +32,21 @@ from sixnimmt_server.engine.events import (
     assign_sequence,
     audience_for_player,
 )
-from sixnimmt_server.engine.fold import build_view
+from sixnimmt_server.engine.fold import ViewFolder
 from sixnimmt_server.engine.rules import GameRules, MatchProtocol, OnInvalidAction
 from sixnimmt_server.engine.setup import open_match, start_match
 from sixnimmt_server.engine.state import MatchState, Phase, PlayerSeat
 from sixnimmt_server.engine.transition import transition
 from sixnimmt_server.engine.views import MatchView, ViewRole
-from sixnimmt_server.server.auth import MatchTokens, TokenRegistry
-from sixnimmt_server.server.errors import ApiError, ApiErrorCode, api_code_for, match_not_found
-from sixnimmt_server.server.sink import (
+from sixnimmt_server.persistence.sink import (
     ActionRecord,
     EventSink,
     JsonlEventSink,
-    LiveEventStream,
     NullEventSink,
 )
+from sixnimmt_server.server.auth import MatchTokens, TokenRegistry
+from sixnimmt_server.server.errors import ApiError, ApiErrorCode, api_code_for, match_not_found
+from sixnimmt_server.server.stream import LiveEventStream
 
 # Retained per player, never per match: a shared bound would let one player's
 # traffic evict another's entries, and the change in dedup behaviour that
@@ -133,6 +133,7 @@ class MatchRecord:
     # keys nor the eviction of one can disturb the other.
     conflicts: IdempotencyCache = field(default_factory=IdempotencyCache)
     action_records: list[ActionRecord] = field(default_factory=list)
+    folders: dict[Viewer, ViewFolder] = field(default_factory=dict)
     next_seq: int = 1
     next_server_action_seq: int = 1
     abandoned: bool = False
@@ -163,6 +164,8 @@ class MatchRecord:
         await self._persist(self.sink.append, numbered)
         self.next_seq += len(numbered)
         self.stream.append(numbered)
+        for folder in self.folders.values():
+            folder.apply(numbered)
 
     async def record_action(self, action_record: ActionRecord) -> None:
         """Keep the canonical processing order, on disk and then in memory."""
@@ -187,7 +190,11 @@ class MatchRecord:
 
     def view_for(self, viewer: Viewer) -> MatchView:
         """Fold the caller's own filtered stream. The only projection there is."""
-        return build_view(self.stream.visible_stream(viewer), viewer)
+        if viewer not in self.folders:
+            folder = ViewFolder(viewer)
+            folder.apply(self.stream.events)
+            self.folders[viewer] = folder
+        return self.folders[viewer].view()
 
 
 class MatchStore:
@@ -344,22 +351,21 @@ class MatchStore:
                 return self._replay_conflict(record, viewer, conflicted, action)
 
             server_action_seq = self._next_action_seq(record)
-            await record.record_action(
-                ActionRecord(
-                    server_action_seq=server_action_seq,
-                    action_id=action_id,
-                    player_id=player_id,
-                    type=action.type.value,
-                    # Audit reference only: recorded, never validated, never a
-                    # reason to reject. A stale value must cost the caller nothing.
-                    from_view=action.from_view,
-                    received_at=datetime.now(UTC),
-                )
+            action_record = ActionRecord(
+                server_action_seq=server_action_seq,
+                action_id=action_id,
+                player_id=player_id,
+                type=action.type.value,
+                # Audit reference only: recorded, never validated, never a
+                # reason to reject. A stale value must cost the caller nothing.
+                from_view=action.from_view,
+                received_at=datetime.now(UTC),
             )
 
             try:
                 self._check_expected_version(record, viewer, action)
             except ApiError as refusal:
+                await record.record_action(action_record.model_copy(update={"outcome": "rejected"}))
                 # A refusal like any other (§9.4): the offender gets a private
                 # event, their own cursor moves, and the result is cached so a
                 # repeat replays instead of being refused twice. It cannot go in
@@ -374,7 +380,9 @@ class MatchStore:
                 )
                 raise
 
-            return await self._apply_inside_boundary(record, viewer, player_id, action, action_id, server_action_seq)
+            return await self._apply_inside_boundary(
+                record, viewer, player_id, action, action_id, server_action_seq, action_record
+            )
 
     async def _apply_inside_boundary(
         self,
@@ -384,17 +392,21 @@ class MatchStore:
         action: Action,
         action_id: str,
         server_action_seq: int,
+        action_record: ActionRecord,
     ) -> MatchView:
         try:
             state, events = transition(record.state, player_id, action, record.protocol, record.rules)
         except ApiError as refusal:
+            await record.record_action(action_record.model_copy(update={"outcome": "rejected"}))
             await self._reject(record, viewer, player_id, action_id, action, refusal, server_action_seq)
             raise
         except EngineRejection as rejection:
+            await record.record_action(action_record.model_copy(update={"outcome": "rejected"}))
             refusal = self._refusal_for(record, player_id, action, rejection)
             await self._reject(record, viewer, player_id, action_id, action, refusal, server_action_seq)
             raise refusal from rejection
 
+        await record.record_action(action_record)
         # The log first: if persistence fails the transition is abandoned whole,
         # leaving the match on the state its log still describes.
         await record.append(events, server_action_seq)

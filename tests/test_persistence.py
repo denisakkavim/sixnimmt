@@ -13,8 +13,7 @@ from starlette.testclient import TestClient
 
 from sixnimmt_server.engine.events import Event
 from sixnimmt_server.engine.replay import replay_events
-from sixnimmt_server.server.app import create_app
-from sixnimmt_server.server.sink import (
+from sixnimmt_server.persistence.sink import (
     ActionRecord,
     JsonlEventSink,
     NullEventSink,
@@ -24,6 +23,7 @@ from sixnimmt_server.server.sink import (
     read_action_log,
     read_event_log,
 )
+from sixnimmt_server.server.app import create_app
 from sixnimmt_server.server.store import MatchRecord
 
 

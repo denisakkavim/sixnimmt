@@ -8,8 +8,8 @@ from starlette.testclient import TestClient
 from typer.testing import CliRunner
 
 from sixnimmt_server.cli import app
+from sixnimmt_server.persistence.sink import event_log_path
 from sixnimmt_server.server.app import create_app
-from sixnimmt_server.server.sink import event_log_path
 
 runner = CliRunner()
 
@@ -73,7 +73,7 @@ def test_reports_runner_validation_errors_without_traceback() -> None:
     result = invoke_arena("--players", "random", "unknown", "--games", "1", "--seed", "1234")
 
     assert result.exit_code == 2
-    assert "unknown bot 'unknown'; available bots: random" in result.stderr
+    assert "unknown bot 'unknown'; available bots: greedy, random" in result.stderr
     assert "Traceback" not in result.stderr
 
 
@@ -105,7 +105,7 @@ def test_rejects_non_positive_action_limit() -> None:
     )
 
     assert result.exit_code == 2
-    assert "max_actions_per_match must be positive" in result.stderr
+    assert "match_action_limit must be a positive integer" in result.stderr
 
 
 def test_reports_action_limit_exhaustion_without_traceback() -> None:
@@ -121,8 +121,8 @@ def test_reports_action_limit_exhaustion_without_traceback() -> None:
         "1",
     )
 
-    assert result.exit_code == 1
-    assert "action limit 1 exhausted" in result.stderr
+    assert result.exit_code == 0
+    assert "abandoned=1" in result.stdout
     assert "Traceback" not in result.stderr
 
 
@@ -213,3 +213,42 @@ def test_replay_reports_a_missing_log(tmp_path: Path) -> None:
 
     assert result.exit_code == 2
     assert "no match log" in result.stderr
+
+
+def test_negotiation_cli_traces_and_summarises(tmp_path: Path) -> None:
+    directory = tmp_path / "trace"
+    result = invoke_arena(
+        "--players",
+        "random",
+        "greedy",
+        "--games",
+        "1",
+        "--seed",
+        "123",
+        "--negotiation",
+        "--concurrency",
+        "2",
+        "--trace-dir",
+        str(directory),
+    )
+    assert result.exit_code == 0, result.output
+    assert "finished=1 abandoned=0 forfeited=0 failed=0" in result.stdout
+    logs = [path for path in directory.glob("*.jsonl") if not path.name.endswith(".actions.jsonl")]
+    summary = runner.invoke(app, ["summarise", str(logs[0])])
+    assert summary.exit_code == 0, summary.output
+    assert '"has_manifest": true' in summary.stdout
+    assert '"outcome": "finished"' in summary.stdout
+
+
+def test_cli_refuses_starving_schedule() -> None:
+    result = invoke_arena(
+        "--players", "random", "random", "--games", "1", "--seed", "123", "--negotiation", "--scheduler", "sequential"
+    )
+    assert result.exit_code == 2
+    assert "starve" in result.stderr
+
+
+def test_cli_warns_when_stopping_has_no_deadline() -> None:
+    result = invoke_arena("--players", "random", "random", "--games", "1", "--seed", "123", "--stop-on-failure")
+    assert result.exit_code == 0
+    assert "wait indefinitely" in result.stderr
