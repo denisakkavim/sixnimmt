@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from click import unstyle
 from conftest import ADMIN_TOKEN, open_match, play_to_completion
 from starlette.testclient import TestClient
 from typer.testing import CliRunner
@@ -80,7 +81,7 @@ def test_reports_action_limit_abandonment(players_file: Path) -> None:
 def test_cli_does_not_accept_name_only_players() -> None:
     result = runner.invoke(app, ["arena", "--players", "random", "random", "--games", "1", "--seed", "1234"])
     assert result.exit_code == 2
-    assert "No such option: --players" in result.stderr
+    assert "No such option: --players" in unstyle(result.stderr)
 
 
 @pytest.mark.arena_slow
