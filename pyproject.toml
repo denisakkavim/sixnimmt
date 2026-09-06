@@ -23,9 +23,9 @@ dependencies = [
 sixnimmt = "sixnimmt.cli:app"
 
 [project.urls]
-Homepage = "https://denisakkavim.github.io/sixnimmt-server/"
-Repository = "https://github.com/denisakkavim/sixnimmt-server"
-Documentation = "https://denisakkavim.github.io/sixnimmt-server/"
+Homepage = "https://denisakkavim.github.io/sixnimmt/"
+Repository = "https://github.com/denisakkavim/sixnimmt"
+Documentation = "https://denisakkavim.github.io/sixnimmt/"
 
 [dependency-groups]
 dev = [
