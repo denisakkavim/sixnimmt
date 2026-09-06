@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 from sixnimmt.cli import app
@@ -76,8 +77,8 @@ def test_reports_action_limit_abandonment(players_file: Path) -> None:
 def test_cli_does_not_accept_name_only_players() -> None:
     result = runner.invoke(app, ["arena", "--players", "random", "random", "--games", "1", "--seed", "1234"])
     assert result.exit_code == 2
-    assert "No such option:" in result.stderr
-    assert "--players" in result.stderr
+    error_text = Text.from_ansi(result.stderr).plain
+    assert "No such option: --players" in error_text
 
 
 @pytest.mark.arena_slow
