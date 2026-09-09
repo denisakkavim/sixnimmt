@@ -6,6 +6,10 @@ from typing import Annotated
 
 import typer
 from pydantic import TypeAdapter, ValidationError
+from rich import box
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
 
 from sixnimmt.analytics.summary import summarise as summarise_match
 from sixnimmt.arena.players import PlayerConfig
@@ -14,6 +18,7 @@ from sixnimmt.engine.replay import ReplayedMatch, replay_events
 from sixnimmt.engine.rules import MatchProtocol
 from sixnimmt.persistence.manifest import ManifestMatch
 from sixnimmt.persistence.sink import read_action_log, read_event_log
+from sixnimmt.terminal import arena_animation
 
 app = typer.Typer(help="Run deterministic 6 nimmt! tools.", no_args_is_help=True)
 
@@ -24,21 +29,47 @@ def main() -> None:
 
 
 def _print_result(result: ArenaResult) -> None:
-    typer.echo(f"seed={result.seed}")
-    typer.echo(f"games={result.games}")
-    typer.echo(f"total_hands={result.total_hands}")
-    typer.echo(f"total_actions={result.total_actions}")
-    typer.echo(f"requested={result.games_requested} started={result.games_started} completed={result.games_completed}")
-    typer.echo(
-        f"finished={result.finished} abandoned={result.abandoned} forfeited={result.forfeited} failed={result.failed}"
+    console = Console(highlight=False)
+    console.print("\n6 nimmt! · Arena results", style="bold cyan")
+    console.print(f"Seed {result.seed} · Hands {result.total_hands:,} · Actions {result.total_actions:,}", style="dim")
+    console.print(
+        f"Matches: {result.games_requested:,} requested · "
+        f"{result.games_started:,} started · {result.games_completed:,} completed"
     )
+
+    outcomes = Table(box=box.SIMPLE, padding=(0, 1))
+    for label, count, style in (
+        ("Finished", result.finished, "green"),
+        ("Abandoned", result.abandoned, "yellow"),
+        ("Forfeited", result.forfeited, "yellow"),
+        ("Failed", result.failed, "red"),
+    ):
+        outcomes.add_column(label, justify="right", header_style="bold", style=style if count > 0 else "dim")
+    outcomes.add_row(*(f"{count:,}" for count in (result.finished, result.abandoned, result.forfeited, result.failed)))
+    console.print(outcomes)
+
+    scores = Table(box=box.SIMPLE_HEAD, header_style="bold", padding=(0, 1), leading=1)
+    scores.add_column("Player", overflow="fold")
+    scores.add_column("Bot", overflow="fold", style="dim")
+    for label in ("Wins", "Ties", "Total", "Avg"):
+        scores.add_column(label, justify="right")
     for player in result.players:
-        average_score = player.total_score / result.finished if result.finished else 0.0
-        typer.echo(
-            f"{player.player_id} bot={player.bot_name} wins={player.wins} "
-            f"ties={player.ties} total_score={player.total_score} "
-            f"average_score={average_score:.2f} display_name={player.display_name}"
+        name = Text(player.display_name or player.player_id, style="bold")
+        name.append(f"\n{player.player_id}", style="dim")
+        average_score = f"{player.total_score / result.finished:,.2f}" if result.finished > 0 else "—"
+        scores.add_row(
+            name,
+            Text(player.bot_name),
+            f"{player.wins:,}",
+            f"{player.ties:,}",
+            f"{player.total_score:,}",
+            average_score,
         )
+    console.print(scores)
+    console.print("Scores count finished matches only. Lower is better. Wins exclude ties.", style="dim")
+    if result.finished == 0:
+        console.print("No finished matches; average scores are unavailable.", style="yellow")
+    console.print()
 
 
 @app.command()
@@ -77,6 +108,10 @@ def arena(
     decision_rejection_limit: Annotated[int, typer.Option("--decision-rejection-limit")] = 8,
     max_abandoned_decisions: Annotated[int | None, typer.Option("--max-abandoned-decisions")] = None,
     stop_on_failure: Annotated[bool, typer.Option("--stop-on-failure")] = False,
+    animation: Annotated[
+        bool,
+        typer.Option("--animation/--no-animation", help="Show a bull-and-card animation in interactive terminals."),
+    ] = True,
 ) -> None:
     """Run an arena and print outcomes and finished-match scores."""
     if stop_on_failure and decision_timeout is None:
@@ -85,24 +120,27 @@ def arena(
             err=True,
         )
     try:
-        result = run_arena(
-            _read_players(players_file),
-            games,
-            seed,
-            protocol=MatchProtocol(communication_enabled=communication),
-            config=RunConfig(
-                scheduler=scheduler,
-                trace_dir=trace_dir,
-                concurrency=concurrency,
-                backend=backend,
-                decision_timeout_seconds=decision_timeout,
-                play_action_limit=play_action_limit,
-                match_action_limit=match_action_limit if match_action_limit is not None else max_actions_per_match,
-                decision_rejection_limit=decision_rejection_limit,
-                max_abandoned_decisions=max_abandoned_decisions,
-                stop_on_failure=stop_on_failure,
-            ),
+        players = _read_players(players_file)
+        config = RunConfig(
+            scheduler=scheduler,
+            trace_dir=trace_dir,
+            concurrency=concurrency,
+            backend=backend,
+            decision_timeout_seconds=decision_timeout,
+            play_action_limit=play_action_limit,
+            match_action_limit=match_action_limit if match_action_limit is not None else max_actions_per_match,
+            decision_rejection_limit=decision_rejection_limit,
+            max_abandoned_decisions=max_abandoned_decisions,
+            stop_on_failure=stop_on_failure,
         )
+        with arena_animation(games, seed, players, enabled=animation):
+            result = run_arena(
+                players,
+                games,
+                seed,
+                protocol=MatchProtocol(communication_enabled=communication),
+                config=config,
+            )
     except ValueError as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=2) from error

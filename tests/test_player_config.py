@@ -145,5 +145,5 @@ def test_cli_passes_validated_options_to_factory(monkeypatch: pytest.MonkeyPatch
     result = CliRunner().invoke(app, ["arena", "--players-file", str(path), "--games", "1", "--seed", "123"])
     assert result.exit_code == 0, result.output
     assert options_received == [(0.2, "Play carefully", []), (0.8, "Play carefully", [])]
-    assert "display_name=Alice" in result.stdout
-    assert "display_name=Bob" in result.stdout
+    assert "Alice" in result.stdout
+    assert "Bob" in result.stdout

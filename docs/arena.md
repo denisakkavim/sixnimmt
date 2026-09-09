@@ -72,6 +72,7 @@ uv run sixnimmt arena --help
 | `--decision-timeout` | Unset | Seconds allowed for a bot call |
 | `--max-abandoned-decisions` | Four times concurrency | Bound on timed-out calls still running |
 | `--stop-on-failure` | Off | Stop submitting matches after a failure; drain started work |
+| `--animation/--no-animation` | On in interactive terminals | Show the animated bull pen while matches run |
 
 Classic sequential scheduling can repeatedly offer one seat until it commits.
 Communication therefore requires round-robin scheduling to avoid starving
@@ -79,6 +80,31 @@ other seats. Both policies skip committed seats and prioritize a required row
 choice. Attempts count toward arena limits even if rejected. Accepted actions
 consume the separate engine budget where applicable. A final action that
 finishes a match wins over a limit reached by that action.
+
+### Terminal results
+
+While the arena runs, interactive terminals show an animated bull pen with four
+rows of five card slots and bull-head totals. Each row starts with cards; more
+cards arrive, and a sixth card triggers a capture and starts a fresh row.
+It includes elapsed time, the requested match count, the seed, and rotating
+game tips. The doodle table uses the configured player count and display names
+in seat order, with a pretend card reveal rotating through every player. Missing
+names use the same defaults as the results table. The card sequence is a
+decorative doodle, not a live match or a
+completion percentage. It works with both thread and process backends and
+clears when the run ends, including on errors. Use `--no-animation` to disable
+it. Redirected output and basic `TERM=dumb` terminals skip the animation.
+
+At the end of a run, the arena prints a formatted summary with the root seed,
+hand and action totals, requested/started/completed match counts, and an outcome
+table. The player table keeps seat order and shows display names, player IDs,
+bot strategies, sole wins, ties, total scores, and average scores per finished
+match. Lower scores are better. If no matches finish, averages display as `—`.
+
+Tables adapt to the terminal width and use color when supported. Redirected
+output remains readable text without automatic ANSI colors. Set `NO_COLOR=1`
+to disable color in the terminal. This replaces the previous `key=value` output.
+For structured per-match data, use [`summarise` or the trace files](traces.md).
 
 ## Outcomes and failures
 
