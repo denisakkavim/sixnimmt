@@ -9,6 +9,9 @@ explicit commitment, and revised selections. Bots receive filtered player views;
 the engine validates their actions. Built-in strategies include eight [baseline heuristics](docs/bots.md#built-in-baselines-and-board-and-hand-heuristics),
 plus `llm` and `llm_memory`.
 
+Use `--backend process --concurrency 4` to run arena matches across multiple CPU
+cores. The default thread backend also supports concurrent matches.
+
 ## Quick start
 
 Requires Python 3.13 or newer and [uv](https://docs.astral.sh/uv/).

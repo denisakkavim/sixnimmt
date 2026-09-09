@@ -34,28 +34,48 @@ __all__ = [
 ]
 
 
+def _build_hand_flexibility(seed: int) -> HandFlexibilityBot:
+    return HandFlexibilityBot()
+
+
+def _build_highest_fitting_card(seed: int) -> HighestFittingCardBot:
+    return HighestFittingCardBot()
+
+
+def _build_coldest_row(seed: int) -> ColdestRowBot:
+    return ColdestRowBot()
+
+
+def _build_closest_gap(seed: int) -> ClosestGapBot:
+    return ClosestGapBot()
+
+
+def _build_highest_card(seed: int) -> HighestCardBot:
+    return HighestCardBot()
+
+
+def _build_lowest_card(seed: int) -> LowestCardBot:
+    return LowestCardBot()
+
+
+def _build_lowest_fitting_card(seed: int) -> LowestFittingCardBot:
+    return LowestFittingCardBot()
+
+
 REGISTRY: dict[str, BotSpec] = {
     "hand_flexibility": BotSpec(
-        "hand_flexibility", lambda seed: HandFlexibilityBot(), True, {"strategy_id": "hand_flexibility", "version": "1"}
+        "hand_flexibility", _build_hand_flexibility, True, {"strategy_id": "hand_flexibility", "version": "1"}
     ),
     "highest_fitting_card": BotSpec(
         "highest_fitting_card",
-        lambda seed: HighestFittingCardBot(),
+        _build_highest_fitting_card,
         True,
         {"strategy_id": "highest_fitting_card", "version": "1"},
     ),
-    "coldest_row": BotSpec(
-        "coldest_row", lambda seed: ColdestRowBot(), True, {"strategy_id": "coldest_row", "version": "1"}
-    ),
-    "closest_gap": BotSpec(
-        "closest_gap", lambda seed: ClosestGapBot(), True, {"strategy_id": "closest_gap", "version": "1"}
-    ),
-    "highest_card": BotSpec(
-        "highest_card", lambda seed: HighestCardBot(), True, {"strategy_id": "highest_card", "version": "1"}
-    ),
-    "lowest_card": BotSpec(
-        "lowest_card", lambda seed: LowestCardBot(), True, {"strategy_id": "lowest_card", "version": "1"}
-    ),
+    "coldest_row": BotSpec("coldest_row", _build_coldest_row, True, {"strategy_id": "coldest_row", "version": "1"}),
+    "closest_gap": BotSpec("closest_gap", _build_closest_gap, True, {"strategy_id": "closest_gap", "version": "1"}),
+    "highest_card": BotSpec("highest_card", _build_highest_card, True, {"strategy_id": "highest_card", "version": "1"}),
+    "lowest_card": BotSpec("lowest_card", _build_lowest_card, True, {"strategy_id": "lowest_card", "version": "1"}),
     "llm": BotSpec("llm", LLMBot, False, {"strategy_id": "llm", "version": "1"}, LLMOptions),
     "llm_memory": BotSpec(
         "llm_memory", LLMMemoryBot, False, {"strategy_id": "llm_memory", "version": "1"}, LLMMemoryOptions
@@ -63,7 +83,7 @@ REGISTRY: dict[str, BotSpec] = {
     "random": BotSpec("random", RandomBot, True, {"strategy_id": "random", "version": "2"}),
     "lowest_fitting_card": BotSpec(
         "lowest_fitting_card",
-        lambda seed: LowestFittingCardBot(),
+        _build_lowest_fitting_card,
         True,
         {"strategy_id": "lowest_fitting_card", "version": "1"},
     ),

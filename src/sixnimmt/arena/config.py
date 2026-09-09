@@ -18,6 +18,7 @@ class RunConfig:
     concurrency: int = 1
     stop_on_failure: bool = False
     trace_dir: Path | None = None
+    backend: str = "thread"
 
 
 def resolve(config: RunConfig, protocol: MatchProtocol) -> RunConfig:
@@ -40,11 +41,20 @@ def resolve(config: RunConfig, protocol: MatchProtocol) -> RunConfig:
     resolved = replace(
         config, scheduler=scheduler, play_action_limit=play_limit, max_abandoned_decisions=abandoned_limit
     )
+    _validate_limits(resolved)
+    return resolved
+
+
+def _validate_limits(config: RunConfig) -> None:
+    if config.backend not in ("thread", "process"):
+        msg = f"unknown backend {config.backend!r}; available: thread, process"
+        raise ValueError(msg)
     for name in ("match_action_limit", "play_action_limit", "decision_rejection_limit", "concurrency"):
-        value = getattr(resolved, name)
+        value = getattr(config, name)
         if value is not None and (type(value) is not int or value < 1):
             msg = f"{name} must be a positive integer"
             raise ValueError(msg)
+    abandoned_limit = config.max_abandoned_decisions
     if type(abandoned_limit) is not int or abandoned_limit < 0:
         msg = "max_abandoned_decisions must be a nonnegative integer"
         raise ValueError(msg)
@@ -52,4 +62,3 @@ def resolve(config: RunConfig, protocol: MatchProtocol) -> RunConfig:
     if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
         msg = "decision_timeout_seconds must be finite and positive"
         raise ValueError(msg)
-    return resolved

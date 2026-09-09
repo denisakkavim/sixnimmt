@@ -115,6 +115,15 @@ These runners are synchronous and block until their work completes. `concurrency
 controls match workers within the run. An async application should run them in
 an appropriate worker rather than directly on its event loop.
 
+For CPU-heavy tournaments, use `RunConfig(backend="process", concurrency=4)`.
+The default backend is `thread`. Process mode constructs bots inside spawned
+workers and requires an importable Python entry module with a
+`if __name__ == "__main__"` guard. It supports importable, picklable custom
+factories but rejects live observers and local/lambda factories. See
+[process execution](arena.md#timeouts-and-concurrency) for a complete example,
+timeout semantics, and trace handling. These worker settings affect `run_arena`;
+`run_match` always runs locally.
+
 ## Configure the game and its limits
 
 Both runners accept `rules`, `protocol`, and `config` as keyword arguments.

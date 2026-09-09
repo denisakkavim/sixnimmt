@@ -3,6 +3,10 @@
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from multiprocessing import get_context
+from multiprocessing.sharedctypes import Synchronized
+from multiprocessing.synchronize import Event as ProcessEvent
+from multiprocessing.synchronize import Lock as ProcessLock
 from queue import Empty, Queue
 from time import monotonic
 
@@ -19,24 +23,68 @@ from sixnimmt.engine.actions import (
 from sixnimmt.engine.views import MatchView
 
 
+@dataclass(frozen=True)
+class SharedAbandonedState:
+    """Run-wide counters passed to spawned workers during initialization."""
+
+    total: Synchronized
+    active: Synchronized
+    lock: ProcessLock
+    exceeded: ProcessEvent
+
+    @classmethod
+    def create(cls) -> "SharedAbandonedState":
+        context = get_context("spawn")
+        return cls(context.Value("q", 0), context.Value("q", 0), context.Lock(), context.Event())
+
+
 class AbandonedDecisions:
     """Count timed-out calls still running; completed late results are discarded."""
 
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, shared: SharedAbandonedState | None = None) -> None:
         self.limit = limit
-        self.total = 0
+        self.shared = shared
+        self._total = 0
         self._threads: list[threading.Thread] = []
         self._lock = threading.Lock()
-        self.exceeded = threading.Event()
+        self.exceeded = shared.exceeded if shared is not None else threading.Event()
+
+    @property
+    def total(self) -> int:
+        if self.shared is not None:
+            return self.shared.total.value
+        return self._total
 
     def add(self, thread: threading.Thread) -> None:
+        if self.shared is not None:
+            self._add_shared(thread, self.shared)
+            return
         with self._lock:
-            self.total += 1
+            self._total += 1
             self._threads = [item for item in self._threads if item.is_alive()]
             if thread.is_alive():
                 self._threads.append(thread)
             if len(self._threads) > self.limit:
                 self.exceeded.set()
+
+    def _add_shared(self, thread: threading.Thread, shared: SharedAbandonedState) -> None:
+        with shared.lock:
+            shared.total.value += 1
+            if not thread.is_alive():
+                return
+            shared.active.value += 1
+            if shared.active.value > self.limit:
+                shared.exceeded.set()
+        # A worker can run more matches while an earlier decision is still alive.
+        # Release its run-wide slot when that call ends, even between matches.
+        watcher = threading.Thread(target=_release_abandoned_slot, args=(thread, shared), daemon=True)
+        watcher.start()
+
+
+def _release_abandoned_slot(thread: threading.Thread, shared: SharedAbandonedState) -> None:
+    thread.join()
+    with shared.lock:
+        shared.active.value -= 1
 
 
 @dataclass(frozen=True)

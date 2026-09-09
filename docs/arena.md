@@ -43,7 +43,7 @@ Keep three configuration layers distinct:
 | --- | --- |
 | `GameRules` | Published game shape, player bounds, target score |
 | `MatchProtocol` | Communication, information policy, hand-based termination, per-player action budget |
-| `RunConfig` | Scheduling, attempt limits, deadlines, concurrency, tracing |
+| `RunConfig` | Scheduling, attempt limits, deadlines, execution backend, concurrency, tracing |
 
 The fixed shape is 104 cards, ten cards per hand, four rows, and capacity five;
 alternative values are rejected. Use the Python API for protocol fields that
@@ -63,6 +63,7 @@ uv run sixnimmt arena --help
 | `--communication` | Off | Explicit commitment and messaging |
 | `--scheduler` | Mode-dependent | `sequential` in classic, `round_robin` in communication |
 | `--concurrency` | 1 | Concurrent match workers |
+| `--backend` | `thread` | `thread` for shared-process workers; `process` for multiple CPU cores |
 | `--trace-dir` | Unset | New directory for logs and manifest |
 | `--match-action-limit` | 10,000 | Attempt limit across a match |
 | `--max-actions-per-match` | 10,000 | Older spelling; explicit `--match-action-limit` takes precedence |
@@ -100,15 +101,74 @@ the game outcome.
 
 ## Timeouts and concurrency
 
+`run_arena` defaults to a thread pool. Use the process backend for CPU-heavy
+baseline tournaments; `concurrency` is the maximum number of matches in flight
+and worker processes. Each match still advances one bot decision at a time.
+Threads remain useful when model calls spend most of their time waiting for I/O.
+
+```bash
+uv run sixnimmt arena --players-file examples/arena-baseline-players.json \
+  --games 100 --seed 1234 --backend process --concurrency 4
+```
+
+For Python, save the following in a script and protect the entry point with
+`if __name__ == "__main__"`. Workers use the `spawn` start method, so the entry
+module must be importable; run process arenas from scripts or the CLI, not an
+interactive interpreter or notebook cell.
+
+```python
+from sixnimmt.arena.players import PlayerConfig
+from sixnimmt.arena.runner import RunConfig, run_arena
+
+
+def main() -> None:
+    result = run_arena(
+        [PlayerConfig(bot="random"), PlayerConfig(bot="lowest_fitting_card")],
+        games=100,
+        seed=1234,
+        config=RunConfig(backend="process", concurrency=4),
+    )
+    print(result.finished, result.players)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Every worker constructs fresh bots for each match, including game zero. Match
+and bot seeds depend on game and seat indices, so changing the worker count or
+backend preserves deterministic game outcomes when timing limits do not intervene.
+Workers write separate trace files; only compact match summaries and manifest
+entries return to the parent. The parent aggregates scores and writes the final
+manifest in game-index order. Process startup has a cost, so very short runs may
+be faster with threads. `run_match` remains a local, single-match operation;
+backend and concurrency settings apply to `run_arena`.
+
+All built-in bots support process mode. Custom factories, options models, and
+resolved settings must be picklable and available from importable modules.
+Register them in the parent before calling `run_arena`; the resolved definitions
+are supplied to workers without requiring registration to run again there.
+Lambdas and local definitions are rejected before workers launch or traces are
+created. Bot instances themselves need not be picklable. Live `observer` callbacks
+are unsupported in process mode; use trace files or the thread backend.
+
 Without a deadline, a bot runs inline on the match worker. With a deadline, its
 call runs on a daemon thread. Timeout finalizes the failed match and discards
 late results, but cannot cancel arbitrary Python or provider work. Exceeding the
 abandoned-call bound stops submission. Statistics are skipped for timed-out
 seats because a late call could still mutate their state.
 
+In process mode, the abandoned-call count and active-call limit are shared across
+all workers. A call that eventually returns releases its active slot. Worker
+processes are reused between matches, and late actions never enter subsequent
+matches. A worker crash stops submission and raises `ArenaError`; the manifest
+records completed matches and the error, without counting lost results as
+completed matches. Initial-lineup construction errors are also fatal, although
+other process matches may already have been submitted when the error arrives.
+
 Set both the arena deadline and provider request timeouts for model experiments.
 `stop_on_failure` drains started matches; without deadlines, that can wait
-indefinitely. An `observer(state, events)` callback must be thread-safe under
+indefinitely. In thread mode, an `observer(state, events)` callback must be thread-safe under
 concurrency and must not feed privileged state back into bot decisions.
 
 Sources: [configuration](../src/sixnimmt/arena/config.py),

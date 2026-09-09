@@ -22,6 +22,14 @@ invoke model providers. The arena drives the engine and owns experiment
 scheduling and failure policy. Persistence depends on engine models; it does not
 choose moves. Analytics derives metrics from recorded history.
 
+Arena runs select a thread pool or a spawned process pool through `RunConfig`.
+Both use bounded submission and the same aggregation and failure policy. Process
+workers receive resolved player factories once at initialization, build fresh
+bots per match, and return compact summaries. Trace writing stays with each match
+worker; manifest writing stays in the parent. Deadline accounting uses shared
+run-wide counters in process mode. Engine transitions remain synchronous within
+each match, and process workers do not accept live observer callbacks.
+
 ## Engine API
 
 `create_match` creates and starts a match, returning state and initial events.
@@ -80,6 +88,14 @@ The volume suite checks 1,000 matches at each of 2, 3, 5, and 10 players in both
 classic and communication modes. It validates intermediate card conservation,
 row placement, scoring, private observations, and replay. These tests can take
 tens of minutes; use focused tests while iterating.
+
+For process-backend changes, the focused volume checks compare 100 mixed-baseline
+matches per communication mode against thread execution and replay every process
+trace:
+
+```bash
+uv run pytest tests/test_process_arena.py -m arena_slow
+```
 
 Tests are grouped by observable behavior: card/dealing vectors, model validation,
 resolution/termination, audience/view history, replay, arena limits and

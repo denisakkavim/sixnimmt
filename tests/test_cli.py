@@ -36,6 +36,19 @@ def test_same_arguments_produce_same_output(players_file: Path) -> None:
     assert invoke_arena(players_file).stdout == invoke_arena(players_file).stdout
 
 
+def test_process_backend_produces_same_cli_results(players_file: Path) -> None:
+    sequential = invoke_arena(players_file, "--games", "4")
+    parallel = invoke_arena(players_file, "--games", "4", "--backend", "process", "--concurrency", "2")
+    assert parallel.exit_code == 0, parallel.output
+    assert parallel.stdout == sequential.stdout
+
+
+def test_cli_rejects_unknown_backend(players_file: Path) -> None:
+    result = invoke_arena(players_file, "--backend", "unknown")
+    assert result.exit_code == 2
+    assert "unknown backend" in result.stderr
+
+
 @pytest.mark.parametrize(
     "contents, message",
     [

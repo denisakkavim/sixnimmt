@@ -67,6 +67,7 @@ def arena(
         ),
     ] = None,
     concurrency: Annotated[int, typer.Option("--concurrency")] = 1,
+    backend: Annotated[str, typer.Option("--backend", help="Match execution backend: thread or process.")] = "thread",
     decision_timeout: Annotated[
         float | None,
         typer.Option("--decision-timeout", help="Seconds per bot call; model bots should also set client timeouts."),
@@ -77,7 +78,7 @@ def arena(
     max_abandoned_decisions: Annotated[int | None, typer.Option("--max-abandoned-decisions")] = None,
     stop_on_failure: Annotated[bool, typer.Option("--stop-on-failure")] = False,
 ) -> None:
-    """Run an in-process arena and print outcomes and finished-match scores."""
+    """Run an arena and print outcomes and finished-match scores."""
     if stop_on_failure and decision_timeout is None:
         typer.echo(
             "Warning: --stop-on-failure without --decision-timeout can wait indefinitely for an in-flight bot.",
@@ -93,6 +94,7 @@ def arena(
                 scheduler=scheduler,
                 trace_dir=trace_dir,
                 concurrency=concurrency,
+                backend=backend,
                 decision_timeout_seconds=decision_timeout,
                 play_action_limit=play_action_limit,
                 match_action_limit=match_action_limit if match_action_limit is not None else max_actions_per_match,

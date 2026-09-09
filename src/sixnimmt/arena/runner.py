@@ -1,18 +1,20 @@
 """Sequential matches and bounded concurrent runs over the pure rules engine."""
 
 import hashlib
+import pickle
 from collections.abc import Callable, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import asdict, replace
+from concurrent.futures import FIRST_COMPLETED, Executor, Future, ProcessPoolExecutor, ThreadPoolExecutor, wait
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
+from multiprocessing import get_context
 from typing import Literal
 
 from sixnimmt.arena.bots import Bot, Rejection
 from sixnimmt.arena.bots.base import ActionBatch
 from sixnimmt.arena.config import RunConfig as RunConfig
 from sixnimmt.arena.config import resolve as resolve
-from sixnimmt.arena.decisions import AbandonedDecisions, Decision, decide
+from sixnimmt.arena.decisions import AbandonedDecisions, Decision, SharedAbandonedState, decide
 from sixnimmt.arena.players import PlayerConfig as PlayerConfig
 from sixnimmt.arena.players import ResolvedPlayer, resolve_players
 from sixnimmt.arena.results import ArenaResult as ArenaResult
@@ -48,6 +50,40 @@ DEFAULT_MAX_ACTIONS = 10_000
 
 class ArenaError(RuntimeError):
     """A run cannot proceed because its harness or recording failed."""
+
+
+@dataclass(frozen=True)
+class _GameSummary:
+    """Only the counters needed by the parent; histories stay in the worker."""
+
+    outcome: MatchOutcome
+    hands: int
+    actions: int
+    winners: tuple[str, ...]
+    player_scores: tuple[tuple[str, int], ...]
+    seat_actions: tuple[tuple[int, int], ...]
+
+    @classmethod
+    def from_result(cls, result: MatchResult) -> "_GameSummary":
+        return cls(
+            result.outcome,
+            result.final_state.hand_number,
+            result.actions,
+            result.winners,
+            tuple((player.player_id, player.total_score) for player in result.final_state.players),
+            result.seat_actions,
+        )
+
+
+@dataclass(frozen=True)
+class _GameJob:
+    seed: int
+    specs: Sequence[ResolvedPlayer]
+    seats: Sequence[PlayerSeat]
+    rules: GameRules
+    protocol: MatchProtocol
+    config: RunConfig
+    run_id: str
 
 
 def derive_seed(seed: int, domain: str, game_index: int, seat_index: int | None = None) -> int:
@@ -412,7 +448,7 @@ def _play_game(
     abandoned: AbandonedDecisions,
     observer: Observer | None,
     initial_bots: Sequence[Bot] | None = None,
-) -> tuple[MatchResult, ManifestMatch]:
+) -> tuple[_GameSummary, ManifestMatch | None]:
     match_seed = derive_seed(seed, "match", index)
     match_id = f"arena_{index}"
     filename = f"{run_id}_{index}"
@@ -428,6 +464,9 @@ def _play_game(
                     build_error = error
                     break
         if build_error is not None:
+            if index == 0 and config.backend == "process":
+                msg = f"cannot construct first game's lineup: {build_error!r}"
+                raise ArenaError(msg) from build_error
             match = _Match(match_seed, match_id, seats, rules, protocol, config, sink, observer)
             result = match.finish(MatchOutcome.FAILED, f"player_{len(bots) + 1}", repr(build_error))
         else:
@@ -459,7 +498,7 @@ def _play_game(
             seat_stats=stats,
             stats_errors=errors,
         )
-        return result, entry
+        return _GameSummary.from_result(result), entry if config.trace_dir is not None else None
     finally:
         sink.close()
 
@@ -477,18 +516,18 @@ class _Aggregate:
         self.accepted = [0] * len(players)
         self.rejected = [0] * len(players)
 
-    def add(self, result: MatchResult) -> None:
+    def add(self, result: _GameSummary) -> None:
         self.counts[result.outcome] += 1
-        self.hands += result.final_state.hand_number
+        self.hands += result.hands
         self.actions += result.actions
-        for index, player in enumerate(result.final_state.players):
+        for index, (player_id, score) in enumerate(result.player_scores):
             accepted, rejected = result.seat_actions[index]
             self.accepted[index] += accepted
             self.rejected[index] += rejected
             if result.outcome != MatchOutcome.FINISHED:
                 continue
-            self.scores[index] += player.total_score
-            if player.player_id in result.winners:
+            self.scores[index] += score
+            if player_id in result.winners:
                 if len(result.winners) == 1:
                     self.wins[index] += 1
                 else:
@@ -528,66 +567,130 @@ class _Aggregate:
         )
 
 
-def _drive_games(
+_process_job: _GameJob | None = None
+_process_abandoned: AbandonedDecisions | None = None
+
+
+def _initialise_process_worker(job: _GameJob, shared: SharedAbandonedState | None) -> None:
+    global _process_job, _process_abandoned
+    _process_job = job
+    _process_abandoned = AbandonedDecisions(job.config.max_abandoned_decisions or 0, shared)
+
+
+def _play_process_game(index: int) -> tuple[_GameSummary, ManifestMatch | None]:
+    job = _process_job
+    abandoned = _process_abandoned
+    if job is None or abandoned is None:
+        msg = "process worker was not initialized"
+        raise ArenaError(msg)
+    return _play_game(
+        index, job.seed, job.specs, job.seats, job.rules, job.protocol, job.config, job.run_id, abandoned, None
+    )
+
+
+def _play_thread_game(
+    job: _GameJob, abandoned: AbandonedDecisions, observer: Observer | None, initial_bots: Sequence[Bot], index: int
+) -> tuple[_GameSummary, ManifestMatch | None]:
+    return _play_game(
+        index,
+        job.seed,
+        job.specs,
+        job.seats,
+        job.rules,
+        job.protocol,
+        job.config,
+        job.run_id,
+        abandoned,
+        observer,
+        initial_bots if index == 0 else None,
+    )
+
+
+def _collect_games(
+    pool: Executor,
+    play_game: Callable[[int], tuple[_GameSummary, ManifestMatch | None]],
     games: int,
-    seed: int,
-    specs: Sequence[ResolvedPlayer],
-    seats: Sequence[PlayerSeat],
-    rules: GameRules,
-    protocol: MatchProtocol,
     config: RunConfig,
-    run_id: str,
     abandoned: AbandonedDecisions,
-    observer: Observer | None,
-    initial_bots: Sequence[Bot],
     aggregate: _Aggregate,
     entries: list[ManifestMatch],
 ) -> tuple[int, BaseException | None]:
     started = 0
     fatal: BaseException | None = None
     stop = False
-    with ThreadPoolExecutor(max_workers=config.concurrency, thread_name_prefix="arena-match") as pool:
-        pending: dict[Future[tuple[MatchResult, ManifestMatch]], int] = {}
-        while pending or (started < games and not stop):
-            while (
-                started < games and len(pending) < config.concurrency and not stop and not abandoned.exceeded.is_set()
-            ):
-                future = pool.submit(
-                    _play_game,
-                    started,
-                    seed,
-                    specs,
-                    seats,
-                    rules,
-                    protocol,
-                    config,
-                    run_id,
-                    abandoned,
-                    observer,
-                    initial_bots if started == 0 else None,
-                )
-                pending[future] = started
-                started += 1
-            if not pending:
-                break
-            completed, _ = wait(pending, return_when=FIRST_COMPLETED)
-            for future in completed:
-                pending.pop(future)
-                try:
-                    result, entry = future.result()
-                except Exception as error:
-                    fatal = fatal or error
-                    stop = True
-                    continue
-                aggregate.add(result)
-                if config.trace_dir is not None:
-                    entries.append(entry)
-                if config.stop_on_failure and result.outcome == MatchOutcome.FAILED:
-                    stop = True
-            if abandoned.exceeded.is_set():
+    pending: set[Future[tuple[_GameSummary, ManifestMatch | None]]] = set()
+    while pending or (started < games and not stop):
+        while started < games and len(pending) < config.concurrency and not stop and not abandoned.exceeded.is_set():
+            try:
+                future = pool.submit(play_game, started)
+            except Exception as error:
+                fatal = fatal or error
                 stop = True
-                fatal = fatal or ArenaError("max_abandoned_decisions exceeded; stopped submitting matches")
+                break
+            pending.add(future)
+            started += 1
+        if not pending:
+            break
+        completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+        for future in completed:
+            pending.remove(future)
+            try:
+                result, entry = future.result()
+            except Exception as error:
+                fatal = fatal or error
+                stop = True
+                continue
+            aggregate.add(result)
+            if entry is not None:
+                entries.append(entry)
+            if config.stop_on_failure and result.outcome == MatchOutcome.FAILED:
+                stop = True
+        if abandoned.exceeded.is_set():
+            stop = True
+            fatal = fatal or ArenaError("max_abandoned_decisions exceeded; stopped submitting matches")
     return started, fatal
+
+
+def _drive_games(
+    games: int,
+    job: _GameJob,
+    abandoned: AbandonedDecisions,
+    observer: Observer | None,
+    initial_bots: Sequence[Bot],
+    aggregate: _Aggregate,
+    entries: list[ManifestMatch],
+) -> tuple[int, BaseException | None]:
+    config = job.config
+    pool: Executor
+    play_game: Callable[[int], tuple[_GameSummary, ManifestMatch | None]]
+    if config.backend == "process":
+        pool = ProcessPoolExecutor(
+            max_workers=config.concurrency,
+            mp_context=get_context("spawn"),
+            initializer=_initialise_process_worker,
+            initargs=(job, abandoned.shared),
+        )
+        play_game = _play_process_game
+    else:
+        pool = ThreadPoolExecutor(max_workers=config.concurrency, thread_name_prefix="arena-match")
+        play_game = partial(_play_thread_game, job, abandoned, observer, initial_bots)
+    with pool:
+        return _collect_games(pool, play_game, games, config, abandoned, aggregate, entries)
+
+
+def _validate_process_players(specs: Sequence[ResolvedPlayer], observer: Observer | None) -> None:
+    if observer is not None:
+        msg = "process backend does not support observer callbacks; use traces or the thread backend"
+        raise ValueError(msg)
+    for spec in specs:
+        try:
+            pickle.dumps(spec)
+        except Exception as error:
+            msg = (
+                f"player {spec.name!r} cannot be sent to process workers; "
+                "use an importable module-level factory and options model, not a lambda or local definition"
+            )
+            raise ValueError(msg) from error
 
 
 def run_arena(
@@ -624,28 +727,29 @@ def run_arena(
         )
         for i, spec in enumerate(specs)
     ]
-    # Construct game zero before any submission; later construction failures are
-    # transient match outcomes, while a broken initial lineup is a run error.
-    try:
-        initial_bots = [spec.build(derive_seed(seed, "bot", 0, i)) for i, spec in enumerate(specs)]
-    except Exception as error:
-        msg = f"cannot construct first game's lineup: {error!r}"
-        raise ArenaError(msg) from error
+    initial_bots: list[Bot] = []
+    if config.backend == "process":
+        _validate_process_players(specs, observer)
+    else:
+        # Thread mode retains its eager first-lineup validation. Process mode
+        # constructs every bot in its worker, including the first lineup.
+        try:
+            initial_bots = [spec.build(derive_seed(seed, "bot", 0, i)) for i, spec in enumerate(specs)]
+        except Exception as error:
+            msg = f"cannot construct first game's lineup: {error!r}"
+            raise ArenaError(msg) from error
     run_id = f"arena_{datetime.now(UTC):%Y%m%dT%H%M%SZ}_{seed}"
     if config.trace_dir is not None:
         config.trace_dir.mkdir(parents=True, exist_ok=False)
-    abandoned = AbandonedDecisions(config.max_abandoned_decisions or 0)
+    shared = None
+    if config.backend == "process" and config.decision_timeout_seconds is not None:
+        shared = SharedAbandonedState.create()
+    abandoned = AbandonedDecisions(config.max_abandoned_decisions or 0, shared)
     aggregate = _Aggregate([spec.name for spec in specs], [seat.display_name for seat in seats])
     entries: list[ManifestMatch] = []
     started, fatal = _drive_games(
         games,
-        seed,
-        specs,
-        seats,
-        rules,
-        protocol,
-        config,
-        run_id,
+        _GameJob(seed, specs, seats, rules, protocol, config, run_id),
         abandoned,
         observer,
         initial_bots,

@@ -79,6 +79,12 @@ and validated option keywords. Put registration in your Python entry point
 before invoking `run_arena`; a separate CLI process will not inherit a registry
 mutation from another process.
 
+For `RunConfig(backend="process")`, define the factory and options model at
+module scope in an importable Python module. Resolved definitions and options
+are sent to each worker; bot instances are constructed there and do not need to
+be picklable. Lambdas and local definitions are unsupported. Protect the script's
+`run_arena` call with a `__main__` guard; see [process execution](arena.md#timeouts-and-concurrency).
+
 The following extends the example above:
 
 ```python
