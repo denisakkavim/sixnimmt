@@ -5,7 +5,7 @@ from itertools import pairwise
 
 import pytest
 
-from sixnimmt.arena.bots import RandomBot, Rejection
+from sixnimmt.arena.bots import REGISTRY, RandomBot, Rejection
 from sixnimmt.arena.runner import derive_seed, run_match
 from sixnimmt.engine.actions import Action, SelectCardAction, SendMessageAction
 from sixnimmt.engine.audience import Viewer
@@ -298,3 +298,35 @@ def test_communication_matches_preserve_intermediate_invariants(player_count: in
 @pytest.mark.parametrize("player_count", [2, 3, 5, 10])
 def test_thousand_communication_matches_preserve_intermediate_invariants(player_count: int) -> None:
     _validate_matches(player_count, 1000, communication=True)
+
+
+@pytest.mark.arena_slow
+@pytest.mark.parametrize("communication", [False, True])
+def test_mixed_baselines_preserve_intermediate_invariants(communication: bool) -> None:
+    strategies = (
+        "random",
+        "lowest_card",
+        "highest_card",
+        "lowest_fitting_card",
+        "highest_fitting_card",
+        "closest_gap",
+        "coldest_row",
+        "hand_flexibility",
+    )
+    for game in range(100):
+        ledger = MatchLedger(len(strategies))
+        # Rotate policies through seats while varying deals and private RNG seeds.
+        rotation = game % len(strategies)
+        lineup = strategies[rotation:] + strategies[:rotation]
+        bots = [REGISTRY[name].build(derive_seed(1234, "bot", game, seat)) for seat, name in enumerate(lineup)]
+        result = run_match(
+            bots,
+            derive_seed(1234, "match", game),
+            observer=ledger,
+            protocol=MatchProtocol(communication_enabled=communication),
+        )
+        assert result.outcome == "finished"
+        assert ledger.finished
+        assert result.actions_rejected == 0
+        assert result.winners == ledger.winners
+        _assert_replay_matches(ledger.log, result.final_state)

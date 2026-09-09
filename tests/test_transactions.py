@@ -2,7 +2,7 @@
 
 import pytest
 
-from sixnimmt.arena.bots import GreedyBot
+from sixnimmt.arena.bots import LowestFittingCardBot
 from sixnimmt.arena.bots.base import ActionBatch, Rejection
 from sixnimmt.arena.runner import RunConfig, run_match
 from sixnimmt.engine.actions import Action, CommitAction, SelectCardAction, SendMessageAction
@@ -42,7 +42,7 @@ def test_rejected_transaction_preserves_state_and_memory_before_retry(invalid: s
     bot = TransactionBot(invalid)
     failed_size = 4 if invalid == "after_commit" else 3
     result = run_match(
-        [bot, GreedyBot()],
+        [bot, LowestFittingCardBot()],
         123,
         protocol=MatchProtocol(communication_enabled=True),
         config=RunConfig(match_action_limit=failed_size + 3),
@@ -66,7 +66,7 @@ def test_rejected_transaction_preserves_state_and_memory_before_retry(invalid: s
 def test_transaction_exceeding_remaining_budget_applies_nothing() -> None:
     bot = TransactionBot()
     result = run_match(
-        [bot, GreedyBot()],
+        [bot, LowestFittingCardBot()],
         123,
         protocol=MatchProtocol(communication_enabled=True),
         config=RunConfig(match_action_limit=2),
@@ -97,7 +97,7 @@ def test_failed_transactions_count_toward_rejection_limit() -> None:
 
     bot = AlwaysInvalid("card")
     result = run_match(
-        [bot, GreedyBot()],
+        [bot, LowestFittingCardBot()],
         123,
         protocol=MatchProtocol(communication_enabled=True),
         config=RunConfig(decision_rejection_limit=2),
@@ -113,7 +113,7 @@ def test_transaction_traces_share_offered_view_and_count_latency_once(tmp_path) 
 
     directory = tmp_path / "transaction"
     result = run_match(
-        [TransactionBot(), GreedyBot()],
+        [TransactionBot(), LowestFittingCardBot()],
         123,
         protocol=MatchProtocol(communication_enabled=True),
         config=RunConfig(match_action_limit=3, trace_dir=directory),

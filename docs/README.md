@@ -13,6 +13,7 @@ trace. Then use the following guides:
 | [Game rules and information](game-rules.md) | Cards, placement, scoring, communication, and what each player can see |
 | [Running arenas](arena.md) | Player files, Python API, CLI options, scheduling, limits, and outcomes |
 | [Writing bots](bots.md) | Bot contract, registration, rejection feedback, and atomic action batches |
+| [Strategy catalogue](strategy-families.md) | Baseline heuristics and proposed experimental strategies |
 | [LLM players](llm-players.md) | Endpoint configuration, prompts, tools, private memory, and deadlines |
 | [Traces and replay](traces.md) | Event/action/model logs, manifests, determinism, recovery, and analytics |
 | [Architecture and development](development.md) | Module responsibilities, engine APIs, tests, and contribution workflow |

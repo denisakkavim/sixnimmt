@@ -1,0 +1,34 @@
+[
+  {
+    "bot": "random",
+    "display_name": "Random"
+  },
+  {
+    "bot": "lowest_card",
+    "display_name": "Lowest card"
+  },
+  {
+    "bot": "highest_card",
+    "display_name": "Highest card"
+  },
+  {
+    "bot": "lowest_fitting_card",
+    "display_name": "Lowest fitting card"
+  },
+  {
+    "bot": "highest_fitting_card",
+    "display_name": "Highest fitting card"
+  },
+  {
+    "bot": "closest_gap",
+    "display_name": "Closest gap"
+  },
+  {
+    "bot": "coldest_row",
+    "display_name": "Coldest row"
+  },
+  {
+    "bot": "hand_flexibility",
+    "display_name": "Hand flexibility"
+  }
+]

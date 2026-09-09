@@ -36,13 +36,13 @@ package does not re-export the APIs below.
 ## Run and inspect one match
 
 ```python
-from sixnimmt.arena.bots import GreedyBot, RandomBot
+from sixnimmt.arena.bots import LowestFittingCardBot, RandomBot
 from sixnimmt.arena.results import MatchOutcome
 from sixnimmt.arena.runner import run_match
 from sixnimmt.engine.rules import MatchProtocol
 
 result = run_match(
-    bots=[RandomBot(11), GreedyBot()],
+    bots=[RandomBot(11), LowestFittingCardBot()],
     seed=1234,
     match_id="example",
     protocol=MatchProtocol(end_condition="fixed_hands", hands=1),
@@ -85,7 +85,7 @@ from sixnimmt.engine.rules import MatchProtocol
 arena = run_arena(
     players=[
         PlayerConfig(bot="random", display_name="Alice"),
-        PlayerConfig(bot="greedy", display_name="Bob"),
+        PlayerConfig(bot="lowest_fitting_card", display_name="Bob"),
     ],
     games=10,
     seed=1234,
@@ -170,7 +170,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from sixnimmt.analytics.summary import summarise
-from sixnimmt.arena.bots import GreedyBot, RandomBot
+from sixnimmt.arena.bots import LowestFittingCardBot, RandomBot
 from sixnimmt.arena.runner import RunConfig, run_match
 from sixnimmt.engine.replay import replay_events
 from sixnimmt.engine.rules import MatchProtocol
@@ -180,7 +180,7 @@ from sixnimmt.persistence.sink import read_action_log, read_event_log
 with TemporaryDirectory() as temporary:
     trace_dir = Path(temporary) / "experiment"
     live = run_match(
-        [RandomBot(11), GreedyBot()],
+        [RandomBot(11), LowestFittingCardBot()],
         seed=1234,
         protocol=MatchProtocol(end_condition="fixed_hands", hands=1),
         config=RunConfig(trace_dir=trace_dir),

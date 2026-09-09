@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from sixnimmt.arena.bots import REGISTRY, RandomBot, Rejection
+from sixnimmt.arena.bots import REGISTRY, LowestFittingCardBot, RandomBot, Rejection
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.arena.runner import MatchOutcome, derive_seed, run_arena, run_match
 from sixnimmt.engine.actions import Action, ChooseRowAction, SelectCardAction
@@ -13,7 +13,7 @@ from sixnimmt.engine.events import Event
 from sixnimmt.engine.fold import build_view
 from sixnimmt.engine.setup import create_match
 from sixnimmt.engine.state import MatchState, Phase, PlayerSeat
-from sixnimmt.engine.views import MatchView, ViewRole
+from sixnimmt.engine.views import MatchView, RowView, ViewRole
 
 
 @pytest.fixture
@@ -32,15 +32,41 @@ def test_random_bot_selects_only_from_own_hand(observation: MatchView) -> None:
     assert choices == set(observation.you.hand)
 
 
-def test_random_bot_can_choose_every_row(observation: MatchView) -> None:
-    bot = RandomBot(123)
-    choice = observation.model_copy(update={"legal_actions": ("choose_row",), "phase": Phase.AWAITING_ROW_CHOICE})
-    choices: set[int] = set()
-    for _ in range(100):
-        action = bot.act(choice)
-        assert isinstance(action, ChooseRowAction)
-        choices.add(action.row_index)
-    assert choices == {0, 1, 2, 3}
+@pytest.mark.parametrize("bot", [RandomBot(123), LowestFittingCardBot()])
+@pytest.mark.parametrize(
+    ("cards", "expected_row"),
+    [
+        ([(55,), (10,), (1, 2), (11,)], 2),
+        ([(10,), (11,), (20,), (55,)], 0),
+    ],
+    ids=["sum-bull-heads", "lowest-index-on-tie"],
+)
+def test_baselines_choose_cheapest_row(
+    observation: MatchView, bot: RandomBot | LowestFittingCardBot, cards: list[tuple[int, ...]], expected_row: int
+) -> None:
+    rows = tuple(RowView(index=index, cards=row) for index, row in enumerate(cards))
+    choice = observation.model_copy(update={"legal_actions": ("choose_row",), "rows": tuple(reversed(rows))})
+    assert bot.act(choice) == ChooseRowAction(row_index=expected_row)
+
+
+def test_random_row_choice_does_not_consume_card_randomness(observation: MatchView) -> None:
+    bot, control = RandomBot(123), RandomBot(123)
+    choice = observation.model_copy(update={"legal_actions": ("choose_row",)})
+    bot.act(choice)
+    assert [bot.act(observation) for _ in range(20)] == [control.act(observation) for _ in range(20)]
+
+
+@pytest.mark.parametrize(
+    ("hand", "expected_card"),
+    [((1, 25, 61, 62), 61), ((1, 25), 1), ((25, 26), 25)],
+    ids=["lowest-fitting", "cheapest-pickup", "lowest-card-on-cost-tie"],
+)
+def test_lowest_fitting_card_selection(observation: MatchView, hand: tuple[int, ...], expected_card: int) -> None:
+    rows = tuple(
+        RowView(index=index, cards=cards) for index, cards in enumerate([(10,), (20, 21, 22, 23, 24), (60,), (90,)])
+    )
+    view = observation.model_copy(update={"rows": rows, "you": observation.you.model_copy(update={"hand": hand})})
+    assert LowestFittingCardBot().act(view) == SelectCardAction(card=expected_card)
 
 
 def test_random_bot_is_reproducible(observation: MatchView) -> None:
@@ -176,10 +202,10 @@ def test_only_awaited_player_is_scheduled_for_row_choice() -> None:
 
 
 def test_arena_counts_sole_wins_and_shared_wins_separately() -> None:
-    result = run_arena([PlayerConfig(bot="random"), PlayerConfig(bot="random")], 10, 1234)
-    assert [player.wins for player in result.players] == [3, 6]
+    result = run_arena([PlayerConfig(bot="random"), PlayerConfig(bot="random")], 10, 6)
+    assert [player.wins for player in result.players] == [4, 5]
     assert [player.ties for player in result.players] == [1, 1]
-    assert [player.total_score for player in result.players] == [689, 594]
+    assert [player.total_score for player in result.players] == [605, 611]
 
 
 @pytest.mark.parametrize("count", [0, 1, 11])

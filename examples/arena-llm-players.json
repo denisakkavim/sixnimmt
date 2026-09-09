@@ -11,8 +11,8 @@
     }
   },
   {
-    "bot": "greedy",
-    "display_name": "Greedy baseline"
+    "bot": "lowest_fitting_card",
+    "display_name": "Lowest fitting card baseline"
   },
   {
     "bot": "random",

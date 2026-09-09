@@ -14,7 +14,7 @@ You can create your own JSON file with two to ten entries:
 ```json
 [
   {"bot": "random", "display_name": "Alice"},
-  {"bot": "greedy", "display_name": "Bob"}
+  {"bot": "lowest_fitting_card", "display_name": "Bob"}
 ]
 ```
 
@@ -50,12 +50,12 @@ For installation in another project and more integration examples, see
 [Using sixnimmt from Python](python-api.md).
 
 ```python
-from sixnimmt.arena.bots import GreedyBot, RandomBot
+from sixnimmt.arena.bots import LowestFittingCardBot, RandomBot
 from sixnimmt.arena.runner import run_match
 from sixnimmt.engine.rules import MatchProtocol
 
 result = run_match(
-    [RandomBot(11), GreedyBot()],
+    [RandomBot(11), LowestFittingCardBot()],
     seed=1234,
     protocol=MatchProtocol(end_condition="fixed_hands", hands=1),
 )
@@ -70,6 +70,6 @@ each match from [player configurations](arena.md).
 ## Enable communication
 
 Add `--communication` to an arena command. This enables messages and explicit
-commitment; it does not force bots to talk. The bundled random and greedy bots
+commitment; it does not force bots to talk. The bundled random and lowest fitting card bots
 select and commit without sending messages. Custom bots and LLM players can use
 the extra actions. See [Game rules and information](game-rules.md).

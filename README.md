@@ -6,8 +6,8 @@ the recorded games and compare their results.
 
 The arena supports classic play and communication with table/direct messages,
 explicit commitment, and revised selections. Bots receive filtered player views;
-the engine validates their actions. Built-in strategies include `random`,
-`greedy`, `llm`, and `llm_memory`.
+the engine validates their actions. Built-in strategies include eight [baseline heuristics](docs/bots.md#built-in-baselines-and-board-and-hand-heuristics),
+plus `llm` and `llm_memory`.
 
 ## Quick start
 
@@ -30,10 +30,10 @@ Use `uv run sixnimmt --help` to see the `arena`, `replay`, and `summarise` comma
 ## Python usage
 
 ```python
-from sixnimmt.arena.bots import GreedyBot, RandomBot
+from sixnimmt.arena.bots import LowestFittingCardBot, RandomBot
 from sixnimmt.arena.runner import run_match
 
-result = run_match([RandomBot(11), GreedyBot()], seed=1234)
+result = run_match([RandomBot(11), LowestFittingCardBot()], seed=1234)
 print(result.outcome, result.winners)
 print([(player.player_id, player.total_score) for player in result.final_state.players])
 ```

@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from sixnimmt.analytics.summary import summarise
-from sixnimmt.arena.bots import REGISTRY, BotSpec, GreedyBot, RandomBot, Rejection
+from sixnimmt.arena.bots import REGISTRY, BotSpec, LowestFittingCardBot, RandomBot, Rejection
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.arena.runner import ArenaError, MatchOutcome, RunConfig, resolve, run_arena, run_match
 from sixnimmt.arena.scheduling import SequentialScheduler
@@ -234,7 +234,7 @@ def test_live_folds_and_replay_match_every_transition(short_protocol: MatchProto
                     assert cards.isdisjoint(player.hand)
 
     run_match(
-        [RandomBot(1), RandomBot(2), GreedyBot()],
+        [RandomBot(1), RandomBot(2), LowestFittingCardBot()],
         123,
         observer=inspect,
         protocol=short_protocol.model_copy(update={"communication_enabled": communication}),
@@ -261,7 +261,7 @@ def test_concurrency_preserves_results_and_event_logs(tmp_path: Path, short_prot
     directories = [tmp_path / "one", tmp_path / "eight"]
     results = [
         run_arena(
-            [PlayerConfig(bot="random"), PlayerConfig(bot="greedy")],
+            [PlayerConfig(bot="random"), PlayerConfig(bot="lowest_fitting_card")],
             8,
             123,
             protocol=short_protocol,
@@ -554,19 +554,19 @@ def test_scheduler_failure_stops_run(monkeypatch: pytest.MonkeyPatch) -> None:
         run_arena([PlayerConfig(bot="random")] * 2, 3, 123)
 
 
-def test_greedy_chooses_lowest_cost_card_and_lowest_row_on_ties() -> None:
+def test_lowest_fitting_card_chooses_lowest_cost_card_and_lowest_row_on_ties() -> None:
     from sixnimmt.engine.setup import create_match
     from sixnimmt.engine.views import RowView
 
-    _, events = create_match("greedy", ["a", "b"], 123)
+    _, events = create_match("lowest_fitting_card", ["a", "b"], 123)
     view = build_view(events, Viewer(ViewRole.PLAYER, "a"))
     rows = tuple(
         RowView(index=index, cards=cards) for index, cards in enumerate([(10,), (20, 21, 22, 23, 24), (60,), (90,)])
     )
     view = view.model_copy(update={"rows": rows, "you": view.you.model_copy(update={"hand": (1, 25, 61, 62)})})
-    assert GreedyBot().act(view) == SelectCardAction(card=61)
+    assert LowestFittingCardBot().act(view) == SelectCardAction(card=61)
     view = view.model_copy(update={"legal_actions": ("choose_row",)})
-    assert GreedyBot().act(view) == ChooseRowAction(row_index=0)
+    assert LowestFittingCardBot().act(view) == ChooseRowAction(row_index=0)
 
 
 def test_round_robin_resumes_and_skips_committed_seats() -> None:

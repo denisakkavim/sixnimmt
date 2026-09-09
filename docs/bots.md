@@ -14,7 +14,7 @@ from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, Selec
 from sixnimmt.engine.views import MatchView
 
 
-class LowestCardBot:
+class SimpleBot:
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
         if "choose_row" in view.legal_actions:
             return ChooseRowAction(row_index=view.rows[0].index)
@@ -23,13 +23,54 @@ class LowestCardBot:
         return SelectCardAction(card=min(view.you.hand))
 
 
-result = run_match([LowestCardBot(), RandomBot(22)], seed=1234)
+result = run_match([SimpleBot(), RandomBot(22)], seed=1234)
 print(result.outcome)
 ```
 
 The first-row choice is intentionally simple. A competitive bot should consider
-row penalties and placement risk. The bundled [greedy bot](../src/sixnimmt/arena/bots/greedy.py)
-provides a more useful baseline.
+row penalties and placement risk. The bundled [lowest fitting card bot](../src/sixnimmt/arena/bots/lowest_fitting_card.py)
+plays the lowest card that currently fits. If none fits, it minimises immediate
+pickup cost, breaking ties by lowest card. Its Python class is
+`LowestFittingCardBot` and its registry name is `lowest_fitting_card` (formerly
+`GreedyBot` and `greedy`).
+
+All bundled baseline bots take the row with the fewest bull heads, breaking ties
+by row index. `RandomBot` selects cards uniformly using a private seeded RNG;
+row choices do not consume randomness. This is random strategy version 2, so
+seeded matches can differ from version 1, which also chose rows randomly.
+
+## Built-in baselines and board-and-hand heuristics
+
+An [example player file](../examples/arena-baseline-players.json) includes all eight
+strategies for a mixed arena.
+
+All these strategies accept no options and are deterministic for a given seed.
+Only `random` uses the seed; the other strategies follow fixed rules. Each uses
+the cheapest-row rule and selects then commits in communication mode without
+sending messages.
+
+| Registry name | Python class | Card selection |
+| --- | --- | --- |
+| `random` | `RandomBot` | Uniform random card |
+| `lowest_card` | `LowestCardBot` | Lowest card in hand |
+| `highest_card` | `HighestCardBot` | Highest card in hand |
+| `lowest_fitting_card` | `LowestFittingCardBot` | Lowest currently fitting card |
+| `highest_fitting_card` | `HighestFittingCardBot` | Highest currently fitting card |
+| `closest_gap` | `ClosestGapBot` | Smallest gap to the applicable non-full row, then lowest card |
+| `coldest_row` | `ColdestRowBot` | Fewest cards in the applicable non-full row, then lowest card |
+| `hand_flexibility` | `HandFlexibilityBot` | Minimum immediate cost, then remaining-hand coverage distance, then lowest card |
+
+A currently fitting card targets the row with the greatest end below it, and that
+row must contain fewer than five cards. Earlier opponent placements can change
+whether it fits. The four fitting-based heuristics fall back to minimum immediate
+pickup cost, then lowest card, when no card currently fits. This also applies to
+`highest_fitting_card`: only its fitting-card preference is reversed.
+
+Hand flexibility measures the average distance from every value in `1..104` to
+its nearest remaining card. Lower is better; seen values remain included. It skips
+coverage on the final card and never accepts extra immediate penalties for better
+coverage. These rules are fixed. See the [strategy catalogue](strategy-families.md)
+for the experimental rationale.
 
 ## Register a configurable strategy
 
@@ -46,17 +87,17 @@ from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.arena.runner import run_arena
 
 
-def build_lowest(seed: int) -> LowestCardBot:
-    return LowestCardBot()
+def build_simple(seed: int) -> SimpleBot:
+    return SimpleBot()
 
 
-REGISTRY["lowest"] = BotSpec(
-    name="lowest",
-    build=build_lowest,
+REGISTRY["simple"] = BotSpec(
+    name="simple",
+    build=build_simple,
     deterministic=True,
-    metadata={"strategy_id": "lowest", "version": "1"},
+    metadata={"strategy_id": "simple", "version": "1"},
 )
-result = run_arena([PlayerConfig(bot="lowest"), PlayerConfig(bot="random")], games=2, seed=1234)
+result = run_arena([PlayerConfig(bot="simple"), PlayerConfig(bot="random")], games=2, seed=1234)
 ```
 
 For configurable factories, subclass `BotOptions` with Pydantic fields and pass

@@ -7,13 +7,14 @@ The CLI reads a JSON array of two to ten player objects:
 ```json
 [
   {"bot": "random", "display_name": "Alice", "options": {}, "agent_metadata": {"group": "baseline"}},
-  {"bot": "greedy", "display_name": "Bob"}
+  {"bot": "lowest_fitting_card", "display_name": "Bob"}
 ]
 ```
 
-`bot` names a registered strategy: `random`, `greedy`, `llm`, or `llm_memory`.
+`bot` names a registered strategy: one of the eight [baseline heuristics](bots.md#built-in-baselines-and-board-and-hand-heuristics),
+`llm`, or `llm_memory`.
 `options` are validated by that strategy's options model; unknown keys fail
-validation. Random and greedy accept no options. Names default to `Player 1`,
+validation. The baseline heuristics accept no options. Names default to `Player 1`,
 `Player 2`, etc. IDs remain `player_1`, `player_2`, etc. Seat metadata is recorded
 for experiment analysis. It overrides registry metadata, while the arena supplies
 the `bot_options` metadata field itself. Options and metadata must not contain
@@ -27,7 +28,7 @@ from sixnimmt.arena.runner import RunConfig, run_arena
 from sixnimmt.engine.rules import MatchProtocol
 
 result = run_arena(
-    players=[PlayerConfig(bot="random"), PlayerConfig(bot="greedy")],
+    players=[PlayerConfig(bot="random"), PlayerConfig(bot="lowest_fitting_card")],
     games=10,
     seed=1234,
     protocol=MatchProtocol(end_condition="fixed_hands", hands=1),

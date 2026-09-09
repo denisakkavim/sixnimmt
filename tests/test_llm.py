@@ -8,7 +8,7 @@ import pytest
 from openai import OpenAI
 from pydantic import ValidationError
 
-from sixnimmt.arena.bots import GreedyBot
+from sixnimmt.arena.bots import LowestFittingCardBot
 from sixnimmt.arena.bots.base import ActionBatch
 from sixnimmt.arena.bots.llm import LLMBot, LLMOptions, ModelDecisionError
 from sixnimmt.arena.bots.llm_memory import LLMMemoryBot, LLMMemoryOptions
@@ -174,7 +174,7 @@ def test_provider_compatibility_flags_can_be_omitted(endpoint: Endpoint, view: M
 @pytest.mark.parametrize("bot_type", [LLMBot, LLMMemoryBot])
 def test_model_matches_finish_and_replay(endpoint: Endpoint, protocol: MatchProtocol, bot_type: type[LLMBot]) -> None:
     bot = bot_type(1, model="local", base_url="http://localhost:11434/v1")
-    result = run_match([bot, GreedyBot()], 123, protocol=protocol)
+    result = run_match([bot, LowestFittingCardBot()], 123, protocol=protocol)
     assert result.outcome == "finished"
     replayed = replay_events(result.events).state
     # The event log preserves unused card membership, not shuffled order.
@@ -187,7 +187,7 @@ def test_model_matches_finish_and_replay(endpoint: Endpoint, protocol: MatchProt
 
 def test_engine_rejection_is_returned_to_model(endpoint: Endpoint) -> None:
     endpoint.illegal_card_once = True
-    result = run_match([LLMBot(1, model="local", base_url="http://localhost:11434/v1"), GreedyBot()], 123)
+    result = run_match([LLMBot(1, model="local", base_url="http://localhost:11434/v1"), LowestFittingCardBot()], 123)
     assert result.outcome == "finished"
     assert result.actions_rejected == 1
     retry = endpoint.requests[1]["messages"][1]["content"]
@@ -206,7 +206,7 @@ def test_configured_credentials_stay_out_of_manifest(
                 bot="llm",
                 options={"model": "local", "base_url": "https://models.example/v1", "api_key_env": "ARENA_TEST_KEY"},
             ),
-            PlayerConfig(bot="greedy"),
+            PlayerConfig(bot="lowest_fitting_card"),
         ],
         2,
         123,
@@ -418,7 +418,7 @@ def test_model_trace_preserves_requests_reasoning_and_repairs(endpoint: Endpoint
                     "provider_options": {"reasoning_effort": "low"},
                 },
             ),
-            PlayerConfig(bot="greedy"),
+            PlayerConfig(bot="lowest_fitting_card"),
         ],
         1,
         123,
@@ -529,7 +529,11 @@ def test_memory_can_be_cleared(endpoint: Endpoint, view: MatchView) -> None:
 
 
 def test_both_model_types_receive_the_same_shared_game_observation(endpoint: Endpoint) -> None:
-    result = run_match([GreedyBot(), GreedyBot()], 123, protocol=MatchProtocol(end_condition="fixed_hands", hands=1))
+    result = run_match(
+        [LowestFittingCardBot(), LowestFittingCardBot()],
+        123,
+        protocol=MatchProtocol(end_condition="fixed_hands", hands=1),
+    )
     start = next(index for index, event in enumerate(result.events) if event.type == "play_started" and event.play == 2)
     view = build_view(result.events[: start + 1], Viewer(ViewRole.PLAYER, "player_1"))
     LLMBot(1, model="local", base_url="http://localhost:11434/v1").act(view)
@@ -651,7 +655,7 @@ def test_memory_bot_sees_engine_rejection_without_rejected_notes(endpoint: Endpo
     endpoint.illegal_card_once = True
     endpoint.memory = "Proposed the smallest card."
     result = run_match(
-        [LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1"), GreedyBot()],
+        [LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1"), LowestFittingCardBot()],
         123,
         protocol=MatchProtocol(end_condition="fixed_hands", hands=1),
     )
@@ -675,7 +679,7 @@ def test_registered_memory_bots_start_each_match_fresh_without_publishing_notes(
                     "memory_max_chars": 100,
                 },
             ),
-            PlayerConfig(bot="greedy"),
+            PlayerConfig(bot="lowest_fitting_card"),
         ],
         2,
         123,

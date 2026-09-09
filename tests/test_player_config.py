@@ -93,11 +93,15 @@ def test_invalid_options_fail_before_any_bot_is_constructed(
 
 def test_builtin_bots_reject_unsupported_options() -> None:
     with pytest.raises(ValueError, match="invalid options for player 1"):
-        run_arena([PlayerConfig(bot="random", options={"model": "unsupported"}), PlayerConfig(bot="greedy")], 1, 123)
+        run_arena(
+            [PlayerConfig(bot="random", options={"model": "unsupported"}), PlayerConfig(bot="lowest_fitting_card")],
+            1,
+            123,
+        )
 
 
 def test_name_only_python_api_is_rejected() -> None:
-    players: Any = ["random", "greedy"]
+    players: Any = ["random", "lowest_fitting_card"]
     with pytest.raises(TypeError, match="PlayerConfig"):
         run_arena(players, 1, 123)
 
@@ -110,7 +114,7 @@ def test_configured_names_reach_observer_without_changing_seat_ids(short_protoco
             identities.extend((seat.player_id, seat.display_name) for seat in state.players)
 
     run_arena(
-        [PlayerConfig(bot="random", display_name="Alice"), PlayerConfig(bot="greedy", display_name="Bob")],
+        [PlayerConfig(bot="random", display_name="Alice"), PlayerConfig(bot="lowest_fitting_card", display_name="Bob")],
         1,
         123,
         protocol=short_protocol,

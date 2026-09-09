@@ -2,7 +2,7 @@
 
 import pytest
 
-from sixnimmt.arena.bots import GreedyBot
+from sixnimmt.arena.bots import LowestFittingCardBot
 from sixnimmt.arena.bots.prompt import observation_text
 from sixnimmt.arena.runner import run_match
 from sixnimmt.engine.actions import SelectCardAction, SendMessageAction
@@ -53,7 +53,7 @@ def test_selection_is_not_added_to_public_history_before_reveal() -> None:
 
 def test_move_history_survives_new_hands_and_is_bounded_and_replayable() -> None:
     result = run_match(
-        [GreedyBot(), GreedyBot()],
+        [LowestFittingCardBot(), LowestFittingCardBot()],
         123,
         protocol=MatchProtocol(end_condition="fixed_hands", hands=3),
     )

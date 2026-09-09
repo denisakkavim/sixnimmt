@@ -1,6 +1,4 @@
-"""Seeded random arena strategy."""
-
-import random
+"""Board-independent highest card baseline."""
 
 from sixnimmt.arena.bots._board import cheapest_row
 from sixnimmt.arena.bots.base import Bot, Rejection
@@ -8,11 +6,8 @@ from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, Selec
 from sixnimmt.engine.views import MatchView
 
 
-class RandomBot(Bot):
-    """Choose cards uniformly with a private RNG and always take the cheapest row."""
-
-    def __init__(self, seed: int) -> None:
-        self._random = random.Random(seed)  # noqa: S311 - reproducible game choices
+class HighestCardBot(Bot):
+    """Play the highest card and take the cheapest row when required."""
 
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action:
         if "choose_row" in view.legal_actions:
@@ -20,4 +15,4 @@ class RandomBot(Bot):
             return ChooseRowAction(row_index=row.index)
         if "commit" in view.legal_actions:
             return CommitAction()
-        return SelectCardAction(card=self._random.choice(view.you.hand))
+        return SelectCardAction(card=max(view.you.hand))

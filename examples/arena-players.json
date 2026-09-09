@@ -8,7 +8,7 @@
     }
   },
   {
-    "bot": "greedy",
+    "bot": "lowest_fitting_card",
     "display_name": "Bob",
     "options": {}
   }
