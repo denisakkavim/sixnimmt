@@ -95,14 +95,16 @@ is neither a strength ranking nor an inheritance hierarchy.
 | Bait: model-based | Uncertainty-aware evaluation | Whether predicted pickup cost identifies bait plays better than a count threshold |
 | Hand-aware row choice | Pickup and row-shaping tactics | Immediate row cost versus usefulness of the replacement for the remaining hand |
 | Penalty-distribution evaluator | Uncertainty-aware evaluation | Effect of configurable penalty objectives and prediction models using full public play history |
-| Opponent-policy mixture | Uncertainty-aware evaluation | Robustness to uncertainty about opponents' selection policies |
 | Timing-aware selection | Timing and planning | Value of urgency estimates, comparing currently fitting candidates with all-card evaluation |
-| One-turn Monte Carlo / PIMC | Uncertainty-aware evaluation | Simulation of this turn's joint placements and pickups |
-| Rollout evaluator | Timing and planning | Value of evaluating continuations over a configurable fixed or remaining-hand horizon |
+| Simulation evaluator | Timing and planning | One-turn Monte Carlo through remaining-hand rollouts under a configurable horizon and continuation policy |
 
-Opponent mixtures can be applied to several underlying strategies. Penalty objectives are configurations
-of the penalty-distribution evaluator. They do not
-require separate architectural families.
+Single-policy, fixed-mixture, and learned-mixture assumptions are opponent-model
+modes available to the evaluators, not separate player strategies to implement.
+Penalty objectives are configurations of the penalty-distribution evaluator.
+Neither requires a separate architectural family.
+One-turn Monte Carlo and longer rollouts are configurations of the same
+simulation evaluator, not separate strategies. Its horizon counts total turns
+including the current turn.
 
 ## Strategy definitions
 
@@ -190,8 +192,6 @@ identity and options with each experiment. Defaults remain to be selected.
 | --- | --- | --- |
 | Bait: model-based | Under an explicit opponent model, estimate this turn's pickup cost for candidates targeting full rows and for the configured fallback play. Attempt bait only if the best bait candidate has strictly lower expected cost than the fallback play. | Model joint placements, row choices, and possible repeated pickups. Equal estimated cost keeps the fallback play. Opponent model, evaluation budget, candidate tie-breaking, and defaults remain to be specified. |
 | Penalty-distribution evaluator | Predict each candidate's distribution of bull heads taken this turn using the configured model, then minimise the configured objective. | Model and objective are independently configurable. Expected-bull minimisation is the mean-penalty objective, not a separate strategy. Use full public play history; objective ties and defaults remain to be specified. |
-| Opponent-policy mixture | Evaluate against fixed weights over plausible policies, such as random, lowest card, and greedy, rather than one assumed policy. | Compare with a single-policy model while keeping the evaluator and budget fixed. |
-| One-turn Monte Carlo / PIMC | Sample possible opponent hands, select their plays under an explicit policy, simulate this turn, and average candidate costs. | Include row-choice behaviour in simulations, not just card selection. |
 
 #### Penalty-distribution evaluator configuration
 
@@ -239,6 +239,30 @@ expected cost. Predicted improvement is not a guarantee of avoiding a pickup.
 Compare the two bait variants with the same fallback and card knowledge to assess
 the value of the additional modelling.
 
+#### Opponent-model modes
+
+The [probabilistic gameplay model](uncertainty-model.md) separates beliefs about
+hidden hands, card-selection policies, and each opponent's continuous
+random-choice probability epsilon. The same prediction interface supports:
+
+| Mode | Policy weights | Purpose |
+| --- | --- | --- |
+| Single assumed policy | All weight on one configured policy per opponent | Test a specific behavioural assumption |
+| Fixed equal-weight mixture | Equal weights over the selected policies, held fixed | Represent policy uncertainty without learning its weights |
+| Learned mixture | Start equally weighted, then update from observed choices | Adapt predictions to each opponent |
+
+In all three modes, hidden-hand beliefs and epsilon can still learn from play.
+The fixed mixture retains inference conditional on each policy assignment but
+keeps the assignment weights fixed. It is an explicit experimental comparison,
+not the fully Bayesian posterior with one update accidentally omitted. The
+model document defines this distinction mathematically.
+
+Fixed-mixture mode remains useful as a baseline: it tests whether learning policy
+weights improves predictions and arena outcomes, particularly with limited
+evidence or opponents whose behaviour changes. It does not require a separate
+bot. Model-based bait, penalty-distribution evaluation, timing-aware selection,
+and rollouts can all consume these model modes.
+
 #### Shared modelling considerations
 
 Counting possible intervening cards can inform predictions, but an intervening
@@ -246,16 +270,18 @@ opponent card does not automatically imply a pickup. Row capacity, placement ord
 resets, and opponent preferences matter. Account for unseen cards that are undealt;
 do not assign all unseen cards to opponents. Reset card knowledge with each deal.
 
-An adaptive opponent mixture is a possible later extension, not part of the initial
-additional set. Publicly played cards do not reveal what alternatives opponents
-held, so adaptation must account for that uncertainty.
+The proposed learned model updates policy weights and continuous epsilon
+jointly with possible hidden hands. Publicly played cards do not reveal what
+alternatives opponents held, so adaptation must account for that uncertainty.
+Uniform initial deals do not imply uniform remaining hands after behavioural
+evidence. See the model document for priors, likelihoods, inference, and recovery.
 
 ### Timing and planning
 
 | Strategy | Decision rule | Details and caveats |
 | --- | --- | --- |
 | Timing-aware selection | Estimate each card's play-now and delayed costs, then select using the configured urgency rule below. | Combines closing-opportunity and improving-opportunity reasoning. The model, delay horizon, candidate restriction, and urgency weight are configurable. |
-| Rollout evaluator | For each candidate, sample possible opponent hands and simulate play under specified continuation policies to the configured horizon. Choose the candidate with the lowest evaluated cost. | A fixed horizon covers shallow lookahead; a remaining-hand horizon covers full-hand Monte Carlo / PIMC. Specify both card and row decisions in rollout policies. |
+| Simulation evaluator | For each candidate, sample possible opponent hands and simulate play under specified continuation policies to the configured horizon. Choose the candidate with the lowest configured penalty objective. | `horizon: 1` is one-turn Monte Carlo; larger horizons are rollouts. Specify card and row decisions and any cutoff evaluation. |
 
 #### Timing-aware selection configuration
 
@@ -284,15 +310,16 @@ cards played while waiting; explicit sequence evaluation belongs to lookahead.
 Defaults, tie-breaking, and the fallback when no card fits in `fitting_only` mode
 remain to be specified. Actual row choices use the cheapest-row rule.
 
-#### Rollout evaluator configuration
+#### Simulation evaluator configuration
 
 | Parameter | Meaning | Constraints |
 | --- | --- | --- |
-| `horizon` | Simulate the current turn plus N subsequent turns, or to the end of the hand | Positive integer N or `remaining_hand`; cap fixed horizons at the hand boundary |
+| `horizon` | Total turns to simulate, including the current turn | Positive integer or `remaining_hand`; 1 means this turn, 3 means this turn plus two more; cap at the hand boundary |
 | `model` and `model_options` | Beliefs about opponent hands and behaviour | Use full public history; respect hand sizes, card uniqueness, and the undealt remainder |
 | `continuation_policy` | Our decisions after the candidate play | Specify card and row selection; following a policy does not optimise all possible future sequences |
-| `opponent_policies` | Simulated opponents' subsequent decisions | Specify card and row selection, or how these policies are supplied by the model |
-| `evaluation` | Score simulated outcomes | Specify accumulated penalty objective and any estimate of cost beyond a fixed cutoff |
+| `opponent_policies` | Simulated opponents' subsequent decisions | Use policies and epsilon drawn from the opponent model; specify row-choice behaviour |
+| `objective` and `objective_options` | Score each candidate's distribution of accumulated penalties | Mean, pickup probability, threshold exceedance, or upper-tail penalty |
+| `cutoff_evaluation` | Estimate cost after a fixed cutoff | Explicitly choose no estimate or a named estimate with options; zero at the hand boundary |
 | `sample_count` | Rollout samples per candidate | Positive integer; fixed budget with seeded randomness |
 
 Use the same sampled worlds when comparing candidates. Simulated players,
@@ -300,12 +327,21 @@ including our continuation policy, must act only on their own observations, not
 hidden sampled hands. Otherwise rollouts credit them with information unavailable
 in actual play.
 
+Within a continuation, hands persist and shrink; do not redraw them at each
+turn. Sample each opponent's policy and epsilon once per world and keep them
+fixed, drawing fresh action randomness at each turn. Later decisions use the
+candidate-specific board and simulated public history. Our continuation policy
+chooses later cards; following it does not optimise all possible future sequences.
+Use its row-choice rule consistently for actual and simulated row choices,
+including during the current turn. A one-turn configuration needs no later
+card decisions but still needs a row-choice rule.
+
 A fixed cutoff can reward postponing penalties beyond the horizon; an estimate of
 remaining cost can address this. Remaining-hand rollouts reach the hand boundary
-and need no estimate of unplayed cards. Defaults, candidate tie-breaking, and
-whether actual row choices use rollouts or the cheapest-row rule remain to be
-specified. Timing-aware selection stays separate: it scores urgency rather than
-accumulated consequences of continuations.
+and need no estimate of unplayed cards. Break equal objective values by lowest
+card value. Horizons, continuation policies, objectives, cutoff treatment, and
+budgets are explicit experiment settings. Timing-aware selection stays separate:
+it scores urgency rather than accumulated consequences of continuations.
 
 #### Shared timing and planning considerations
 
@@ -331,7 +367,7 @@ Record these separately for each complete player:
 | Attribute | Example choices |
 | --- | --- |
 | Information | Current board, own hand, and full public play history available; simple heuristics may use only the inputs their rules require |
-| Opponent model | Uniform random legal choices; one heuristic; fixed policy mixture |
+| Opponent model | Single assumed policy; fixed equal-weight mixture; learned mixture |
 | Horizon | Current turn; several turns; remaining hand |
 | Objective | Expected penalties; pickup probability; threshold exceedance; upper-tail penalty |
 | Computational budget | Fixed sample count or search expansion count |
@@ -350,6 +386,11 @@ prefer to play; that inference belongs to the configurable model.
 4. Compare timing-aware selection modes and urgency weights with the model and
    horizon fixed, testing the effect of admitting cards that do not currently fit.
 5. Hold an evaluator fixed while varying the underlying model, its options, or the risk objective.
+   Compare fixed equal-weight and learned mixtures with the same policy catalogue,
+   epsilon prior and learning method, hidden-hand inference method, sampling
+   budget, horizon, row-choice assumptions, and penalty objective. The resulting
+   hand beliefs may differ because policy and hand inference interact. Measure
+   predictions made before reveals as well as arena outcomes.
 6. Hold the model and evaluation approach fixed while varying planning horizon;
    report computational budgets alongside performance.
 7. Test combinations after individual effects are understood. Flexibility, urgency,

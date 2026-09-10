@@ -14,6 +14,7 @@ trace. Then use the following guides:
 | [Running arenas](arena.md) | Player files, Python API, CLI options, scheduling, limits, and outcomes |
 | [Writing bots](bots.md) | Bot contract, registration, rejection feedback, and atomic action batches |
 | [Strategy catalogue](strategy-families.md) | Baseline heuristics and proposed experimental strategies |
+| [Probabilistic gameplay model](uncertainty-model.md) | Uniform-deal priors, learned opponent policies and random-choice probabilities, posterior inference, and candidate evaluation |
 | [LLM players](llm-players.md) | Endpoint configuration, prompts, tools, private memory, and deadlines |
 | [Traces and replay](traces.md) | Event/action/model logs, manifests, determinism, recovery, and analytics |
 | [Architecture and development](development.md) | Module responsibilities, engine APIs, tests, and contribution workflow |
