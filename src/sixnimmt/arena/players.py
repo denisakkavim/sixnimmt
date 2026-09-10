@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from sixnimmt.arena.bots import REGISTRY, Bot, BotSpec
 from sixnimmt.arena.bots.controlled_burn import ControlledBurnBot, ControlledBurnOptions
+from sixnimmt.arena.bots.count_threshold_bait import CandidateRanking, CountThresholdBaitBot, CountThresholdBaitOptions
 from sixnimmt.common.text import check_representable
 
 
@@ -80,13 +81,16 @@ def resolve_players(players: Sequence[PlayerConfig]) -> list[ResolvedPlayer]:
             raise ValueError(msg) from error
         build_options = options.model_dump()
         recorded_options = options.model_dump(mode="json")
-        if isinstance(options, ControlledBurnOptions):
+        if isinstance(options, (ControlledBurnOptions, CountThresholdBaitOptions)):
             fallback = resolve_players([PlayerConfig(bot=options.fallback_strategy, options=options.fallback_options)])[
                 0
             ]
+            builder = (
+                _build_controlled_burn if isinstance(options, ControlledBurnOptions) else _build_count_threshold_bait
+            )
             spec = replace(
                 spec,
-                build=partial(_build_controlled_burn, fallback=fallback),
+                build=partial(builder, fallback=fallback),
                 deterministic=fallback.deterministic,
                 metadata={**spec.metadata, "fallback_metadata": fallback.metadata},
             )
@@ -94,3 +98,15 @@ def resolve_players(players: Sequence[PlayerConfig]) -> list[ResolvedPlayer]:
             build_options["fallback_options"] = fallback.options
         resolved.append(ResolvedPlayer(player.model_copy(deep=True), spec, build_options, recorded_options))
     return resolved
+
+
+def _build_count_threshold_bait(
+    seed: int,
+    *,
+    intervening_card_threshold: int,
+    candidate_ranking: CandidateRanking,
+    fallback_strategy: str,
+    fallback_options: dict[str, Any],
+    fallback: ResolvedPlayer,
+) -> CountThresholdBaitBot:
+    return CountThresholdBaitBot(intervening_card_threshold, candidate_ranking, fallback.build(seed))

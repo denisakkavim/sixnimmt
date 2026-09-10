@@ -96,6 +96,44 @@ reproducibility flag reflects the fallback. Both arena backends are supported.
 
 For direct Python use, construct `ControlledBurnBot(K=3, fallback=ClosestGapBot())`.
 
+## Count-threshold bait
+
+`count_threshold_bait` requires `intervening_card_threshold` (a positive integer),
+`candidate_ranking`, and `fallback_strategy`. None has a default.
+`fallback_options` defaults to `{}` and is validated by the chosen fallback.
+
+```json
+{
+  "bot": "count_threshold_bait",
+  "options": {
+    "intervening_card_threshold": 3,
+    "candidate_ranking": "most_intervening",
+    "fallback_strategy": "closest_gap"
+  }
+}
+```
+
+Only cards whose applicable row currently has five cards can qualify. Count
+values strictly between that row's end and the candidate, excluding the player's
+hand, the current board, and cards revealed or captured in the current hand. A count at least
+the threshold qualifies; if no card qualifies, delegate to the fallback.
+The count measures possible intervening cards, not their probability of being
+played. Unseen cards may be undealt. Card knowledge resets at each deal.
+
+| `candidate_ranking` | Preference among qualifying cards, in order |
+| --- | --- |
+| `most_intervening` | Most intervening cards, fewest bull heads in the target row, lowest card value |
+| `cheapest_pickup` | Fewest bull heads in the target row, lowest card value |
+| `highest_card` | Highest card value |
+
+All rankings take the current cheapest row when a row choice is required,
+breaking ties by row index. Communication mode commits the chosen card.
+Fallback configuration, metadata, seed handling, and backend support follow
+the same rules as controlled burn, including nested fallback strategies.
+
+For direct Python use, construct
+`CountThresholdBaitBot(intervening_card_threshold=3, candidate_ranking="most_intervening", fallback=ClosestGapBot())`.
+
 ## Register a configurable strategy
 
 The registry maps names to `BotSpec` objects. A factory receives a derived seed

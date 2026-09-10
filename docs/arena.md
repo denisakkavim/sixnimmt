@@ -12,7 +12,8 @@ The CLI reads a JSON array of two to ten player objects:
 ```
 
 `bot` names a registered strategy: one of the eight [baseline heuristics](bots.md#built-in-baselines-and-board-and-hand-heuristics),
-[`controlled_burn`](bots.md#controlled-burn), `llm`, or `llm_memory`.
+[`controlled_burn`](bots.md#controlled-burn),
+[`count_threshold_bait`](bots.md#count-threshold-bait), `llm`, or `llm_memory`.
 `options` are validated by that strategy's options model; unknown keys fail
 validation. The baseline heuristics accept no options. Names default to `Player 1`,
 `Player 2`, etc. IDs remain `player_1`, `player_2`, etc. Seat metadata is recorded

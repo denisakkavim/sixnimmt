@@ -4,6 +4,11 @@ from sixnimmt.arena.bots.base import ActionBatch, Bot, BotOptions, BotSpec, Reje
 from sixnimmt.arena.bots.closest_gap import ClosestGapBot
 from sixnimmt.arena.bots.coldest_row import ColdestRowBot
 from sixnimmt.arena.bots.controlled_burn import ControlledBurnBot, ControlledBurnOptions, build_controlled_burn
+from sixnimmt.arena.bots.count_threshold_bait import (
+    CountThresholdBaitBot,
+    CountThresholdBaitOptions,
+    build_count_threshold_bait,
+)
 from sixnimmt.arena.bots.hand_flexibility import HandFlexibilityBot
 from sixnimmt.arena.bots.highest_card import HighestCardBot
 from sixnimmt.arena.bots.highest_fitting_card import HighestFittingCardBot
@@ -23,6 +28,8 @@ __all__ = [
     "ColdestRowBot",
     "ControlledBurnBot",
     "ControlledBurnOptions",
+    "CountThresholdBaitBot",
+    "CountThresholdBaitOptions",
     "HandFlexibilityBot",
     "HighestCardBot",
     "HighestFittingCardBot",
@@ -66,6 +73,13 @@ def _build_lowest_fitting_card(seed: int) -> LowestFittingCardBot:
 
 
 REGISTRY: dict[str, BotSpec] = {
+    "count_threshold_bait": BotSpec(
+        "count_threshold_bait",
+        build_count_threshold_bait,
+        False,
+        {"strategy_id": "count_threshold_bait", "version": "1"},
+        CountThresholdBaitOptions,
+    ),
     "controlled_burn": BotSpec(
         "controlled_burn",
         build_controlled_burn,

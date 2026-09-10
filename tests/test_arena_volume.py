@@ -5,7 +5,8 @@ from itertools import pairwise
 
 import pytest
 
-from sixnimmt.arena.bots import REGISTRY, ControlledBurnBot, RandomBot, Rejection
+from sixnimmt.arena.bots import REGISTRY, ControlledBurnBot, CountThresholdBaitBot, RandomBot, Rejection
+from sixnimmt.arena.bots.count_threshold_bait import CandidateRanking
 from sixnimmt.arena.runner import derive_seed, run_match
 from sixnimmt.engine.actions import Action, SelectCardAction, SendMessageAction
 from sixnimmt.engine.audience import Viewer
@@ -302,8 +303,8 @@ def test_thousand_communication_matches_preserve_intermediate_invariants(player_
 
 @pytest.mark.arena_slow
 @pytest.mark.parametrize("communication", [False, True])
-@pytest.mark.parametrize("include_controlled_burn", [False, True])
-def test_mixed_baselines_preserve_intermediate_invariants(communication: bool, include_controlled_burn: bool) -> None:
+@pytest.mark.parametrize("tactic", ["none", "controlled_burn", "count_threshold_bait"])
+def test_mixed_baselines_preserve_intermediate_invariants(communication: bool, tactic: str) -> None:
     strategies = (
         "random",
         "lowest_card",
@@ -320,9 +321,13 @@ def test_mixed_baselines_preserve_intermediate_invariants(communication: bool, i
         rotation = game % len(strategies)
         lineup = strategies[rotation:] + strategies[:rotation]
         bots = [REGISTRY[name].build(derive_seed(1234, "bot", game, seat)) for seat, name in enumerate(lineup)]
-        if include_controlled_burn:
+        if tactic == "controlled_burn":
             seat = game % len(bots)
             bots[seat] = ControlledBurnBot((0, 3, 5, 8)[game % 4], bots[seat])
+        elif tactic == "count_threshold_bait":
+            seat = game % len(bots)
+            rankings: tuple[CandidateRanking, ...] = ("most_intervening", "cheapest_pickup", "highest_card")
+            bots[seat] = CountThresholdBaitBot((1, 3, 5)[game % 3], rankings[(game // 3) % 3], bots[seat])
         result = run_match(
             bots,
             derive_seed(1234, "match", game),
