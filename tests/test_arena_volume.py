@@ -5,7 +5,14 @@ from itertools import pairwise
 
 import pytest
 
-from sixnimmt.arena.bots import REGISTRY, ControlledBurnBot, CountThresholdBaitBot, RandomBot, Rejection
+from sixnimmt.arena.bots import (
+    REGISTRY,
+    ControlledBurnBot,
+    CountThresholdBaitBot,
+    HandAwareRowChoiceBot,
+    RandomBot,
+    Rejection,
+)
 from sixnimmt.arena.bots.count_threshold_bait import CandidateRanking
 from sixnimmt.arena.runner import derive_seed, run_match
 from sixnimmt.engine.actions import Action, SelectCardAction, SendMessageAction
@@ -303,7 +310,7 @@ def test_thousand_communication_matches_preserve_intermediate_invariants(player_
 
 @pytest.mark.arena_slow
 @pytest.mark.parametrize("communication", [False, True])
-@pytest.mark.parametrize("tactic", ["none", "controlled_burn", "count_threshold_bait"])
+@pytest.mark.parametrize("tactic", ["none", "controlled_burn", "count_threshold_bait", "hand_aware_row_choice"])
 def test_mixed_baselines_preserve_intermediate_invariants(communication: bool, tactic: str) -> None:
     strategies = (
         "random",
@@ -328,6 +335,9 @@ def test_mixed_baselines_preserve_intermediate_invariants(communication: bool, t
             seat = game % len(bots)
             rankings: tuple[CandidateRanking, ...] = ("most_intervening", "cheapest_pickup", "highest_card")
             bots[seat] = CountThresholdBaitBot((1, 3, 5)[game % 3], rankings[(game // 3) % 3], bots[seat])
+        elif tactic == "hand_aware_row_choice":
+            seat = game % len(bots)
+            bots[seat] = HandAwareRowChoiceBot((0, 1, 2, 5)[game % 4], bots[seat])
         result = run_match(
             bots,
             derive_seed(1234, "match", game),

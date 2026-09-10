@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 from sixnimmt.arena.bots import REGISTRY, Bot, BotSpec
 from sixnimmt.arena.bots.controlled_burn import ControlledBurnBot, ControlledBurnOptions
 from sixnimmt.arena.bots.count_threshold_bait import CandidateRanking, CountThresholdBaitBot, CountThresholdBaitOptions
+from sixnimmt.arena.bots.hand_aware_row_choice import HandAwareRowChoiceBot, HandAwareRowChoiceOptions
 from sixnimmt.common.text import check_representable
 
 
@@ -96,6 +97,17 @@ def resolve_players(players: Sequence[PlayerConfig]) -> list[ResolvedPlayer]:
             )
             recorded_options["fallback_options"] = fallback.recorded_options
             build_options["fallback_options"] = fallback.options
+        elif isinstance(options, HandAwareRowChoiceOptions):
+            card_player = PlayerConfig(bot=options.card_strategy, options=options.card_options)
+            card_strategy = resolve_players([card_player])[0]
+            spec = replace(
+                spec,
+                build=partial(_build_hand_aware_row_choice, card_strategy_resolved=card_strategy),
+                deterministic=card_strategy.deterministic,
+                metadata={**spec.metadata, "card_strategy_metadata": card_strategy.metadata},
+            )
+            recorded_options["card_options"] = card_strategy.recorded_options
+            build_options["card_options"] = card_strategy.options
         resolved.append(ResolvedPlayer(player.model_copy(deep=True), spec, build_options, recorded_options))
     return resolved
 
@@ -110,3 +122,14 @@ def _build_count_threshold_bait(
     fallback: ResolvedPlayer,
 ) -> CountThresholdBaitBot:
     return CountThresholdBaitBot(intervening_card_threshold, candidate_ranking, fallback.build(seed))
+
+
+def _build_hand_aware_row_choice(
+    seed: int,
+    *,
+    max_extra_penalty: int,
+    card_strategy: str,
+    card_options: dict[str, Any],
+    card_strategy_resolved: ResolvedPlayer,
+) -> HandAwareRowChoiceBot:
+    return HandAwareRowChoiceBot(max_extra_penalty, card_strategy_resolved.build(seed))

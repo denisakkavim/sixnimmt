@@ -9,6 +9,11 @@ from sixnimmt.arena.bots.count_threshold_bait import (
     CountThresholdBaitOptions,
     build_count_threshold_bait,
 )
+from sixnimmt.arena.bots.hand_aware_row_choice import (
+    HandAwareRowChoiceBot,
+    HandAwareRowChoiceOptions,
+    build_hand_aware_row_choice,
+)
 from sixnimmt.arena.bots.hand_flexibility import HandFlexibilityBot
 from sixnimmt.arena.bots.highest_card import HighestCardBot
 from sixnimmt.arena.bots.highest_fitting_card import HighestFittingCardBot
@@ -30,6 +35,8 @@ __all__ = [
     "ControlledBurnOptions",
     "CountThresholdBaitBot",
     "CountThresholdBaitOptions",
+    "HandAwareRowChoiceBot",
+    "HandAwareRowChoiceOptions",
     "HandFlexibilityBot",
     "HighestCardBot",
     "HighestFittingCardBot",
@@ -73,6 +80,13 @@ def _build_lowest_fitting_card(seed: int) -> LowestFittingCardBot:
 
 
 REGISTRY: dict[str, BotSpec] = {
+    "hand_aware_row_choice": BotSpec(
+        "hand_aware_row_choice",
+        build_hand_aware_row_choice,
+        False,
+        {"strategy_id": "hand_aware_row_choice", "version": "1"},
+        HandAwareRowChoiceOptions,
+    ),
     "count_threshold_bait": BotSpec(
         "count_threshold_bait",
         build_count_threshold_bait,

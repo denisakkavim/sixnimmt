@@ -134,6 +134,47 @@ the same rules as controlled burn, including nested fallback strategies.
 For direct Python use, construct
 `CountThresholdBaitBot(intervening_card_threshold=3, candidate_ranking="most_intervening", fallback=ClosestGapBot())`.
 
+## Hand-aware row choice
+
+`hand_aware_row_choice` changes row selection while keeping a configured bot's
+card policy. Both `max_extra_penalty` (a non-negative integer) and
+`card_strategy` (a registered bot name) are required. `card_options` defaults to
+`{}` and is validated by that strategy.
+
+```json
+{
+  "bot": "hand_aware_row_choice",
+  "options": {
+    "max_extra_penalty": 2,
+    "card_strategy": "closest_gap"
+  }
+}
+```
+
+At each row choice, find the cheapest current row cost. Consider only rows costing
+at most that amount plus `max_extra_penalty`. For each candidate, replace its
+cards with the actual card awaiting placement and count how many cards in the
+remaining hand would currently fit on that board. Prefer the highest count,
+then the lowest pickup cost, then the lowest row index. The revealed card has
+already left the hand. With an empty remaining hand, use the cheapest row.
+
+For example, if the cheapest row costs 3 and the limit is 2, a row costing 5 may
+be selected when its replacement improves the fitting-card count; a row costing
+6 cannot. A limit of 0 still uses hand usefulness to break ties between cheapest
+rows. Equal usefulness never justifies extra penalties.
+
+Each remaining card is assessed independently against its applicable row.
+This heuristic does not simulate subsequent opponent placements or a sequence
+of our own cards; currently fitting cards are not guaranteed safe later.
+All non-row actions, including commitment, messages, and atomic batches, are
+delegated unchanged with the same observation and rejection feedback. Optional
+tracing, statistics, and memory hooks are forwarded. Delegate options and metadata
+are recorded, and its determinism determines the run's reproducibility flag.
+Thread and process backends support custom and nested card strategies.
+
+For direct Python use, construct
+`HandAwareRowChoiceBot(max_extra_penalty=2, card_bot=ClosestGapBot())`.
+
 ## Register a configurable strategy
 
 The registry maps names to `BotSpec` objects. A factory receives a derived seed
