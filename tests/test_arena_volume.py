@@ -5,7 +5,7 @@ from itertools import pairwise
 
 import pytest
 
-from sixnimmt.arena.bots import REGISTRY, RandomBot, Rejection
+from sixnimmt.arena.bots import REGISTRY, ControlledBurnBot, RandomBot, Rejection
 from sixnimmt.arena.runner import derive_seed, run_match
 from sixnimmt.engine.actions import Action, SelectCardAction, SendMessageAction
 from sixnimmt.engine.audience import Viewer
@@ -302,7 +302,8 @@ def test_thousand_communication_matches_preserve_intermediate_invariants(player_
 
 @pytest.mark.arena_slow
 @pytest.mark.parametrize("communication", [False, True])
-def test_mixed_baselines_preserve_intermediate_invariants(communication: bool) -> None:
+@pytest.mark.parametrize("include_controlled_burn", [False, True])
+def test_mixed_baselines_preserve_intermediate_invariants(communication: bool, include_controlled_burn: bool) -> None:
     strategies = (
         "random",
         "lowest_card",
@@ -319,6 +320,9 @@ def test_mixed_baselines_preserve_intermediate_invariants(communication: bool) -
         rotation = game % len(strategies)
         lineup = strategies[rotation:] + strategies[:rotation]
         bots = [REGISTRY[name].build(derive_seed(1234, "bot", game, seat)) for seat, name in enumerate(lineup)]
+        if include_controlled_burn:
+            seat = game % len(bots)
+            bots[seat] = ControlledBurnBot((0, 3, 5, 8)[game % 4], bots[seat])
         result = run_match(
             bots,
             derive_seed(1234, "match", game),

@@ -72,6 +72,30 @@ coverage on the final card and never accepts extra immediate penalties for bette
 coverage. These rules are fixed. See the [strategy catalogue](strategy-families.md)
 for the experimental rationale.
 
+## Controlled burn
+
+`controlled_burn` requires both `K` (a non-negative integer) and
+`fallback_strategy` (a registered bot name). Neither has a default.
+`fallback_options` supplies that bot's settings and defaults to `{}`.
+
+```json
+{
+  "bot": "controlled_burn",
+  "options": {"K": 3, "fallback_strategy": "closest_gap"}
+}
+```
+
+When the cheapest row costs at most `K`, the bot considers cards below every
+row end and selects the one with the fewest bull heads, then lowest card value.
+Otherwise it delegates to its configured fallback. It always re-evaluates the
+cheapest row when a row choice arrives, breaking ties by row index, and commits
+its selection in communication mode. The fallback receives the same filtered
+observation and rejection feedback. Each match constructs a fresh fallback with
+the seat's seed; fallback options and metadata are recorded, and the run's
+reproducibility flag reflects the fallback. Both arena backends are supported.
+
+For direct Python use, construct `ControlledBurnBot(K=3, fallback=ClosestGapBot())`.
+
 ## Register a configurable strategy
 
 The registry maps names to `BotSpec` objects. A factory receives a derived seed

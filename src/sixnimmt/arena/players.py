@@ -2,12 +2,14 @@
 
 from collections.abc import Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import partial
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from sixnimmt.arena.bots import REGISTRY, Bot, BotSpec
+from sixnimmt.arena.bots.controlled_burn import ControlledBurnBot, ControlledBurnOptions
 from sixnimmt.common.text import check_representable
 
 
@@ -54,6 +56,13 @@ class ResolvedPlayer:
         return self.spec.build(seed, **deepcopy(self.options))
 
 
+def _build_controlled_burn(
+    seed: int, *, K: int, fallback_strategy: str, fallback_options: dict[str, Any], fallback: ResolvedPlayer
+) -> ControlledBurnBot:
+    # The resolved factory travels to process workers; their registry may differ.
+    return ControlledBurnBot(K, fallback.build(seed))
+
+
 def resolve_players(players: Sequence[PlayerConfig]) -> list[ResolvedPlayer]:
     resolved = []
     for index, player in enumerate(players):
@@ -69,7 +78,19 @@ def resolve_players(players: Sequence[PlayerConfig]) -> list[ResolvedPlayer]:
         except ValueError as error:
             msg = f"invalid options for player {index + 1} ({player.bot}): {error}"
             raise ValueError(msg) from error
-        resolved.append(
-            ResolvedPlayer(player.model_copy(deep=True), spec, options.model_dump(), options.model_dump(mode="json"))
-        )
+        build_options = options.model_dump()
+        recorded_options = options.model_dump(mode="json")
+        if isinstance(options, ControlledBurnOptions):
+            fallback = resolve_players([PlayerConfig(bot=options.fallback_strategy, options=options.fallback_options)])[
+                0
+            ]
+            spec = replace(
+                spec,
+                build=partial(_build_controlled_burn, fallback=fallback),
+                deterministic=fallback.deterministic,
+                metadata={**spec.metadata, "fallback_metadata": fallback.metadata},
+            )
+            recorded_options["fallback_options"] = fallback.recorded_options
+            build_options["fallback_options"] = fallback.options
+        resolved.append(ResolvedPlayer(player.model_copy(deep=True), spec, build_options, recorded_options))
     return resolved
