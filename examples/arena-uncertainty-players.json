@@ -10,11 +10,11 @@
           "closest_gap"
         ],
         "mode": "learned_mixture",
-        "particle_count": 32,
-        "burn_in_steps": 200,
-        "epsilon_proposal_scale": 1.0
+        "particle_count": 64,
+        "burn_in_steps": 5000,
+        "epsilon_proposal_scale": 2.5
       },
-      "sample_count": 32,
+      "sample_count": 512,
       "horizon": 2,
       "continuation_policy": "closest_gap",
       "row_policy": {

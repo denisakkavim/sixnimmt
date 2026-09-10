@@ -1,0 +1,148 @@
+{
+  "case": {
+    "players": 10,
+    "hand": 3,
+    "play": 5,
+    "noise": 0.0,
+    "seed": 123,
+    "scale": 1.0,
+    "mode": "learned_mixture",
+    "catalogue": "three",
+    "steps": 300000,
+    "window": 200000,
+    "output": "/tmp/sixnimmt-mcmc/reference-p10-h3-t5.json"
+  },
+  "reference_best": 61,
+  "candidates": [
+    49,
+    61,
+    73,
+    76,
+    81,
+    82
+  ],
+  "reference_mean": [
+    6.26611328125,
+    4.4176025390625,
+    4.4747314453125,
+    4.5950927734375,
+    8.216064453125,
+    8.4254150390625
+  ],
+  "horizon": 3,
+  "repetitions": 1000,
+  "budgets": [
+    {
+      "particle_count": 32,
+      "sample_count": 32,
+      "zero_reference_regret_fraction": 0.362,
+      "mean_reference_regret": 0.1496170654296875,
+      "cost_rmse": 1.2410418377570334
+    },
+    {
+      "particle_count": 32,
+      "sample_count": 128,
+      "zero_reference_regret_fraction": 0.404,
+      "mean_reference_regret": 0.0846868896484375,
+      "cost_rmse": 0.8875525608527449
+    },
+    {
+      "particle_count": 32,
+      "sample_count": 512,
+      "zero_reference_regret_fraction": 0.395,
+      "mean_reference_regret": 0.0804287109375,
+      "cost_rmse": 0.770322382401221
+    },
+    {
+      "particle_count": 32,
+      "sample_count": 2048,
+      "zero_reference_regret_fraction": 0.419,
+      "mean_reference_regret": 0.07366943359375,
+      "cost_rmse": 0.7358798932789264
+    },
+    {
+      "particle_count": 64,
+      "sample_count": 32,
+      "zero_reference_regret_fraction": 0.381,
+      "mean_reference_regret": 0.13009130859375,
+      "cost_rmse": 1.1396225023715443
+    },
+    {
+      "particle_count": 64,
+      "sample_count": 128,
+      "zero_reference_regret_fraction": 0.43,
+      "mean_reference_regret": 0.0704071044921875,
+      "cost_rmse": 0.7305045979725224
+    },
+    {
+      "particle_count": 64,
+      "sample_count": 512,
+      "zero_reference_regret_fraction": 0.436,
+      "mean_reference_regret": 0.061949951171875,
+      "cost_rmse": 0.5884281809496523
+    },
+    {
+      "particle_count": 64,
+      "sample_count": 2048,
+      "zero_reference_regret_fraction": 0.463,
+      "mean_reference_regret": 0.05763916015625,
+      "cost_rmse": 0.5431302157211229
+    },
+    {
+      "particle_count": 128,
+      "sample_count": 32,
+      "zero_reference_regret_fraction": 0.395,
+      "mean_reference_regret": 0.1098057861328125,
+      "cost_rmse": 1.0559691464680394
+    },
+    {
+      "particle_count": 128,
+      "sample_count": 128,
+      "zero_reference_regret_fraction": 0.43,
+      "mean_reference_regret": 0.0634822998046875,
+      "cost_rmse": 0.6301102277409886
+    },
+    {
+      "particle_count": 128,
+      "sample_count": 512,
+      "zero_reference_regret_fraction": 0.479,
+      "mean_reference_regret": 0.05624365234375,
+      "cost_rmse": 0.44384939289487674
+    },
+    {
+      "particle_count": 128,
+      "sample_count": 2048,
+      "zero_reference_regret_fraction": 0.447,
+      "mean_reference_regret": 0.057349609375,
+      "cost_rmse": 0.39222668311447084
+    },
+    {
+      "particle_count": 256,
+      "sample_count": 32,
+      "zero_reference_regret_fraction": 0.373,
+      "mean_reference_regret": 0.114801025390625,
+      "cost_rmse": 1.0528794938411656
+    },
+    {
+      "particle_count": 256,
+      "sample_count": 128,
+      "zero_reference_regret_fraction": 0.423,
+      "mean_reference_regret": 0.0638822021484375,
+      "cost_rmse": 0.5730140443293493
+    },
+    {
+      "particle_count": 256,
+      "sample_count": 512,
+      "zero_reference_regret_fraction": 0.502,
+      "mean_reference_regret": 0.047828369140625,
+      "cost_rmse": 0.3636338315870171
+    },
+    {
+      "particle_count": 256,
+      "sample_count": 2048,
+      "zero_reference_regret_fraction": 0.489,
+      "mean_reference_regret": 0.050496826171875,
+      "cost_rmse": 0.2955072811480794
+    }
+  ]
+}

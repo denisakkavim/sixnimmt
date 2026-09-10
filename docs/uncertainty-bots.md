@@ -23,9 +23,12 @@ Use the complete [example player file](../examples/arena-uncertainty-players.jso
 uv run sixnimmt arena --players-file examples/arena-uncertainty-players.json --games 1 --seed 123
 ```
 
-These settings illustrate the configuration and are not calibrated budgets or
-defaults. Check posterior mixing and decision stability before drawing conclusions
-about strategy strength.
+The example uses the exploratory settings from our
+[MCMC calibration report](../experiments/mcmc/REPORT.md): 5,000 burn-in proposals,
+64 retained worlds, 512 rollouts per candidate, and epsilon proposal scale 2.5.
+These are starting settings for small-table experiments, not defaults or a
+convergence guarantee. Ten-player stress cases failed diagnostics even with much
+longer runs. Check stability before drawing conclusions about strategy strength.
 
 The simulation player's options are:
 
@@ -34,11 +37,11 @@ The simulation player's options are:
   "model": {
     "policies": ["lowest_card", "highest_card", "closest_gap"],
     "mode": "learned_mixture",
-    "particle_count": 32,
-    "burn_in_steps": 200,
-    "epsilon_proposal_scale": 1.0
+    "particle_count": 64,
+    "burn_in_steps": 5000,
+    "epsilon_proposal_scale": 2.5
   },
-  "sample_count": 32,
+  "sample_count": 512,
   "horizon": 2,
   "continuation_policy": "closest_gap",
   "row_policy": {"policy": "cheapest"},

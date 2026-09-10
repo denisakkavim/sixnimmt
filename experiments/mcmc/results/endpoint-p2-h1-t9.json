@@ -1,0 +1,279 @@
+{
+  "case": {
+    "players": 2,
+    "hand": 1,
+    "play": 9,
+    "noise": 0.0,
+    "seed": 123,
+    "scale": 1.0,
+    "mode": "learned_mixture",
+    "catalogue": "three",
+    "steps": 300000,
+    "window": 200000,
+    "output": "/tmp/sixnimmt-mcmc/reference-p2-h1-t9.json"
+  },
+  "particles": 64,
+  "reference_means": {
+    "epsilon_0": 0.1225117126005704,
+    "policy_0_0": 1.0,
+    "policy_0_1": 0.0,
+    "policy_0_2": 0.0,
+    "hand_0_min": 13.7418,
+    "hand_0_max": 27.4571875,
+    "hand_0_mean": 20.59949375,
+    "owns_0_20": 0.055775,
+    "owns_0_50": 0.0,
+    "owns_0_84": 0.0
+  },
+  "reference_costs": {
+    "1": [
+      1.84326171875,
+      8.0
+    ],
+    "3": [
+      9.84326171875,
+      8.5654296875
+    ]
+  },
+  "candidates": [
+    10,
+    76
+  ],
+  "budgets": [
+    {
+      "burn_in_steps": 200,
+      "incremental_seconds": 0.3073302090051584,
+      "epsilon_max_abs_error": 0.3929879888311356,
+      "means": {
+        "epsilon_0": 0.515499701431706,
+        "policy_0_0": 0.828125,
+        "policy_0_1": 0.109375,
+        "policy_0_2": 0.0625,
+        "hand_0_min": 26.46875,
+        "hand_0_max": 54.78125,
+        "hand_0_mean": 40.625,
+        "owns_0_20": 0.046875,
+        "owns_0_50": 0.015625,
+        "owns_0_84": 0.0
+      },
+      "decisions": {
+        "1": {
+          "chosen": 10,
+          "reference_chosen": 10,
+          "reference_regret": 0.0,
+          "cost_rmse": 0.03625303321513061,
+          "costs": [
+            1.89453125,
+            8.0
+          ],
+          "particle_half_choices": [
+            10,
+            10
+          ]
+        },
+        "3": {
+          "chosen": 76,
+          "reference_chosen": 76,
+          "reference_regret": 0.0,
+          "cost_rmse": 0.2854080133913047,
+          "costs": [
+            9.53515625,
+            8.826171875
+          ],
+          "particle_half_choices": [
+            76,
+            76
+          ]
+        }
+      }
+    },
+    {
+      "burn_in_steps": 1000,
+      "incremental_seconds": 1.193325125001138,
+      "epsilon_max_abs_error": 0.07171081262034207,
+      "means": {
+        "epsilon_0": 0.19422252522091246,
+        "policy_0_0": 0.96875,
+        "policy_0_1": 0.015625,
+        "policy_0_2": 0.015625,
+        "hand_0_min": 13.671875,
+        "hand_0_max": 30.390625,
+        "hand_0_mean": 22.03125,
+        "owns_0_20": 0.03125,
+        "owns_0_50": 0.0,
+        "owns_0_84": 0.0
+      },
+      "decisions": {
+        "1": {
+          "chosen": 10,
+          "reference_chosen": 10,
+          "reference_regret": 0.0,
+          "cost_rmse": 0.13223725448947643,
+          "costs": [
+            1.65625,
+            8.0
+          ],
+          "particle_half_choices": [
+            10,
+            10
+          ]
+        },
+        "3": {
+          "chosen": 76,
+          "reference_chosen": 76,
+          "reference_regret": 0.0,
+          "cost_rmse": 0.1823967403764754,
+          "costs": [
+            9.59375,
+            8.5
+          ],
+          "particle_half_choices": [
+            76,
+            76
+          ]
+        }
+      }
+    },
+    {
+      "burn_in_steps": 5000,
+      "incremental_seconds": 5.819671459001256,
+      "epsilon_max_abs_error": 0.0013681535908702247,
+      "means": {
+        "epsilon_0": 0.12114355900970017,
+        "policy_0_0": 1.0,
+        "policy_0_1": 0.0,
+        "policy_0_2": 0.0,
+        "hand_0_min": 12.78125,
+        "hand_0_max": 24.953125,
+        "hand_0_mean": 18.8671875,
+        "owns_0_20": 0.125,
+        "owns_0_50": 0.0,
+        "owns_0_84": 0.0
+      },
+      "decisions": {
+        "1": {
+          "chosen": 10,
+          "reference_chosen": 10,
+          "reference_regret": 0.0,
+          "cost_rmse": 0.018989684065068416,
+          "costs": [
+            1.81640625,
+            8.0
+          ],
+          "particle_half_choices": [
+            10,
+            10
+          ]
+        },
+        "3": {
+          "chosen": 76,
+          "reference_chosen": 76,
+          "reference_regret": 0.0,
+          "cost_rmse": 0.027597611326706184,
+          "costs": [
+            9.81640625,
+            8.59375
+          ],
+          "particle_half_choices": [
+            76,
+            76
+          ]
+        }
+      }
+    },
+    {
+      "burn_in_steps": 10000,
+      "incremental_seconds": 7.025961165985791,
+      "epsilon_max_abs_error": 0.017869755576702034,
+      "means": {
+        "epsilon_0": 0.10464195702386836,
+        "policy_0_0": 1.0,
+        "policy_0_1": 0.0,
+        "policy_0_2": 0.0,
+        "hand_0_min": 13.1875,
+        "hand_0_max": 26.453125,
+        "hand_0_mean": 19.8203125,
+        "owns_0_20": 0.109375,
+        "owns_0_50": 0.0,
+        "owns_0_84": 0.0
+      },
+      "decisions": {
+        "1": {
+          "chosen": 10,
+          "reference_chosen": 10,
+          "reference_regret": 0.0,
+          "cost_rmse": 0.05213531443318783,
+          "costs": [
+            1.76953125,
+            8.0
+          ],
+          "particle_half_choices": [
+            10,
+            10
+          ]
+        },
+        "3": {
+          "chosen": 76,
+          "reference_chosen": 76,
+          "reference_regret": 0.0,
+          "cost_rmse": 0.053760852161760714,
+          "costs": [
+            9.76953125,
+            8.546875
+          ],
+          "particle_half_choices": [
+            76,
+            76
+          ]
+        }
+      }
+    },
+    {
+      "burn_in_steps": 20000,
+      "incremental_seconds": 15.653569415997481,
+      "epsilon_max_abs_error": 0.029899849804437217,
+      "means": {
+        "epsilon_0": 0.1524115624050076,
+        "policy_0_0": 1.0,
+        "policy_0_1": 0.0,
+        "policy_0_2": 0.0,
+        "hand_0_min": 13.515625,
+        "hand_0_max": 26.765625,
+        "hand_0_mean": 20.140625,
+        "owns_0_20": 0.125,
+        "owns_0_50": 0.0,
+        "owns_0_84": 0.0
+      },
+      "decisions": {
+        "1": {
+          "chosen": 10,
+          "reference_chosen": 10,
+          "reference_regret": 0.0,
+          "cost_rmse": 0.07699453720927739,
+          "costs": [
+            1.734375,
+            8.0
+          ],
+          "particle_half_choices": [
+            10,
+            10
+          ]
+        },
+        "3": {
+          "chosen": 76,
+          "reference_chosen": 76,
+          "reference_regret": 0.0,
+          "cost_rmse": 0.07955613621914798,
+          "costs": [
+            9.734375,
+            8.59375
+          ],
+          "particle_half_choices": [
+            76,
+            76
+          ]
+        }
+      }
+    }
+  ]
+}
