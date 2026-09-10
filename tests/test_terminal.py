@@ -68,3 +68,11 @@ def test_doodle_always_has_four_nonempty_rows_with_five_slots(stage: int) -> Non
         assert row.startswith(str(index))
         assert row.count("[") == 5
         assert row.count("[ · ]") < 5
+
+
+@pytest.mark.parametrize("completed", [0, 5, 10])
+def test_progress_displays_completed_matches(completed: int) -> None:
+    console = Console(width=80, color_system=None)
+    with console.capture() as capture:
+        console.print(_animation_frame(2, 10, 66, 80, ("Alice", "Bob"), completed))
+    assert f"Matches completed: {completed}/10 · {completed / 10:.0%}" in capture.get()

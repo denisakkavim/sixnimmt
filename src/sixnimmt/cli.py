@@ -133,13 +133,14 @@ def arena(
             max_abandoned_decisions=max_abandoned_decisions,
             stop_on_failure=stop_on_failure,
         )
-        with arena_animation(games, seed, players, enabled=animation):
+        with arena_animation(games, seed, players, enabled=animation) as display:
             result = run_arena(
                 players,
                 games,
                 seed,
                 protocol=MatchProtocol(communication_enabled=communication),
                 config=config,
+                on_progress=display.update if display is not None else None,
             )
     except ValueError as error:
         typer.echo(f"Error: {error}", err=True)

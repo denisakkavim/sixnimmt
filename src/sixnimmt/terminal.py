@@ -1,4 +1,4 @@
-"""Terminal-only entertainment while the arena runs."""
+"""Terminal progress and entertainment while the arena runs."""
 
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
@@ -8,6 +8,7 @@ from time import monotonic
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
+from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
@@ -81,7 +82,9 @@ def _player_table(names: tuple[str, ...], tick: int) -> Table:
     return table
 
 
-def _animation_frame(elapsed: float, games: int, seed: int, width: int, names: tuple[str, ...]) -> Panel:
+def _animation_frame(
+    elapsed: float, games: int, seed: int, width: int, names: tuple[str, ...], completed: int = 0
+) -> Panel:
     stage = int(elapsed / 0.8) % len(_CAPTIONS)
     seconds = int(elapsed)
     minutes, seconds = divmod(seconds, 60)
@@ -92,6 +95,8 @@ def _animation_frame(elapsed: float, games: int, seed: int, width: int, names: t
     return Panel(
         Group(
             status,
+            Text(f"Matches completed: {completed:,}/{games:,} · {completed / games:.0%}"),
+            ProgressBar(total=games, completed=completed),
             Text(),
             Text(f"{len(names)} players at the doodle table", style="bold"),
             _player_table(names, int(elapsed / 0.8)),
@@ -116,17 +121,25 @@ class _ArenaAnimation:
     seed: int
     names: tuple[str, ...]
     started: float = field(default_factory=monotonic)
+    completed: int = 0
+
+    def update(self, completed: int) -> None:
+        self.completed = completed
 
     def render(self) -> Panel:
-        return _animation_frame(monotonic() - self.started, self.games, self.seed, self.console.width, self.names)
+        return _animation_frame(
+            monotonic() - self.started, self.games, self.seed, self.console.width, self.names, self.completed
+        )
 
 
 @contextmanager
-def arena_animation(games: int, seed: int, players: Sequence[PlayerConfig], *, enabled: bool = True) -> Iterator[None]:
+def arena_animation(
+    games: int, seed: int, players: Sequence[PlayerConfig], *, enabled: bool = True
+) -> Iterator[_ArenaAnimation | None]:
     """Animate only on interactive terminals; always restore the display on exit."""
     console = Console(highlight=False)
-    if not enabled or not console.is_terminal or console.is_dumb_terminal:
-        yield
+    if games < 1 or not enabled or not console.is_terminal or console.is_dumb_terminal:
+        yield None
         return
     names: list[str] = []
     for seat, player in enumerate(players, start=1):
@@ -138,4 +151,4 @@ def arena_animation(games: int, seed: int, players: Sequence[PlayerConfig], *, e
         names.append(name)
     animation = _ArenaAnimation(console, games, seed, tuple(names))
     with Live(console=console, get_renderable=animation.render, refresh_per_second=4, transient=True):
-        yield
+        yield animation

@@ -265,6 +265,13 @@ An optional runner `observer(state, events)` callback receives privileged state
 and each appended batch, including setup. Use it for instrumentation, not bot
 observations. It must be thread-safe when matches run concurrently.
 
+`run_arena(..., on_progress=callback)` calls `callback(completed)` after each
+collected match result, including non-finished outcomes. Counts start at 1 and
+increase once per result. The callback runs in the calling thread for both
+backends and receives only the count, without game state. Keep it quick;
+callback exceptions propagate to the caller. Early stops may leave the count
+below the requested number of games.
+
 ## API map
 
 | Import | Purpose |

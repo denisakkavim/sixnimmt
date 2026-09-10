@@ -89,12 +89,13 @@ finishes a match wins over a limit reached by that action.
 While the arena runs, interactive terminals show an animated bull pen with four
 rows of five card slots and bull-head totals. Each row starts with cards; more
 cards arrive, and a sixth card triggers a capture and starts a fresh row.
-It includes elapsed time, the requested match count, the seed, and rotating
-game tips. The doodle table uses the configured player count and display names
+It includes elapsed time, the seed, rotating game tips, and a progress bar with
+the completed/requested match count and percentage. All returned outcomes count
+toward progress, including abandoned, forfeited, and failed matches. Runs that
+stop early keep the original requested total. The doodle table uses the configured player count and display names
 in seat order, with a pretend card reveal rotating through every player. Missing
 names use the same defaults as the results table. The card sequence is a
-decorative doodle, not a live match or a
-completion percentage. It works with both thread and process backends and
+decorative doodle, separate from the actual match progress. It works with both thread and process backends and
 clears when the run ends, including on errors. Use `--no-animation` to disable
 it. Redirected output and basic `TERM=dumb` terminals skip the animation.
 

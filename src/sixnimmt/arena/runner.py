@@ -516,7 +516,7 @@ class _Aggregate:
         self.accepted = [0] * len(players)
         self.rejected = [0] * len(players)
 
-    def add(self, result: _GameSummary) -> None:
+    def add(self, result: _GameSummary, on_progress: Callable[[int], None] | None) -> None:
         self.counts[result.outcome] += 1
         self.hands += result.hands
         self.actions += result.actions
@@ -532,6 +532,9 @@ class _Aggregate:
                     self.wins[index] += 1
                 else:
                     self.ties[index] += 1
+
+        if on_progress is not None:
+            on_progress(sum(self.counts.values()))
 
     def result(
         self, run_id: str, seed: int, games: int, started: int, abandoned: int, reproducible: bool
@@ -614,6 +617,7 @@ def _collect_games(
     abandoned: AbandonedDecisions,
     aggregate: _Aggregate,
     entries: list[ManifestMatch],
+    on_progress: Callable[[int], None] | None,
 ) -> tuple[int, BaseException | None]:
     started = 0
     fatal: BaseException | None = None
@@ -640,7 +644,7 @@ def _collect_games(
                 fatal = fatal or error
                 stop = True
                 continue
-            aggregate.add(result)
+            aggregate.add(result, on_progress)
             if entry is not None:
                 entries.append(entry)
             if config.stop_on_failure and result.outcome == MatchOutcome.FAILED:
@@ -659,6 +663,7 @@ def _drive_games(
     initial_bots: Sequence[Bot],
     aggregate: _Aggregate,
     entries: list[ManifestMatch],
+    on_progress: Callable[[int], None] | None,
 ) -> tuple[int, BaseException | None]:
     config = job.config
     pool: Executor
@@ -675,7 +680,7 @@ def _drive_games(
         pool = ThreadPoolExecutor(max_workers=config.concurrency, thread_name_prefix="arena-match")
         play_game = partial(_play_thread_game, job, abandoned, observer, initial_bots)
     with pool:
-        return _collect_games(pool, play_game, games, config, abandoned, aggregate, entries)
+        return _collect_games(pool, play_game, games, config, abandoned, aggregate, entries, on_progress)
 
 
 def _validate_process_players(specs: Sequence[ResolvedPlayer], observer: Observer | None) -> None:
@@ -703,8 +708,13 @@ def run_arena(
     config: RunConfig | None = None,
     max_actions_per_match: int | None = None,
     observer: Observer | None = None,
+    on_progress: Callable[[int], None] | None = None,
 ) -> ArenaResult:
-    """Run fresh seats per match, retaining full provenance only when tracing."""
+    """Run fresh seats per match, retaining full provenance only when tracing.
+
+    on_progress receives the completed match count in the calling thread after
+    each result, for either backend. Callback exceptions propagate to the caller.
+    """
     _validate_player_count(len(players))
     if games < 1:
         msg = "games must be positive"
@@ -755,6 +765,7 @@ def run_arena(
         initial_bots,
         aggregate,
         entries,
+        on_progress,
     )
     result = aggregate.result(run_id, seed, games, started, abandoned.total, all(spec.deterministic for spec in specs))
     if config.trace_dir is not None:

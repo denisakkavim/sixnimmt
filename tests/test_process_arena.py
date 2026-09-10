@@ -347,3 +347,19 @@ def test_process_volume_matches_thread_results_and_replays(tmp_path: Path, commu
         for index, player in enumerate(replay.state.players):
             replay_scores[index] += player.total_score
     assert replay_scores == [player.total_score for player in parallel.players]
+
+
+@pytest.mark.parametrize("backend", ["thread", "process"])
+@pytest.mark.parametrize("action_limit", [1, 10_000])
+def test_progress_counts_each_collected_outcome(backend: str, action_limit: int) -> None:
+    counts: list[int] = []
+    result = run_arena(
+        [PlayerConfig(bot="random"), PlayerConfig(bot="lowest_card")],
+        4,
+        66,
+        config=RunConfig(backend=backend, concurrency=2, match_action_limit=action_limit),
+        on_progress=counts.append,
+    )
+    assert counts == [1, 2, 3, 4]
+    assert counts[-1] == result.games_completed
+    assert result.abandoned == (4 if action_limit == 1 else 0)
