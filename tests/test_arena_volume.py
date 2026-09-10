@@ -7,11 +7,13 @@ import pytest
 
 from sixnimmt.arena.bots import (
     REGISTRY,
+    Bot,
     ControlledBurnBot,
     CountThresholdBaitBot,
     HandAwareRowChoiceBot,
     RandomBot,
     Rejection,
+    SimulationBot,
 )
 from sixnimmt.arena.bots.count_threshold_bait import CandidateRanking
 from sixnimmt.arena.runner import derive_seed, run_match
@@ -348,4 +350,55 @@ def test_mixed_baselines_preserve_intermediate_invariants(communication: bool, t
         assert ledger.finished
         assert result.actions_rejected == 0
         assert result.winners == ledger.winners
+        _assert_replay_matches(ledger.log, result.final_state)
+
+
+@pytest.mark.arena_slow
+@pytest.mark.parametrize("communication", [False, True])
+@pytest.mark.parametrize(
+    ("strategy", "horizon"),
+    [
+        ("simulation", 1),
+        ("simulation", "remaining_hand"),
+        ("model_based_bait", 1),
+    ],
+)
+def test_uncertainty_matches_preserve_intermediate_invariants(
+    communication: bool, strategy: str, horizon: int | str
+) -> None:
+    for game in range(10):
+        player_count = (2, 5, 10)[game % 3]
+        ledger = MatchLedger(player_count)
+        options = {
+            "model": {
+                "policies": ["lowest_card", "highest_card", "random"],
+                "mode": ("single_policy", "fixed_mixture", "learned_mixture")[game % 3],
+                "particle_count": 2,
+                "burn_in_steps": 4,
+                "epsilon_proposal_scale": 1.0,
+            },
+            "sample_count": 2,
+            "horizon": horizon,
+            "continuation_policy": "closest_gap",
+            "row_policy": {"policy": "cheapest"},
+            "objective": {"kind": "mean"},
+            "cutoff_evaluation": "zero",
+            "fallback_strategy": "highest_fitting_card",
+        }
+        if options["model"]["mode"] == "single_policy":
+            options["model"]["policies"] = ["highest_card"]
+        bot = REGISTRY[strategy].build(derive_seed(4321, "bot", game, 0), **options)
+        assert isinstance(bot, SimulationBot)
+        bots: list[Bot] = [RandomBot(derive_seed(4321, "bot", game, seat)) for seat in range(player_count)]
+        bots[game % player_count] = bot
+        result = run_match(
+            bots,
+            derive_seed(4321, "match", game),
+            observer=ledger,
+            protocol=MatchProtocol(communication_enabled=communication),
+        )
+        assert result.final_state.phase == Phase.FINISHED, result.reason
+        assert bot.stats()["recovery_count"] == 0
+        assert ledger.finished
+        assert result.actions_rejected == 0
         _assert_replay_matches(ledger.log, result.final_state)

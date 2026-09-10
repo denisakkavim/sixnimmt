@@ -1,5 +1,8 @@
 # A probabilistic model of 6 nimmt!
 
+For the implemented approximation, required configuration, and current limits,
+see [Probabilistic bots](uncertainty-bots.md).
+
 ## Status and scope
 
 This document defines the proposed model for uncertainty-aware bots. It is a

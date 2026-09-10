@@ -22,6 +22,8 @@ from sixnimmt.arena.bots.llm_memory import LLMMemoryBot, LLMMemoryOptions
 from sixnimmt.arena.bots.lowest_card import LowestCardBot
 from sixnimmt.arena.bots.lowest_fitting_card import LowestFittingCardBot
 from sixnimmt.arena.bots.random import RandomBot
+from sixnimmt.arena.bots.simulation import SimulationBot, build_model_based_bait, build_simulation
+from sixnimmt.arena.bots.uncertainty.options import ModelBasedBaitOptions, SimulationOptions
 
 __all__ = [
     "REGISTRY",
@@ -46,8 +48,11 @@ __all__ = [
     "LLMOptions",
     "LowestCardBot",
     "LowestFittingCardBot",
+    "ModelBasedBaitOptions",
     "RandomBot",
     "Rejection",
+    "SimulationBot",
+    "SimulationOptions",
 ]
 
 
@@ -80,6 +85,16 @@ def _build_lowest_fitting_card(seed: int) -> LowestFittingCardBot:
 
 
 REGISTRY: dict[str, BotSpec] = {
+    "simulation": BotSpec(
+        "simulation", build_simulation, False, {"strategy_id": "simulation", "version": "1"}, SimulationOptions
+    ),
+    "model_based_bait": BotSpec(
+        "model_based_bait",
+        build_model_based_bait,
+        False,
+        {"strategy_id": "model_based_bait", "version": "1"},
+        ModelBasedBaitOptions,
+    ),
     "hand_aware_row_choice": BotSpec(
         "hand_aware_row_choice",
         build_hand_aware_row_choice,

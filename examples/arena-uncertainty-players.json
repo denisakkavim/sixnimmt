@@ -1,0 +1,36 @@
+[
+  {
+    "bot": "simulation",
+    "display_name": "Lookahead",
+    "options": {
+      "model": {
+        "policies": [
+          "lowest_card",
+          "highest_card",
+          "closest_gap"
+        ],
+        "mode": "learned_mixture",
+        "particle_count": 32,
+        "burn_in_steps": 200,
+        "epsilon_proposal_scale": 1.0
+      },
+      "sample_count": 32,
+      "horizon": 2,
+      "continuation_policy": "closest_gap",
+      "row_policy": {
+        "policy": "cheapest"
+      },
+      "objective": {
+        "kind": "mean"
+      },
+      "cutoff_evaluation": "zero",
+      "fallback_strategy": "closest_gap"
+    }
+  },
+  {
+    "bot": "closest_gap"
+  },
+  {
+    "bot": "highest_fitting_card"
+  }
+]

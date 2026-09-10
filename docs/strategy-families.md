@@ -5,8 +5,10 @@
 Compare reproducible strategies by the ideas they test, rather than arranging them
 in tiers of expected strength. More elaborate reasoning does not necessarily
 produce a stronger player. The board-independent baselines and board-and-hand heuristics are implemented;
-see [Writing bots](bots.md) for their registry names. The remaining families
-describe candidates and experimental variants.
+see [Writing bots](bots.md) for their registry names. Model-based bait and the
+penalty-distribution/simulation evaluator are also implemented; see
+[Probabilistic bots](uncertainty-bots.md) for their concrete configuration.
+Other entries describe candidates and experimental variants.
 
 ## Gameplay and common conventions
 
@@ -190,8 +192,8 @@ identity and options with each experiment. Defaults remain to be selected.
 
 | Strategy | Decision rule | Details and caveats |
 | --- | --- | --- |
-| Bait: model-based | Under an explicit opponent model, estimate this turn's pickup cost for candidates targeting full rows and for the configured fallback play. Attempt bait only if the best bait candidate has strictly lower expected cost than the fallback play. | Model joint placements, row choices, and possible repeated pickups. Equal estimated cost keeps the fallback play. Opponent model, evaluation budget, candidate tie-breaking, and defaults remain to be specified. |
-| Penalty-distribution evaluator | Predict each candidate's distribution of bull heads taken this turn using the configured model, then minimise the configured objective. | Model and objective are independently configurable. Expected-bull minimisation is the mean-penalty objective, not a separate strategy. Use full public play history; objective ties and defaults remain to be specified. |
+| Bait: model-based | Under an explicit opponent model, estimate this turn's pickup cost for candidates targeting full rows and for the configured fallback play. Attempt bait only if the best bait candidate has strictly lower expected cost than the fallback play. | Model joint placements, row choices, and possible repeated pickups. Equal estimated cost keeps the fallback play. Implemented as `model_based_bait`; required configuration and tie-breaking are documented in the probabilistic-bot guide. |
+| Penalty-distribution evaluator | Predict each candidate's distribution of bull heads taken this turn using the configured model, then minimise the configured objective. | Model and objective are independently configurable. Expected-bull minimisation is the mean-penalty objective, not a separate strategy. Implemented by `simulation` with horizon 1; objective ties use the lower card and experiment settings are required. |
 
 #### Penalty-distribution evaluator configuration
 
@@ -270,7 +272,7 @@ opponent card does not automatically imply a pickup. Row capacity, placement ord
 resets, and opponent preferences matter. Account for unseen cards that are undealt;
 do not assign all unseen cards to opponents. Reset card knowledge with each deal.
 
-The proposed learned model updates policy weights and continuous epsilon
+The learned model updates policy weights and continuous epsilon
 jointly with possible hidden hands. Publicly played cards do not reveal what
 alternatives opponents held, so adaptation must account for that uncertainty.
 Uniform initial deals do not imply uniform remaining hands after behavioural

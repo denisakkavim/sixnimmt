@@ -12,6 +12,8 @@ from sixnimmt.arena.bots import REGISTRY, Bot, BotSpec
 from sixnimmt.arena.bots.controlled_burn import ControlledBurnBot, ControlledBurnOptions
 from sixnimmt.arena.bots.count_threshold_bait import CandidateRanking, CountThresholdBaitBot, CountThresholdBaitOptions
 from sixnimmt.arena.bots.hand_aware_row_choice import HandAwareRowChoiceBot, HandAwareRowChoiceOptions
+from sixnimmt.arena.bots.simulation import SimulationBot
+from sixnimmt.arena.bots.uncertainty.options import SimulationOptions
 from sixnimmt.common.text import check_representable
 
 
@@ -97,6 +99,18 @@ def resolve_players(players: Sequence[PlayerConfig]) -> list[ResolvedPlayer]:
             )
             recorded_options["fallback_options"] = fallback.recorded_options
             build_options["fallback_options"] = fallback.options
+        elif isinstance(options, SimulationOptions):
+            fallback = resolve_players([PlayerConfig(bot=options.fallback_strategy, options=options.fallback_options)])[
+                0
+            ]
+            spec = replace(
+                spec,
+                build=partial(_build_simulation, fallback=fallback, options_type=type(options)),
+                deterministic=fallback.deterministic,
+                metadata={**spec.metadata, "fallback_metadata": fallback.metadata},
+            )
+            recorded_options["fallback_options"] = fallback.recorded_options
+            build_options["fallback_options"] = fallback.options
         elif isinstance(options, HandAwareRowChoiceOptions):
             card_player = PlayerConfig(bot=options.card_strategy, options=options.card_options)
             card_strategy = resolve_players([card_player])[0]
@@ -133,3 +147,9 @@ def _build_hand_aware_row_choice(
     card_strategy_resolved: ResolvedPlayer,
 ) -> HandAwareRowChoiceBot:
     return HandAwareRowChoiceBot(max_extra_penalty, card_strategy_resolved.build(seed))
+
+
+def _build_simulation(
+    seed: int, *, fallback: ResolvedPlayer, options_type: type[SimulationOptions], **settings: Any
+) -> SimulationBot:
+    return SimulationBot(seed, options_type.model_validate(settings), fallback.build(seed))

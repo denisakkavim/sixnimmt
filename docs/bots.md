@@ -251,3 +251,9 @@ fixed-hand matches before starting large runs.
 
 Source: [bot contracts](../src/sixnimmt/arena/bots/base.py) and
 [transaction validation](../src/sixnimmt/arena/transactions.py).
+
+## Probabilistic bots
+
+The registered `simulation` and `model_based_bait` bots share learned opponent
+models and engine-backed rollout evaluation. See [Probabilistic bots](uncertainty-bots.md)
+for required configuration, model modes, risk objectives, and inference limits.
