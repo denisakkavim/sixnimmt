@@ -16,7 +16,7 @@ _EVENT_ADAPTER: TypeAdapter[Event] = TypeAdapter(Event)
 
 
 class ActionRecord(BaseModel):
-    """One submitted action, in the order the arena processed it (§11.1).
+    """One submitted action, in the order the arena processed it.
 
     `server_action_seq` is the canonical order; `received_at` is for latency
     analysis only, and nothing may replay a match from timestamps.
@@ -28,8 +28,8 @@ class ActionRecord(BaseModel):
     action_id: str
     player_id: str
     type: str | None
-    # An audit reference to the projection the client says it acted on. Recorded
-    # so a decision can be read back against what the agent could see.
+    # The folded observation offered for this decision, so the audit record can
+    # be read back against what the bot could see.
     from_view: str | None
     received_at: datetime
     outcome: Literal["accepted", "rejected", "timeout", "error"] = "accepted"
@@ -81,8 +81,8 @@ class AtomicJsonlWriter:
         self._path = path
         self._pending = pending_path(path)
         self._recover()
-        # Appending, never truncating: an existing log is history, and §11.4
-        # requires it to survive everything that happens to the match.
+        # Reopening a match preserves its committed history, including after
+        # abandonment; only an unacknowledged sidecar batch is rolled back.
         self._handle = path.open("a", encoding="utf-8")
 
     def _recover(self) -> None:
@@ -99,7 +99,7 @@ class AtomicJsonlWriter:
         self._stage(lines)
         # One call for the whole batch, then forced to the platter before the
         # caller is told it was written: flushing alone leaves the tail of a
-        # match to the operating system's discretion (§11.3).
+        # match to the operating system's discretion.
         self._handle.write(lines)
         self._handle.flush()
         os.fsync(self._handle.fileno())
@@ -325,6 +325,6 @@ def read_action_log(path: Path) -> list[ActionRecord]:
     """Every action record, already in `server_action_seq` order.
 
     Records are written inside the per-match serialisation boundary, so the file
-    order is the processing order §11.1 makes canonical.
+    order is the canonical processing order, independent of timestamps.
     """
     return _parse_log(path, ActionRecord.model_validate_json)

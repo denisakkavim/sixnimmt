@@ -26,12 +26,14 @@ class ActionEnvelope(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    # Caller UUID for idempotency; None means the action runner assigns one.
+    # Retained caller metadata; the in-process arena assigns its own audit ID
+    # and does not deduplicate submissions using this field.
     action_id: str | None = None
-    # Audit reference only: records which observation the client acted on.
-    # Never validated for freshness; a stale value never causes rejection.
+    # Optional caller observation metadata, retained without freshness checks.
+    # Arena audit records reference the view offered for the decision.
     from_view: str | None = None
-    # Optional optimistic concurrency, expressed in the caller's own cursor.
+    # Retained compatibility metadata; the engine and arena do not enforce
+    # an optimistic-concurrency guard on this value.
     expected_view_version: int | None = None
 
 

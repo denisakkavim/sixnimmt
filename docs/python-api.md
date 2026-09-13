@@ -308,3 +308,11 @@ Historical configuration is decoded through `rules_from_recording()` and
 unknown keys when folding logs. These readers are not experiment-input validators.
 Engine state transitions may use unchecked `model_copy(update=...)` after
 establishing invariants; changing external configuration requires validation.
+
+## Action metadata
+
+`ActionEnvelope.action_id` and `expected_view_version` are retained compatibility
+metadata. The in-process arena generates its own action-record IDs and neither
+deduplicates by the supplied ID nor enforces an optimistic-concurrency guard.
+`from_view` is retained caller metadata with no freshness check. The arena
+records its own offered view in action audit records.

@@ -111,6 +111,15 @@ truncates it back to the committed length. Event parsing tolerates an incomplete
 final JSON line, but rejects corruption earlier in the log. Use the supplied
 readers to preserve these recovery rules.
 
+Readers apply the sidecar's committed byte boundary before parsing records. A
+final line can be discarded only when JSON decoding identifies an interrupted
+string or an unexpected end of input, the line has no terminating newline, and
+at least one earlier record is valid. A valid final record needs no newline.
+Complete schema errors (including unknown event types), ambiguous syntax errors,
+and invalid middle records raise `LogRecordError` with the path and physical line
+number. An entirely unreadable file also raises.
+
+
 A caller-supplied `EventSink` remains the caller's responsibility to close.
 When the runner creates its own sink, it closes it on completion.
 
@@ -131,14 +140,6 @@ Sources: [persistence](../src/sixnimmt/persistence/sink.py),
 [manifest](../src/sixnimmt/persistence/manifest.py),
 [replay](../src/sixnimmt/engine/replay.py), and
 [analytics](../src/sixnimmt/analytics/summary.py).
-
-Readers apply the sidecar's committed byte boundary before parsing records. A
-final line can be discarded only when JSON decoding identifies an interrupted
-string or an unexpected end of input, the line has no terminating newline, and
-at least one earlier record is valid. A valid final record needs no newline.
-Complete schema errors (including unknown event types), ambiguous syntax errors,
-and invalid middle records raise `LogRecordError` with the path and physical line
-number. An entirely unreadable file also raises.
 
 ## Event payload contracts
 

@@ -358,7 +358,7 @@ def test_seed_uses_1_based_hand_number() -> None:
 
 
 # (match_seed, hand_number, player_count) -> (hands in deal order, four row starts).
-# Derived from the spec's dealing rule, not from the dealing code: a reimplementation
+# Derived from the published dealing rule, not from the dealing code: a reimplementation
 # that deals correctly but stores hands sorted must fail here.
 DEAL_VECTORS: dict[tuple[int, int, int], tuple[list[list[int]], list[int]]] = {
     (12345, 1, 5): (

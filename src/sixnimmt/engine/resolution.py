@@ -112,8 +112,8 @@ def advance_resolution(state: MatchState) -> tuple[MatchState, list[Event]]:
             }
         )
         # Public: cards_revealed already published every card, so the only new
-        # fact is who the game is now waiting for, which §9.2 requires every
-        # viewer to see as `awaiting`.
+        # fact is who the game is now waiting for. Every viewer needs this
+        # public fact to derive the same `awaiting` player.
         event: Event = RowChoiceRequiredEvent(
             match_id=state.match_id,
             hand=state.hand_number,
