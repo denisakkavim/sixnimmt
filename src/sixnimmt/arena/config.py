@@ -62,3 +62,11 @@ def _validate_limits(config: RunConfig) -> None:
     if timeout is not None and (not math.isfinite(timeout) or timeout <= 0):
         msg = "decision_timeout_seconds must be finite and positive"
         raise ValueError(msg)
+
+
+def resolved_abandoned_limit(config: RunConfig) -> int:
+    """Worker settings must have passed resolve(); zero is a valid bound."""
+    if config.max_abandoned_decisions is None:
+        msg = "arena configuration has not resolved the abandoned-decision limit"
+        raise ValueError(msg)
+    return config.max_abandoned_decisions

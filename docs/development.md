@@ -114,3 +114,18 @@ changing compatibility. Keep tests and comments understandable without historica
 planning documents. Add configuration where it belongs: game shape in
 `GameRules`, experiment protocol in `MatchProtocol`, operational bounds in
 `RunConfig`, and strategy settings in the bot's `BotOptions` subclass.
+
+Arena execution is divided by ownership: `arena/match.py` owns the match loop and
+publication; `arena/execution.py` constructs worker lineups, schedules bounded
+work, stops submission after failures, and drains started matches;
+`arena/aggregation.py` combines compact worker summaries; `arena/tracing.py`
+collects diagnostics and builds manifests. `arena/runner.py` exposes the existing
+`run_match` and `run_arena` imports and orchestrates a tournament.
+
+A caller-provided sink remains caller-owned. Standalone matches close sinks they
+create; tournament workers close their per-match sinks. Timed-out calls retain
+their bot instances until they finish, and late results are discarded. The parent
+writes a partial manifest for collected worker/submission failures. Observer and
+progress callback exceptions still propagate directly; they do not promise a
+partial manifest. The shared abandoned-decision counter is an internal worker
+argument and is no longer exposed by the public `run_match` signature.
