@@ -19,7 +19,7 @@ from sixnimmt.arena.bots.uncertainty.options import (
     PolicyName,
     SimulationOptions,
 )
-from sixnimmt.arena.bots.uncertainty.simulation import rollout
+from sixnimmt.arena.bots.uncertainty.rollouts import rollout
 from sixnimmt.engine.views import MatchView
 
 

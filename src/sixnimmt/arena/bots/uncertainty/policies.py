@@ -3,13 +3,15 @@
 import random
 
 from sixnimmt.arena.bots.base import Bot
-from sixnimmt.arena.bots.closest_gap import ClosestGapBot
-from sixnimmt.arena.bots.coldest_row import ColdestRowBot
-from sixnimmt.arena.bots.hand_flexibility import HandFlexibilityBot
-from sixnimmt.arena.bots.highest_card import HighestCardBot
-from sixnimmt.arena.bots.highest_fitting_card import HighestFittingCardBot
-from sixnimmt.arena.bots.lowest_card import LowestCardBot
-from sixnimmt.arena.bots.lowest_fitting_card import LowestFittingCardBot
+from sixnimmt.arena.bots.heuristics import (
+    ClosestGapBot,
+    ColdestRowBot,
+    HandFlexibilityBot,
+    HighestCardBot,
+    HighestFittingCardBot,
+    LowestCardBot,
+    LowestFittingCardBot,
+)
 from sixnimmt.engine.actions import SelectCardAction
 from sixnimmt.engine.state import Phase
 from sixnimmt.engine.views import MatchView, PlayerSelfView, RowView

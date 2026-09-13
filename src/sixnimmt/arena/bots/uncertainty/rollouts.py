@@ -3,9 +3,8 @@
 import math
 import random
 
-from sixnimmt.arena.bots._board import cheapest_row
-from sixnimmt.arena.bots.hand_aware_row_choice import HandAwareRowChoiceBot
-from sixnimmt.arena.bots.highest_card import HighestCardBot
+from sixnimmt.arena.bots.composed import HandAwareRowChoiceBot
+from sixnimmt.arena.bots.heuristics import HighestCardBot, cheapest_row
 from sixnimmt.engine.actions import ChooseRowAction
 from sixnimmt.engine.resolution import advance_resolution, choose_row
 from sixnimmt.engine.state import MatchState, Phase, PlayerState, ResolutionState, RowState

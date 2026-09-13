@@ -9,7 +9,9 @@ from typing import Any
 
 import pytest
 
-from sixnimmt.arena.bots import REGISTRY, BotOptions, BotSpec, RandomBot, Rejection
+from sixnimmt.arena.bots.base import BotOptions, BotSpec, Rejection
+from sixnimmt.arena.bots.heuristics import RandomBot
+from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.config import RunConfig
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.arena.runner import ArenaError, derive_seed, run_arena

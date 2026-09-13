@@ -8,8 +8,8 @@ import numpy as np
 import pytest
 from scipy.special import expit, logit
 
-from sixnimmt.arena.bots import REGISTRY
 from sixnimmt.arena.bots.base import ActionBatch, Rejection
+from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot
 from sixnimmt.arena.bots.uncertainty.history import HandHistory, InferenceError, ObservedTurn, PublicHistory
 from sixnimmt.arena.bots.uncertainty.inference import BatchedLegalProposal, OpponentModel, Posterior

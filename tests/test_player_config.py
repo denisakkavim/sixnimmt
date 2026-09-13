@@ -9,7 +9,9 @@ import pytest
 from pydantic import Field
 from typer.testing import CliRunner
 
-from sixnimmt.arena.bots import REGISTRY, BotOptions, BotSpec, RandomBot
+from sixnimmt.arena.bots.base import BotOptions, BotSpec
+from sixnimmt.arena.bots.heuristics import RandomBot
+from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.arena.runner import RunConfig, run_arena
 from sixnimmt.cli import app

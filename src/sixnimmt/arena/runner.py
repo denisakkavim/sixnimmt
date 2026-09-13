@@ -10,8 +10,7 @@ from functools import partial
 from multiprocessing import get_context
 from typing import Literal
 
-from sixnimmt.arena.bots import Bot, Rejection
-from sixnimmt.arena.bots.base import ActionBatch, memory_bot, traced_bot
+from sixnimmt.arena.bots.base import ActionBatch, Bot, Rejection, memory_bot, traced_bot
 from sixnimmt.arena.config import RunConfig as RunConfig
 from sixnimmt.arena.config import resolve as resolve
 from sixnimmt.arena.decisions import AbandonedDecisions, Decision, SharedAbandonedState, decide

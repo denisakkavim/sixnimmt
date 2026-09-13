@@ -10,8 +10,7 @@ from multiprocessing.synchronize import Lock as ProcessLock
 from queue import Empty, Queue
 from time import monotonic
 
-from sixnimmt.arena.bots import Bot, Rejection
-from sixnimmt.arena.bots.base import ActionBatch, memory_bot
+from sixnimmt.arena.bots.base import ActionBatch, Bot, Rejection, memory_bot
 from sixnimmt.engine.actions import (
     Action,
     ChooseRowAction,

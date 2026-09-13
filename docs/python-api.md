@@ -36,7 +36,7 @@ package does not re-export the APIs below.
 ## Run and inspect one match
 
 ```python
-from sixnimmt.arena.bots import LowestFittingCardBot, RandomBot
+from sixnimmt.arena.bots.heuristics import LowestFittingCardBot, RandomBot
 from sixnimmt.arena.results import MatchOutcome
 from sixnimmt.arena.runner import run_match
 from sixnimmt.engine.rules import MatchProtocol
@@ -179,7 +179,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from sixnimmt.analytics.summary import summarise
-from sixnimmt.arena.bots import LowestFittingCardBot, RandomBot
+from sixnimmt.arena.bots.heuristics import LowestFittingCardBot, RandomBot
 from sixnimmt.arena.runner import RunConfig, run_match
 from sixnimmt.engine.replay import replay_events
 from sixnimmt.engine.rules import MatchProtocol

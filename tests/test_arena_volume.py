@@ -5,17 +5,16 @@ from itertools import pairwise
 
 import pytest
 
-from sixnimmt.arena.bots import (
-    REGISTRY,
-    Bot,
+from sixnimmt.arena.bots.base import Bot, Rejection
+from sixnimmt.arena.bots.composed import (
+    CandidateRanking,
     ControlledBurnBot,
     CountThresholdBaitBot,
     HandAwareRowChoiceBot,
-    RandomBot,
-    Rejection,
-    SimulationBot,
 )
-from sixnimmt.arena.bots.count_threshold_bait import CandidateRanking
+from sixnimmt.arena.bots.heuristics import RandomBot
+from sixnimmt.arena.bots.registry import REGISTRY
+from sixnimmt.arena.bots.simulation import SimulationBot
 from sixnimmt.arena.runner import derive_seed, run_match
 from sixnimmt.engine.actions import Action, SelectCardAction, SendMessageAction
 from sixnimmt.engine.audience import Viewer

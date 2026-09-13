@@ -8,10 +8,17 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
-from sixnimmt.arena.bots import REGISTRY, Bot, BotSpec
-from sixnimmt.arena.bots.controlled_burn import ControlledBurnBot, ControlledBurnOptions
-from sixnimmt.arena.bots.count_threshold_bait import CandidateRanking, CountThresholdBaitBot, CountThresholdBaitOptions
-from sixnimmt.arena.bots.hand_aware_row_choice import HandAwareRowChoiceBot, HandAwareRowChoiceOptions
+from sixnimmt.arena.bots.base import Bot, BotSpec
+from sixnimmt.arena.bots.composed import (
+    CandidateRanking,
+    ControlledBurnBot,
+    ControlledBurnOptions,
+    CountThresholdBaitBot,
+    CountThresholdBaitOptions,
+    HandAwareRowChoiceBot,
+    HandAwareRowChoiceOptions,
+)
+from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.bots.simulation import ModelBasedBaitBot
 from sixnimmt.arena.bots.uncertainty.options import ModelBasedBaitOptions
 from sixnimmt.common.text import check_representable

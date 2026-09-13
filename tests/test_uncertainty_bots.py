@@ -11,8 +11,8 @@ import pytest
 from pydantic import ValidationError
 from scipy.special import expit, logit
 
-from sixnimmt.arena.bots import REGISTRY
 from sixnimmt.arena.bots.base import ActionBatch
+from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot
 from sixnimmt.arena.bots.uncertainty.history import HandHistory, InferenceError, ObservedTurn, PublicHistory
 from sixnimmt.arena.bots.uncertainty.inference import LegalProposal, OpponentModel, Posterior, World, log_likelihood
@@ -25,7 +25,7 @@ from sixnimmt.arena.bots.uncertainty.options import (
     parse_row_policy,
 )
 from sixnimmt.arena.bots.uncertainty.policies import probability
-from sixnimmt.arena.bots.uncertainty.simulation import initial_state, penalty_value, resolve_turn, rollout
+from sixnimmt.arena.bots.uncertainty.rollouts import initial_state, penalty_value, resolve_turn, rollout
 from sixnimmt.arena.config import RunConfig
 from sixnimmt.arena.players import PlayerConfig, resolve_players
 from sixnimmt.arena.runner import run_arena, run_match

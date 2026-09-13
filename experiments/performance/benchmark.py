@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from experiments.mcmc.diagnose import CATALOGUE, ControlledOpponent
-from sixnimmt.arena.bots import REGISTRY
 from sixnimmt.arena.bots.base import ActionBatch, Rejection
+from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.bots.simulation import SimulationBot
 from sixnimmt.arena.bots.uncertainty.history import PublicHistory
 from sixnimmt.arena.bots.uncertainty.inference import OpponentModel, World

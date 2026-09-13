@@ -8,7 +8,8 @@ the code, message, legal actions, and optionally the rejected action.
 This minimal strategy works in classic and communication modes:
 
 ```python
-from sixnimmt.arena.bots import RandomBot, Rejection
+from sixnimmt.arena.bots.heuristics import RandomBot
+from sixnimmt.arena.bots.base import Rejection
 from sixnimmt.arena.runner import run_match
 from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt.engine.views import MatchView
@@ -28,7 +29,7 @@ print(result.outcome)
 ```
 
 The first-row choice is intentionally simple. A competitive bot should consider
-row penalties and placement risk. The bundled [lowest fitting card bot](../src/sixnimmt/arena/bots/lowest_fitting_card.py)
+row penalties and placement risk. The bundled [lowest fitting card bot](../src/sixnimmt/arena/bots/heuristics.py)
 plays the lowest card that currently fits. If none fits, it minimises immediate
 pickup cost, breaking ties by lowest card. Its Python class is
 `LowestFittingCardBot` and its registry name is `lowest_fitting_card` (formerly
@@ -191,7 +192,8 @@ be picklable. Lambdas and local definitions are unsupported. Protect the script'
 The following extends the example above:
 
 ```python
-from sixnimmt.arena.bots import REGISTRY, BotSpec
+from sixnimmt.arena.bots.registry import REGISTRY
+from sixnimmt.arena.bots.base import BotSpec
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.arena.runner import run_arena
 
@@ -233,7 +235,7 @@ of game actions. In classic mode, selection also commits, so it ends that sequen
 For communication, selecting then committing is a useful batch:
 
 ```python
-from sixnimmt.arena.bots import ActionBatch
+from sixnimmt.arena.bots.base import ActionBatch
 from sixnimmt.engine.actions import CommitAction, SelectCardAction
 
 
@@ -268,3 +270,21 @@ Batch atomicity covers game-action preflight. Memory acceptance, action records,
 event-log writes, and observer callbacks are separate publication stages, not one
 storage transaction. Storage and observer errors remain harness failures; optional
 statistics errors are recorded diagnostically.
+
+## Bot module imports
+
+Import contracts from `sixnimmt.arena.bots` or `.base`, and built-in registration
+from `sixnimmt.arena.bots.registry`. Import implementations from these modules:
+
+| Module | Implementations |
+| --- | --- |
+| `heuristics` | Random, lowest/highest card, lowest/highest fitting card, closest gap, coldest row, hand flexibility, and board helpers |
+| `composed` | Controlled burn, count-threshold bait, and hand-aware row choice with their options |
+| `llm` | Both LLM bots, options, prompt text, observation formatting, and tool schemas |
+| `simulation` | Simulation and model-based bait bots |
+| `uncertainty.rollouts` | Engine-backed rollout and penalty evaluation |
+
+The former individual bot modules and package-level implementation re-exports
+have been removed. Update Python imports using this table; registered strategy
+names and player JSON files are unchanged. Importing bot contracts no longer
+initializes the LLM client or numerical strategy catalogue.

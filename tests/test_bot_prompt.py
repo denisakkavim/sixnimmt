@@ -2,7 +2,7 @@
 
 import pytest
 
-from sixnimmt.arena.bots.prompt import SYSTEM_PROMPT, action_tools, observation_text, system_instructions
+from sixnimmt.arena.bots.llm import SYSTEM_PROMPT, action_tools, observation_text, system_instructions
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.events import RowChoiceMadeEvent, RowChoiceRequiredEvent
 from sixnimmt.engine.fold import ViewFolder, build_view

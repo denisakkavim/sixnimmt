@@ -18,7 +18,8 @@ from arviz_stats.base import array_stats as az
 from numpy.typing import NDArray
 from scipy.special import expit, logit
 
-from sixnimmt.arena.bots import REGISTRY, ActionBatch, Rejection
+from sixnimmt.arena.bots.base import ActionBatch, Rejection
+from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.bots.uncertainty.history import PublicHistory
 from sixnimmt.arena.bots.uncertainty.inference import LegalProposal, OpponentModel, Posterior
 from sixnimmt.arena.bots.uncertainty.options import OpponentModelOptions, PolicyName

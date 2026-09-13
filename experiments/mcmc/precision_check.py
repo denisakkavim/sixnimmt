@@ -9,7 +9,7 @@ import numpy as np
 from experiments.mcmc.diagnose import capture
 from sixnimmt.arena.bots.uncertainty.inference import OpponentModel
 from sixnimmt.arena.bots.uncertainty.options import SimulationOptions
-from sixnimmt.arena.bots.uncertainty.simulation import rollout
+from sixnimmt.arena.bots.uncertainty.rollouts import rollout
 
 
 def main() -> None:

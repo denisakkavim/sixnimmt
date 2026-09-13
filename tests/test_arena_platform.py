@@ -9,7 +9,9 @@ import pytest
 
 import sixnimmt.engine.fold as fold
 from sixnimmt.analytics.summary import summarise
-from sixnimmt.arena.bots import REGISTRY, BotSpec, LowestFittingCardBot, RandomBot, Rejection
+from sixnimmt.arena.bots.base import BotSpec, Rejection
+from sixnimmt.arena.bots.heuristics import LowestFittingCardBot, RandomBot
+from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.arena.runner import ArenaError, MatchOutcome, RunConfig, resolve, run_arena, run_match
 from sixnimmt.arena.scheduling import RoundRobinScheduler, SequentialScheduler

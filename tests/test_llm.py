@@ -9,11 +9,18 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletion
 from pydantic import ValidationError
 
-from sixnimmt.arena.bots import LowestFittingCardBot
 from sixnimmt.arena.bots.base import ActionBatch
-from sixnimmt.arena.bots.llm import LLMBot, LLMOptions, ModelDecisionError, parse_action, repair_feedback
-from sixnimmt.arena.bots.llm_memory import LLMMemoryBot, LLMMemoryOptions
-from sixnimmt.arena.bots.prompt import action_tools
+from sixnimmt.arena.bots.heuristics import LowestFittingCardBot
+from sixnimmt.arena.bots.llm import (
+    LLMBot,
+    LLMMemoryBot,
+    LLMMemoryOptions,
+    LLMOptions,
+    ModelDecisionError,
+    action_tools,
+    parse_action,
+    repair_feedback,
+)
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.arena.runner import RunConfig, run_arena, run_match
 from sixnimmt.engine.actions import SelectCardAction

@@ -4,7 +4,9 @@ import random
 
 import pytest
 
-from sixnimmt.arena.bots import REGISTRY, LowestFittingCardBot, RandomBot, Rejection
+from sixnimmt.arena.bots.base import Rejection
+from sixnimmt.arena.bots.heuristics import LowestFittingCardBot, RandomBot
+from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.arena.runner import MatchOutcome, derive_seed, run_arena, run_match
 from sixnimmt.engine.actions import Action, ChooseRowAction, SelectCardAction

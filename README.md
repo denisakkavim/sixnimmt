@@ -33,7 +33,7 @@ Use `uv run sixnimmt --help` to see the `arena`, `replay`, and `summarise` comma
 ## Python usage
 
 ```python
-from sixnimmt.arena.bots import LowestFittingCardBot, RandomBot
+from sixnimmt.arena.bots.heuristics import LowestFittingCardBot, RandomBot
 from sixnimmt.arena.runner import run_match
 
 result = run_match([RandomBot(11), LowestFittingCardBot()], seed=1234)

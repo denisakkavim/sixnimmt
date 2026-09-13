@@ -50,7 +50,7 @@ For installation in another project and more integration examples, see
 [Using sixnimmt from Python](python-api.md).
 
 ```python
-from sixnimmt.arena.bots import LowestFittingCardBot, RandomBot
+from sixnimmt.arena.bots.heuristics import LowestFittingCardBot, RandomBot
 from sixnimmt.arena.runner import run_match
 from sixnimmt.engine.rules import MatchProtocol
 

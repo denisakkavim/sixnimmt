@@ -2,7 +2,7 @@
 
 import pytest
 
-from sixnimmt.arena.bots import REGISTRY
+from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.arena.runner import run_arena
 from sixnimmt.engine.actions import ChooseRowAction, CommitAction, SelectCardAction

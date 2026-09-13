@@ -6,15 +6,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from sixnimmt.arena.bots import (
-    REGISTRY,
-    ActionBatch,
-    BotSpec,
-    HandAwareRowChoiceBot,
-    HandAwareRowChoiceOptions,
-    Rejection,
-)
-from sixnimmt.arena.bots.highest_card import HighestCardBot
+from sixnimmt.arena.bots.base import ActionBatch, BotSpec, Rejection
+from sixnimmt.arena.bots.composed import HandAwareRowChoiceBot, HandAwareRowChoiceOptions
+from sixnimmt.arena.bots.heuristics import HighestCardBot
+from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.players import PlayerConfig, resolve_players
 from sixnimmt.arena.runner import RunConfig, run_arena
 from sixnimmt.engine.actions import ChooseRowAction, CommitAction, SelectCardAction

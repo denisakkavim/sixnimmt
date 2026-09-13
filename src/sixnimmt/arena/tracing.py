@@ -6,8 +6,7 @@ from copy import deepcopy
 from dataclasses import asdict
 from typing import Any
 
-from sixnimmt.arena.bots import Bot
-from sixnimmt.arena.bots.base import statistics_bot
+from sixnimmt.arena.bots.base import Bot, statistics_bot
 from sixnimmt.arena.config import RunConfig
 from sixnimmt.arena.results import MatchResult
 from sixnimmt.engine.rules import GameRules, MatchProtocol

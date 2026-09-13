@@ -123,5 +123,5 @@ is redacted if echoed, but that does not make arbitrary provider output safe to
 publish. See [Traces and replay](traces.md).
 
 Sources: [LLM options and adapter](../src/sixnimmt/arena/bots/llm.py),
-[memory adapter](../src/sixnimmt/arena/bots/llm_memory.py), and
-[prompt/tool construction](../src/sixnimmt/arena/bots/prompt.py).
+[memory adapter](../src/sixnimmt/arena/bots/llm.py), and
+[prompt/tool construction](../src/sixnimmt/arena/bots/llm.py).

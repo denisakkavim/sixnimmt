@@ -3,9 +3,8 @@
 import pytest
 from pydantic import ValidationError
 
-from sixnimmt.arena.bots import CountThresholdBaitBot, CountThresholdBaitOptions
-from sixnimmt.arena.bots.count_threshold_bait import CandidateRanking
-from sixnimmt.arena.bots.highest_card import HighestCardBot
+from sixnimmt.arena.bots.composed import CandidateRanking, CountThresholdBaitBot, CountThresholdBaitOptions
+from sixnimmt.arena.bots.heuristics import HighestCardBot
 from sixnimmt.arena.players import PlayerConfig, resolve_players
 from sixnimmt.arena.runner import RunConfig, run_arena
 from sixnimmt.engine.actions import ChooseRowAction, CommitAction, SelectCardAction

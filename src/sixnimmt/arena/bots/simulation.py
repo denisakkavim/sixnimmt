@@ -4,15 +4,15 @@ import hashlib
 import random
 from typing import Any
 
-from sixnimmt.arena.bots._board import applicable_row
 from sixnimmt.arena.bots.base import ActionBatch, Bot, Rejection
+from sixnimmt.arena.bots.heuristics import applicable_row
 from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt.engine.views import MatchView
 
 from .uncertainty.history import InferenceError, PublicHistory
 from .uncertainty.inference import OpponentModel
 from .uncertainty.options import ModelBasedBaitOptions, SimulationOptions
-from .uncertainty.simulation import penalty_value, rollout, select_row
+from .uncertainty.rollouts import penalty_value, rollout, select_row
 
 
 class SimulationBot:
