@@ -15,7 +15,14 @@ from sixnimmt.arena.bots.base import ActionBatch
 from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot
 from sixnimmt.arena.bots.uncertainty.history import HandHistory, InferenceError, ObservedTurn, PublicHistory
-from sixnimmt.arena.bots.uncertainty.inference import LegalProposal, OpponentModel, Posterior, World, log_likelihood
+from sixnimmt.arena.bots.uncertainty.inference import (
+    ChoiceFeatures,
+    LegalProposal,
+    OpponentModel,
+    Posterior,
+    World,
+    log_likelihood,
+)
 from sixnimmt.arena.bots.uncertainty.options import (
     ModelBasedBaitOptions,
     OpponentModelOptions,
@@ -138,10 +145,10 @@ def test_policy_kernel_is_normalized(view: MatchView, policy: PolicyName) -> Non
 
 
 def test_likelihood_uses_continuous_mixture_and_final_card_is_uninformative() -> None:
-    assert math.exp(log_likelihood((((1.0,), 3),), 0, float(logit(0.3)))) == pytest.approx(0.8)
-    assert math.exp(log_likelihood((((0.0,), 3),), 0, float(logit(0.3)))) == pytest.approx(0.1)
+    assert math.exp(log_likelihood((ChoiceFeatures((1.0,), 3),), 0, float(logit(0.3)))) == pytest.approx(0.8)
+    assert math.exp(log_likelihood((ChoiceFeatures((0.0,), 3),), 0, float(logit(0.3)))) == pytest.approx(0.1)
     for value in [-1000.0, 0.0, 1000.0]:
-        assert log_likelihood((((1.0,), 1),), 0, value) == pytest.approx(0)
+        assert log_likelihood((ChoiceFeatures((1.0,), 1),), 0, value) == pytest.approx(0)
 
 
 def test_joint_sampler_matches_enumerated_hidden_hand_and_continuous_posterior(options: SimulationOptions) -> None:
@@ -315,7 +322,7 @@ def test_policy_learning_can_be_enabled_or_held_fixed(
     # agree with policy 0 and disagree with policy 1.
     history = HandHistory((), (), ())
     model = options.model.model_validate({**options.model.model_dump(), **{"mode": mode}})
-    past = tuple(((1.0, 0.0), size) for size in range(10, 2, -1))
+    past = tuple(ChoiceFeatures((1.0, 0.0), size) for size in range(10, 2, -1))
     posterior = Posterior(history, ("b",), (past,), (0,), [], model)
     rng = np.random.RandomState(8)
     coordinates = np.column_stack((rng.randint(2, size=32), logit(rng.uniform(size=32))))

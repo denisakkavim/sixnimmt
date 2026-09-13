@@ -3,6 +3,7 @@
 import math
 import random
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 import emcee
 import numpy as np
@@ -13,10 +14,62 @@ from sixnimmt.engine.views import MatchView
 
 from .history import HandHistory, InferenceError, PublicHistory
 from .likelihood import BatchedPosterior
-from .options import OpponentModelOptions
+from .options import OpponentModelOptions, PolicyName
 from .policies import probability
 
-Features = tuple[tuple[tuple[float, ...], int], ...]
+
+class ChoiceFeatures(NamedTuple):
+    """Likelihood of the observed choice under each policy, and hand size."""
+
+    probabilities: tuple[float, ...]
+    hand_size: int
+
+
+Features = tuple[ChoiceFeatures, ...]
+
+
+class FeatureKey(NamedTuple):
+    player_id: str
+    remaining_hand: tuple[int, ...]
+
+
+class CompletedHandKey(NamedTuple):
+    hand_number: int
+    player_id: str
+
+
+class RankingKey(NamedTuple):
+    policy: PolicyName
+    rows: tuple[tuple[int, ...], ...]
+    chosen_card: int
+
+
+RankingCache = dict[RankingKey, NDArray[np.bool_]]
+
+
+@dataclass(frozen=True)
+class CoordinateLayout:
+    """One chain row: permuted unseen deck, opponent policy labels, epsilon logits.
+
+    Deck slots partition into opponent hands in roster order, then undealt cards.
+    Batched coordinates have axes (chain, coordinate); labels/logits each have one
+    coordinate per opponent. Card IDs are 1..104; zero is never a deck entry.
+    """
+
+    deck_size: int
+    opponent_count: int
+
+    @property
+    def deck(self) -> slice:
+        return slice(0, self.deck_size)
+
+    @property
+    def policies(self) -> slice:
+        return slice(self.deck_size, self.deck_size + self.opponent_count)
+
+    @property
+    def logits(self) -> slice:
+        return slice(self.deck_size + self.opponent_count, None)
 
 
 @dataclass(frozen=True)
@@ -25,6 +78,14 @@ class World:
     undealt: tuple[int, ...]
     policies: tuple[int, ...]
     epsilons: tuple[float, ...]
+
+
+class PreviousInference(NamedTuple):
+    match_id: str
+    hand_number: int
+    play_number: int
+    opponent_ids: tuple[str, ...]
+    endpoints: tuple[World, ...]
 
 
 def log_likelihood(features: Features, policy: int, epsilon_logit: float) -> float:
@@ -46,7 +107,7 @@ def _features(hand: HandHistory, player_id: str, remaining: tuple[int, ...], opt
             msg = "sampled hand contains duplicate cards"
             raise InferenceError(msg)
         probabilities = tuple(probability(policy, turn.rows, held, played[index]) for policy in options.policies)
-        result.append((probabilities, len(held)))
+        result.append(ChoiceFeatures(probabilities, len(held)))
     return tuple(result)
 
 
@@ -58,23 +119,27 @@ class Posterior:
     sizes: tuple[int, ...]
     unseen: list[int]
     options: OpponentModelOptions
-    feature_cache: dict[tuple[str, tuple[int, ...]], Features] = field(default_factory=dict)
+    # Scoped to this posterior: keys are valid only for its current hand/history.
+    feature_cache: dict[FeatureKey, Features] = field(default_factory=dict)
+
+    layout: CoordinateLayout = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.layout = CoordinateLayout(len(self.unseen), len(self.opponent_ids))
 
     def world(self, coordinates: NDArray[np.float64]) -> World:
-        count = len(self.opponent_ids)
-        boundary = len(self.unseen)
-        hands, undealt = _partition([int(card) for card in coordinates[:boundary]], self.sizes)
-        policies = tuple(int(index) for index in coordinates[boundary : boundary + count])
-        epsilons = tuple(float(value) for value in expit(coordinates[boundary + count :]))
+        hands, undealt = _partition([int(card) for card in coordinates[self.layout.deck]], self.sizes)
+        policies = tuple(int(index) for index in coordinates[self.layout.policies])
+        epsilons = tuple(float(value) for value in expit(coordinates[self.layout.logits]))
         return World(hands, undealt, policies, epsilons)
 
     def __call__(self, coordinates: NDArray[np.float64]) -> float:
         world = self.world(coordinates)
-        logits = coordinates[len(self.unseen) + len(self.opponent_ids) :]
+        logits = coordinates[self.layout.logits]
         # Uniform Beta priors expressed in logit coordinates need this Jacobian.
         value = float(np.sum(log_expit(logits) + log_expit(-logits)))
         for index, player_id in enumerate(self.opponent_ids):
-            key = (player_id, world.hands[index])
+            key = FeatureKey(player_id, world.hands[index])
             if key not in self.feature_cache:
                 self.feature_cache[key] = self.past[index] + _features(
                     self.current, player_id, world.hands[index], self.options
@@ -151,9 +216,9 @@ class OpponentModel:
     def __init__(self, options: OpponentModelOptions) -> None:
         self.options = options
         self.diagnostics: dict = {}
-        self._rankings: dict = {}
-        self._completed: dict[tuple[int, str], Features] = {}
-        self._previous: tuple[str, int, int, tuple[str, ...], list[World]] | None = None
+        self._rankings: RankingCache = {}
+        self._completed: dict[CompletedHandKey, Features] = {}
+        self._previous: PreviousInference | None = None
 
     def infer(self, history: PublicHistory, view: MatchView, rng: random.Random) -> list[World]:
         posterior = self._posterior(history, view)
@@ -164,10 +229,10 @@ class OpponentModel:
         if observed == 0:
             # With no behavioural evidence the conditional legal-deal prior is
             # the posterior. No Markov chain or burn-in is needed.
-            labels = coordinates[:, len(posterior.unseen) : len(posterior.unseen) + len(posterior.opponent_ids)]
+            labels = coordinates[:, posterior.layout.policies]
             coordinates = self._prior(posterior, sampling_rng, self.options.particle_count)
             if self.options.mode == "fixed_mixture":
-                coordinates[:, len(posterior.unseen) : len(posterior.unseen) + len(posterior.opponent_ids)] = np.tile(
+                coordinates[:, posterior.layout.policies] = np.tile(
                     labels, (self.options.particle_count // self.options.chain_count, 1)
                 )
             worlds = [posterior.world(row) for row in coordinates]
@@ -191,7 +256,9 @@ class OpponentModel:
                 worlds.extend(posterior.world(row) for row in state.coords)
             endpoints = [posterior.world(row) for row in state.coords]
             method = "emcee_batched_mh"
-        self._previous = (view.match_id, view.hand_number, view.play_number, posterior.opponent_ids, endpoints)
+        self._previous = PreviousInference(
+            view.match_id, view.hand_number, view.play_number, posterior.opponent_ids, tuple(endpoints)
+        )
         self.diagnostics = {
             "method": method,
             "particles": len(worlds),
@@ -220,20 +287,20 @@ class OpponentModel:
         coordinates = self._prior(posterior, rng, self.options.chain_count)
         if self._previous is None:
             return coordinates, False
-        match_id, hand, play, opponents, worlds = self._previous
-        if match_id != view.match_id or opponents != posterior.opponent_ids:
+        previous = self._previous
+        if previous.match_id != view.match_id or previous.opponent_ids != posterior.opponent_ids:
             msg = "opponent inference state belongs to another match or player roster"
             raise InferenceError(msg)
-        if (hand, play) >= (view.hand_number, view.play_number):
+        if (previous.hand_number, previous.play_number) >= (view.hand_number, view.play_number):
             # Never initialise an earlier target from later evidence.
             return coordinates, False
-        boundary = len(posterior.unseen)
-        count = len(opponents)
-        for index, world in enumerate(worlds):
-            coordinates[index, boundary : boundary + count] = world.policies
-            coordinates[index, boundary + count :] = logit(world.epsilons)
-            if hand == view.hand_number:
-                coordinates[index, :boundary] = _repair_deal(world, posterior, play - 1, rng)
+        for index, world in enumerate(previous.endpoints):
+            coordinates[index, posterior.layout.policies] = world.policies
+            coordinates[index, posterior.layout.logits] = logit(world.epsilons)
+            if previous.hand_number == view.hand_number:
+                coordinates[index, posterior.layout.deck] = _repair_deal(
+                    world, posterior, previous.play_number - 1, rng
+                )
         return coordinates, True
 
     def _posterior(self, history: PublicHistory, view: MatchView) -> Posterior:
@@ -257,13 +324,13 @@ class OpponentModel:
             records: Features = ()
             for number, hand in sorted(history.hands.items()):
                 if number < view.hand_number:
-                    key = (number, player.player_id)
+                    key = CompletedHandKey(number, player.player_id)
                     if key not in self._completed:
                         self._completed[key] = _features(hand, player.player_id, (), self.options)
                     records += self._completed[key]
             past.append(records)
         # Board rankings are needed only for the current hand.
-        if self._previous is not None and self._previous[1] != view.hand_number:
+        if self._previous is not None and self._previous.hand_number != view.hand_number:
             self._rankings.clear()
         return Posterior(
             current, tuple(player.player_id for player in opponents), tuple(past), sizes, unseen, self.options

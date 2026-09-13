@@ -583,3 +583,13 @@ histories.
 Related guides: [Game rules and information](game-rules.md),
 [Writing bots](bots.md), [Strategy catalogue](strategy-families.md), and
 [Traces and replay](traces.md).
+
+Internal inference records name their contents: `ChoiceFeatures` stores policy
+probabilities and hand size, and `PreviousInference` stores the match/hand/play,
+roster, and chain endpoints. `CoordinateLayout` names the deck, policy-label, and
+epsilon-logit slices of each chain row. Batched arrays use chain and coordinate
+axes; likelihood blockers use opponent, policy, turn, and card-ID axes.
+
+Feature caches belong to one posterior/history. Completed-hand features are keyed
+by hand and player; board rankings are cleared when a new hand starts. The scalar
+posterior remains an independent reference for the batched implementation.

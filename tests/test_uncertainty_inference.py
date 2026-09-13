@@ -12,7 +12,7 @@ from sixnimmt.arena.bots.base import ActionBatch, Rejection
 from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot
 from sixnimmt.arena.bots.uncertainty.history import HandHistory, InferenceError, ObservedTurn, PublicHistory
-from sixnimmt.arena.bots.uncertainty.inference import BatchedLegalProposal, OpponentModel, Posterior
+from sixnimmt.arena.bots.uncertainty.inference import BatchedLegalProposal, ChoiceFeatures, OpponentModel, Posterior
 from sixnimmt.arena.bots.uncertainty.likelihood import BatchedPosterior
 from sixnimmt.arena.bots.uncertainty.options import ModelBasedBaitOptions, OpponentModelOptions, SimulationOptions
 from sixnimmt.arena.runner import run_match
@@ -51,7 +51,10 @@ def posterior(model_options: OpponentModelOptions) -> Posterior:
     current = HandHistory(
         rows, (), rows, turns=[ObservedTurn(rows, (("b", 50), ("c", 40))), ObservedTurn(rows, (("b", 55), ("c", 70)))]
     )
-    past = (((1 / 3, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0), 3), ((1 / 2, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0), 2))
+    past = (
+        ChoiceFeatures((1 / 3, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0), 3),
+        ChoiceFeatures((1 / 2, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0), 2),
+    )
     return Posterior(current, ("b", "c"), (past, past), (2, 2), [10, 20, 25, 65, 80, 100], model_options)
 
 

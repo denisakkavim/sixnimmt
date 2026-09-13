@@ -18,12 +18,13 @@ if TYPE_CHECKING:
 class BatchedPosterior:
     """The scalar posterior's target, without revisiting completed plays per proposal."""
 
-    def __init__(self, posterior: Posterior, rankings: dict) -> None:
+    def __init__(self, posterior: Posterior, rankings: inference.RankingCache) -> None:
         self.posterior = posterior
         self.boundary = len(posterior.unseen)
         self.count = len(posterior.opponent_ids)
         self.log_sizes = np.log(np.arange(1, 11))
         self.totals = np.zeros(10)
+        # Axes: opponent, policy, hand size minus one.
         self.past = np.zeros((self.count, len(posterior.options.policies), 10))
         for opponent, features in enumerate(posterior.past):
             for probabilities, size in features:
@@ -39,13 +40,15 @@ class BatchedPosterior:
         )
         for size in self.turn_sizes:
             self.totals[size] += 1
+        # Axes: opponent, policy, observed turn, card ID (slot zero unused).
         self.blockers = np.zeros((self.count, len(posterior.options.policies), len(self.turn_sizes), 105), dtype=bool)
         self.future_blocks = np.zeros(self.blockers.shape[:-1], dtype=bool)
         self._prepare(rankings)
+        # Cache only the preceding coordinates; invalidate on any shape change.
         self.previous: NDArray[np.float64] | None = None
         self.values = np.empty((0, self.count))
 
-    def _prepare(self, rankings: dict) -> None:
+    def _prepare(self, rankings: inference.RankingCache) -> None:
         current = self.posterior.current
         for opponent, player_id in enumerate(self.posterior.opponent_ids):
             played = [dict(turn.choices)[player_id] for turn in current.turns]
@@ -54,7 +57,7 @@ class BatchedPosterior:
                 for policy_index, policy in enumerate(self.posterior.options.policies):
                     if policy in {"random", "hand_flexibility"}:
                         continue
-                    key = (policy, tuple(row.cards for row in turn.rows), chosen)
+                    key = inference.RankingKey(policy, tuple(row.cards for row in turn.rows), chosen)
                     if key not in rankings:
                         # These policies order individual cards independently of
                         # the other cards held. Ask the real bot to preserve ties.
@@ -73,11 +76,11 @@ class BatchedPosterior:
         hand_boundary = sum(self.posterior.sizes)
         hands = coordinates[:, :hand_boundary].reshape(len(coordinates), self.count, self.posterior.sizes[0])
         previous_hands = self.previous[:, :hand_boundary].reshape(hands.shape)
-        labels = coordinates[:, self.boundary : self.boundary + self.count]
-        logits = coordinates[:, self.boundary + self.count :]
+        labels = coordinates[:, self.posterior.layout.policies]
+        logits = coordinates[:, self.posterior.layout.logits]
         changed = np.any(hands != previous_hands, axis=2)
-        changed |= labels != self.previous[:, self.boundary : self.boundary + self.count]
-        changed |= logits != self.previous[:, self.boundary + self.count :]
+        changed |= labels != self.previous[:, self.posterior.layout.policies]
+        changed |= logits != self.previous[:, self.posterior.layout.logits]
         chains, opponents = np.nonzero(changed)
         if len(chains) > 0:
             self.values[chains, opponents] = self._opponents(
@@ -135,10 +138,10 @@ class BatchedPosterior:
         for index in np.flatnonzero(selected):
             opponent = int(opponents[index])
             player_id = self.posterior.opponent_ids[opponent]
-            key = (player_id, tuple(sorted(int(card) for card in hands[index])))
+            key = inference.FeatureKey(player_id, tuple(sorted(int(card) for card in hands[index])))
             if key not in self.posterior.feature_cache:
                 self.posterior.feature_cache[key] = self.posterior.past[opponent] + inference._features(
-                    self.posterior.current, player_id, key[1], self.posterior.options
+                    self.posterior.current, player_id, key.remaining_hand, self.posterior.options
                 )
             successes[index] = 0
             for probabilities, size in self.posterior.feature_cache[key]:
