@@ -8,6 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.special import log_expit
 
+from . import inference
 from .policies import preferred_card
 
 if TYPE_CHECKING:
@@ -131,14 +132,12 @@ class BatchedPosterior:
         opponents: NDArray[np.int64],
         policy: int,
     ) -> None:
-        from .inference import _features
-
         for index in np.flatnonzero(selected):
             opponent = int(opponents[index])
             player_id = self.posterior.opponent_ids[opponent]
             key = (player_id, tuple(sorted(int(card) for card in hands[index])))
             if key not in self.posterior.feature_cache:
-                self.posterior.feature_cache[key] = self.posterior.past[opponent] + _features(
+                self.posterior.feature_cache[key] = self.posterior.past[opponent] + inference._features(
                     self.posterior.current, player_id, key[1], self.posterior.options
                 )
             successes[index] = 0

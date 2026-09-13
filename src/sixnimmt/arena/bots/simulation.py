@@ -113,11 +113,3 @@ def _targets_full_row(card: int, view: MatchView) -> bool:
 
 def build_simulation(seed: int, **settings: Any) -> SimulationBot:
     return SimulationBot(seed, SimulationOptions.model_validate(settings))
-
-
-def build_model_based_bait(seed: int, **settings: Any) -> ModelBasedBaitBot:
-    from sixnimmt.arena.players import PlayerConfig, resolve_players
-
-    options = ModelBasedBaitOptions.model_validate(settings)
-    fallback = resolve_players([PlayerConfig(bot=options.fallback_strategy, options=options.fallback_options)])[0]
-    return ModelBasedBaitBot(seed, options, fallback.build(seed))

@@ -6,12 +6,14 @@ from typing import Any
 import httpx2 as httpx
 import pytest
 from openai import OpenAI
+from openai.types.chat import ChatCompletion
 from pydantic import ValidationError
 
 from sixnimmt.arena.bots import LowestFittingCardBot
 from sixnimmt.arena.bots.base import ActionBatch
-from sixnimmt.arena.bots.llm import LLMBot, LLMOptions, ModelDecisionError
+from sixnimmt.arena.bots.llm import LLMBot, LLMOptions, ModelDecisionError, parse_action, repair_feedback
 from sixnimmt.arena.bots.llm_memory import LLMMemoryBot, LLMMemoryOptions
+from sixnimmt.arena.bots.prompt import action_tools
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.arena.runner import RunConfig, run_arena, run_match
 from sixnimmt.engine.actions import SelectCardAction
@@ -258,10 +260,6 @@ def test_view_carries_public_protocol_limits() -> None:
     ],
 )
 def test_parses_each_game_action(view: MatchView, name: str, arguments: dict) -> None:
-    from openai.types.chat import ChatCompletion
-
-    from sixnimmt.arena.bots.llm import parse_action
-
     response = ChatCompletion.model_validate({
         "id": "completion",
         "object": "chat.completion",
@@ -301,10 +299,6 @@ def test_parses_each_game_action(view: MatchView, name: str, arguments: dict) ->
     "arguments", ['{"card": "1"}', '{"card": true}', '{"card": 1, "from_view": "fake"}', "[]", "{"]
 )
 def test_rejects_malformed_or_extra_tool_arguments(view: MatchView, arguments: str) -> None:
-    from openai.types.chat import ChatCompletion
-
-    from sixnimmt.arena.bots.llm import parse_action
-
     response = ChatCompletion.model_validate({
         "id": "completion",
         "object": "chat.completion",
@@ -395,8 +389,6 @@ def test_system_prompt_can_be_replaced_per_seat(endpoint: Endpoint, view: MatchV
 
 
 def test_card_tool_lists_only_current_hand(view: MatchView) -> None:
-    from sixnimmt.arena.bots.prompt import action_tools
-
     tools = action_tools(view, False)
     assert tools[0]["function"]["parameters"]["properties"]["card"]["enum"] == list(view.you.hand)
     changed = view.model_copy(update={"you": view.you.model_copy(update={"hand": view.you.hand[1:]})})
@@ -546,10 +538,6 @@ def test_both_model_types_receive_the_same_shared_game_observation(endpoint: End
 
 
 def test_repair_feedback_includes_bounded_rejected_arguments_without_reasoning() -> None:
-    from openai.types.chat import ChatCompletion
-
-    from sixnimmt.arena.bots.llm import repair_feedback
-
     response = ChatCompletion.model_validate({
         "id": "completion",
         "object": "chat.completion",

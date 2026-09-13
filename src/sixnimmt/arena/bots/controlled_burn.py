@@ -43,14 +43,3 @@ class ControlledBurnBot:
         if fallback is None:
             raise AttributeError(name)
         return getattr(fallback, name)
-
-
-def build_controlled_burn(
-    seed: int, *, K: int, fallback_strategy: str, fallback_options: dict[str, JsonValue] | None = None
-) -> ControlledBurnBot:
-    # Resolve lazily because player configuration depends on the bot registry.
-    from sixnimmt.arena.players import PlayerConfig, resolve_players
-
-    player = PlayerConfig(bot=fallback_strategy, options=fallback_options if fallback_options is not None else {})
-    fallback = resolve_players([player])[0].build(seed)
-    return ControlledBurnBot(K, fallback)

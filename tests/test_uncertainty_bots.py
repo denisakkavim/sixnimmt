@@ -14,7 +14,7 @@ from scipy.special import expit, logit
 from sixnimmt.arena.bots import REGISTRY
 from sixnimmt.arena.bots.base import ActionBatch
 from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot
-from sixnimmt.arena.bots.uncertainty.history import HandHistory, ObservedTurn, PublicHistory
+from sixnimmt.arena.bots.uncertainty.history import HandHistory, InferenceError, ObservedTurn, PublicHistory
 from sixnimmt.arena.bots.uncertainty.inference import LegalProposal, OpponentModel, Posterior, World, log_likelihood
 from sixnimmt.arena.bots.uncertainty.options import (
     ModelBasedBaitOptions,
@@ -209,8 +209,6 @@ def test_history_is_not_counted_twice(view: MatchView, options: SimulationOption
 
 
 def test_incomplete_history_raises_inference_error(view: MatchView, options: SimulationOptions) -> None:
-    from sixnimmt.arena.bots.uncertainty.history import InferenceError
-
     bot = SimulationBot(4, options)
     incomplete = view.model_copy(update={"play_number": 2})
     with pytest.raises(InferenceError, match="learning must start at the beginning of a hand"):

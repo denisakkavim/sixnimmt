@@ -1,18 +1,21 @@
 """Available arena strategies and their construction registry."""
 
+from typing import Any
+
+from pydantic import JsonValue
+
 from sixnimmt.arena.bots.base import ActionBatch, Bot, BotOptions, BotSpec, Rejection
 from sixnimmt.arena.bots.closest_gap import ClosestGapBot
 from sixnimmt.arena.bots.coldest_row import ColdestRowBot
-from sixnimmt.arena.bots.controlled_burn import ControlledBurnBot, ControlledBurnOptions, build_controlled_burn
+from sixnimmt.arena.bots.controlled_burn import ControlledBurnBot, ControlledBurnOptions
 from sixnimmt.arena.bots.count_threshold_bait import (
+    CandidateRanking,
     CountThresholdBaitBot,
     CountThresholdBaitOptions,
-    build_count_threshold_bait,
 )
 from sixnimmt.arena.bots.hand_aware_row_choice import (
     HandAwareRowChoiceBot,
     HandAwareRowChoiceOptions,
-    build_hand_aware_row_choice,
 )
 from sixnimmt.arena.bots.hand_flexibility import HandFlexibilityBot
 from sixnimmt.arena.bots.highest_card import HighestCardBot
@@ -22,7 +25,7 @@ from sixnimmt.arena.bots.llm_memory import LLMMemoryBot, LLMMemoryOptions
 from sixnimmt.arena.bots.lowest_card import LowestCardBot
 from sixnimmt.arena.bots.lowest_fitting_card import LowestFittingCardBot
 from sixnimmt.arena.bots.random import RandomBot
-from sixnimmt.arena.bots.simulation import SimulationBot, build_model_based_bait, build_simulation
+from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot, build_simulation
 from sixnimmt.arena.bots.uncertainty.options import ModelBasedBaitOptions, SimulationOptions
 
 __all__ = [
@@ -82,6 +85,44 @@ def _build_lowest_card(seed: int) -> LowestCardBot:
 
 def _build_lowest_fitting_card(seed: int) -> LowestFittingCardBot:
     return LowestFittingCardBot()
+
+
+def _build_registered(seed: int, name: str, settings: dict[str, JsonValue]) -> Bot:
+    spec = REGISTRY[name]
+    options = spec.options_model.model_validate(settings)
+    return spec.build(seed, **options.model_dump())
+
+
+def build_controlled_burn(
+    seed: int, *, K: int, fallback_strategy: str, fallback_options: dict[str, JsonValue] | None = None
+) -> ControlledBurnBot:
+    fallback = _build_registered(seed, fallback_strategy, fallback_options if fallback_options is not None else {})
+    return ControlledBurnBot(K, fallback)
+
+
+def build_count_threshold_bait(
+    seed: int,
+    *,
+    intervening_card_threshold: int,
+    candidate_ranking: CandidateRanking,
+    fallback_strategy: str,
+    fallback_options: dict[str, JsonValue] | None = None,
+) -> CountThresholdBaitBot:
+    fallback = _build_registered(seed, fallback_strategy, fallback_options if fallback_options is not None else {})
+    return CountThresholdBaitBot(intervening_card_threshold, candidate_ranking, fallback)
+
+
+def build_hand_aware_row_choice(
+    seed: int, *, max_extra_penalty: int, card_strategy: str, card_options: dict[str, JsonValue] | None = None
+) -> HandAwareRowChoiceBot:
+    card_bot = _build_registered(seed, card_strategy, card_options if card_options is not None else {})
+    return HandAwareRowChoiceBot(max_extra_penalty, card_bot)
+
+
+def build_model_based_bait(seed: int, **settings: Any) -> ModelBasedBaitBot:
+    options = ModelBasedBaitOptions.model_validate(settings)
+    fallback = _build_registered(seed, options.fallback_strategy, options.fallback_options)
+    return ModelBasedBaitBot(seed, options, fallback)
 
 
 REGISTRY: dict[str, BotSpec] = {

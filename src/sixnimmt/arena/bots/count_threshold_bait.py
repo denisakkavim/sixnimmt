@@ -77,18 +77,3 @@ class CountThresholdBaitBot:
         if fallback is None:
             raise AttributeError(name)
         return getattr(fallback, name)
-
-
-def build_count_threshold_bait(
-    seed: int,
-    *,
-    intervening_card_threshold: int,
-    candidate_ranking: CandidateRanking,
-    fallback_strategy: str,
-    fallback_options: dict[str, JsonValue] | None = None,
-) -> CountThresholdBaitBot:
-    from sixnimmt.arena.players import PlayerConfig, resolve_players
-
-    player = PlayerConfig(bot=fallback_strategy, options=fallback_options if fallback_options is not None else {})
-    fallback = resolve_players([player])[0].build(seed)
-    return CountThresholdBaitBot(intervening_card_threshold, candidate_ranking, fallback)

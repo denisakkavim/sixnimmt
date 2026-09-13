@@ -7,10 +7,12 @@ from typing import Any
 
 import pytest
 from pydantic import Field
+from typer.testing import CliRunner
 
 from sixnimmt.arena.bots import REGISTRY, BotOptions, BotSpec, RandomBot
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.arena.runner import RunConfig, run_arena
+from sixnimmt.cli import app
 from sixnimmt.engine.audience import Viewer, visible_events
 from sixnimmt.engine.events import Event
 from sixnimmt.engine.rules import MatchProtocol
@@ -124,10 +126,6 @@ def test_configured_names_reach_observer_without_changing_seat_ids(short_protoco
 
 
 def test_cli_passes_validated_options_to_factory(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from typer.testing import CliRunner
-
-    from sixnimmt.cli import app
-
     options_received = []
 
     def build(seed: int, *, temperature: float, prompt: str, tags: list[str]) -> RandomBot:

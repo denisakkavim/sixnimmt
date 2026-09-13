@@ -55,13 +55,3 @@ class HandAwareRowChoiceBot:
         if card_bot is None:
             raise AttributeError(name)
         return getattr(card_bot, name)
-
-
-def build_hand_aware_row_choice(
-    seed: int, *, max_extra_penalty: int, card_strategy: str, card_options: dict[str, JsonValue] | None = None
-) -> HandAwareRowChoiceBot:
-    from sixnimmt.arena.players import PlayerConfig, resolve_players
-
-    player = PlayerConfig(bot=card_strategy, options=card_options if card_options is not None else {})
-    card_bot = resolve_players([player])[0].build(seed)
-    return HandAwareRowChoiceBot(max_extra_penalty, card_bot)

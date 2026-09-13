@@ -1,5 +1,7 @@
 """Bot transactions publish all effects together only after engine validation."""
 
+import json
+
 import pytest
 
 from sixnimmt.arena.bots import LowestFittingCardBot
@@ -109,8 +111,6 @@ def test_failed_transactions_count_toward_rejection_limit() -> None:
 
 
 def test_transaction_traces_share_offered_view_and_count_latency_once(tmp_path) -> None:
-    import json
-
     directory = tmp_path / "transaction"
     result = run_match(
         [TransactionBot(), LowestFittingCardBot()],

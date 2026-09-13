@@ -10,10 +10,11 @@ from scipy.special import expit, logit
 
 from sixnimmt.arena.bots import REGISTRY
 from sixnimmt.arena.bots.base import ActionBatch, Rejection
-from sixnimmt.arena.bots.uncertainty.history import HandHistory, ObservedTurn, PublicHistory
+from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot
+from sixnimmt.arena.bots.uncertainty.history import HandHistory, InferenceError, ObservedTurn, PublicHistory
 from sixnimmt.arena.bots.uncertainty.inference import BatchedLegalProposal, OpponentModel, Posterior
 from sixnimmt.arena.bots.uncertainty.likelihood import BatchedPosterior
-from sixnimmt.arena.bots.uncertainty.options import OpponentModelOptions
+from sixnimmt.arena.bots.uncertainty.options import ModelBasedBaitOptions, OpponentModelOptions, SimulationOptions
 from sixnimmt.arena.runner import run_match
 from sixnimmt.engine.actions import Action, SelectCardAction
 from sixnimmt.engine.rules import GameRules
@@ -206,9 +207,6 @@ def test_empty_evidence_samples_prior_without_burn_in(
 def test_last_card_and_bait_without_candidates_skip_inference_but_keep_history(
     model_options: OpponentModelOptions, trajectory: HistorySnapshots
 ) -> None:
-    from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot
-    from sixnimmt.arena.bots.uncertainty.options import ModelBasedBaitOptions, SimulationOptions
-
     settings = {
         "model": model_options.model_dump(),
         "sample_count": 2,
@@ -259,8 +257,6 @@ def test_cached_completed_hands_match_the_full_uncached_history_target(
 def test_warm_start_cannot_reuse_another_match_state(
     model_options: OpponentModelOptions, trajectory: HistorySnapshots
 ) -> None:
-    from sixnimmt.arena.bots.uncertainty.history import InferenceError
-
     model = OpponentModel(model_options)
     history, view = trajectory[1, 1]
     model.infer(history, view, random.Random(42))  # noqa: S311 -- reproducible sampling

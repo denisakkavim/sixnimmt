@@ -87,6 +87,8 @@ select = [
     "C90",
     # pycodestyle
     "E", "W",
+    # pylint
+    "PLC0415",
     # pyflakes
     "F",
     # pygrep-hooks

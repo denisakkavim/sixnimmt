@@ -12,6 +12,7 @@ from scipy.special import expit, log_expit, logit
 from sixnimmt.engine.views import MatchView
 
 from .history import HandHistory, InferenceError, PublicHistory
+from .likelihood import BatchedPosterior
 from .options import OpponentModelOptions
 from .policies import probability
 
@@ -155,8 +156,6 @@ class OpponentModel:
         self._previous: tuple[str, int, int, tuple[str, ...], list[World]] | None = None
 
     def infer(self, history: PublicHistory, view: MatchView, rng: random.Random) -> list[World]:
-        from .likelihood import BatchedPosterior
-
         posterior = self._posterior(history, view)
         # emcee owns a private RandomState; never seed NumPy's process-global RNG.
         sampling_rng = np.random.RandomState(rng.getrandbits(32))

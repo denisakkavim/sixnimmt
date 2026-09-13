@@ -7,21 +7,24 @@ from typing import Any
 
 import pytest
 
+import sixnimmt.engine.fold as fold
 from sixnimmt.analytics.summary import summarise
 from sixnimmt.arena.bots import REGISTRY, BotSpec, LowestFittingCardBot, RandomBot, Rejection
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.arena.runner import ArenaError, MatchOutcome, RunConfig, resolve, run_arena, run_match
-from sixnimmt.arena.scheduling import SequentialScheduler
+from sixnimmt.arena.scheduling import RoundRobinScheduler, SequentialScheduler
 from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction, SendMessageAction
 from sixnimmt.engine.audience import Viewer, visible_events
 from sixnimmt.engine.events import Event
 from sixnimmt.engine.fold import ViewFolder, build_view
 from sixnimmt.engine.replay import replay_events
-from sixnimmt.engine.rules import MatchProtocol
+from sixnimmt.engine.rules import GameRules, InformationPolicy, MatchProtocol
+from sixnimmt.engine.setup import create_match
 from sixnimmt.engine.state import MatchState, Phase
-from sixnimmt.engine.views import MatchView, ViewRole
+from sixnimmt.engine.transition import transition
+from sixnimmt.engine.views import MatchView, RowView, ViewRole
 from sixnimmt.persistence.manifest import ManifestMatch
-from sixnimmt.persistence.sink import read_action_log, read_event_log
+from sixnimmt.persistence.sink import JsonlEventSink, read_action_log, read_event_log
 
 
 class BadRows(RandomBot):
@@ -555,9 +558,6 @@ def test_scheduler_failure_stops_run(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_lowest_fitting_card_chooses_lowest_cost_card_and_lowest_row_on_ties() -> None:
-    from sixnimmt.engine.setup import create_match
-    from sixnimmt.engine.views import RowView
-
     _, events = create_match("lowest_fitting_card", ["a", "b"], 123)
     view = build_view(events, Viewer(ViewRole.PLAYER, "a"))
     rows = tuple(
@@ -570,9 +570,6 @@ def test_lowest_fitting_card_chooses_lowest_cost_card_and_lowest_row_on_ties() -
 
 
 def test_round_robin_resumes_and_skips_committed_seats() -> None:
-    from sixnimmt.arena.scheduling import RoundRobinScheduler
-    from sixnimmt.engine.setup import create_match
-
     state, _ = create_match("schedule", ["a", "b", "c"], 123)
     scheduler = RoundRobinScheduler()
     assert scheduler.next_seat(state) == 0
@@ -590,8 +587,6 @@ def test_round_robin_resumes_and_skips_committed_seats() -> None:
 
 
 def test_hidden_direct_messages_do_not_change_uninvolved_bot_view(short_protocol: MatchProtocol) -> None:
-    from sixnimmt.engine.rules import InformationPolicy
-
     protocol = short_protocol.model_copy(
         update={
             "communication_enabled": True,
@@ -620,11 +615,6 @@ def test_hidden_direct_messages_do_not_change_uninvolved_bot_view(short_protocol
 
 
 def test_live_folder_applies_each_visible_event_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    import sixnimmt.engine.fold as fold
-    from sixnimmt.engine.rules import GameRules
-    from sixnimmt.engine.setup import create_match
-    from sixnimmt.engine.transition import transition
-
     protocol = MatchProtocol(communication_enabled=True)
     state, initial = create_match("messages", ["a", "b"], 123, protocol=protocol)
     applied = 0
@@ -711,10 +701,6 @@ def test_direct_match_trace_has_manifest(tmp_path: Path, short_protocol: MatchPr
 
 
 def test_legacy_fold_keeps_selection_only_action_counts() -> None:
-    from sixnimmt.engine.rules import GameRules
-    from sixnimmt.engine.setup import create_match
-    from sixnimmt.engine.transition import transition
-
     state, events = create_match("legacy", ["a", "b"], 123)
     _, selected = transition(state, "a", SelectCardAction(card=state.players[0].hand[0]), MatchProtocol(), GameRules())
     legacy = [event for event in [*events, *selected] if event.type != "action_counted"]
@@ -724,8 +710,6 @@ def test_legacy_fold_keeps_selection_only_action_counts() -> None:
 
 
 def test_failure_reason_is_written_before_manifest(tmp_path: Path) -> None:
-    from sixnimmt.persistence.sink import JsonlEventSink
-
     sink = JsonlEventSink(tmp_path, "failure")
     try:
         result = run_match([RaisingBot(), RandomBot(2)], 123, match_id="failure", sink=sink)
