@@ -154,35 +154,70 @@ def _collect_games(
     entries: list[ManifestMatch],
     on_progress: Callable[[int], None] | None,
 ) -> tuple[int, BaseException | None]:
+    collector = _LegacyCollector(aggregate, entries, on_progress)
+    return _collect_work(
+        pool, play_game, range(games), config, abandoned, collector.accept, propagate_callback_errors=True
+    )
+
+
+@dataclass
+class _LegacyCollector:
+    aggregate: _Aggregate
+    entries: list[ManifestMatch]
+    on_progress: Callable[[int], None] | None
+
+    def accept(self, index: int, item: tuple[_GameSummary, ManifestMatch | None]) -> bool:
+        result, entry = item
+        self.aggregate.add(result, self.on_progress)
+        if entry is not None:
+            self.entries.append(entry)
+        return result.outcome == MatchOutcome.FAILED
+
+
+def _collect_work[T, W](
+    pool: Executor,
+    play_game: Callable[[W], T],
+    jobs: Sequence[W],
+    config: RunConfig,
+    abandoned: AbandonedDecisions,
+    accept: Callable[[int, T], bool],
+    on_started: Callable[[int], None] | None = None,
+    *,
+    propagate_callback_errors: bool = False,
+) -> tuple[int, BaseException | None]:
+    """Bound submissions and drain every submitted future after a fatal error.
+
+    The collector runs in the parent and returns whether an outcome failed.
+    This keeps persistence and fixed-seat aggregation on the same scheduler.
+    """
+    games = len(jobs)
     started = 0
     fatal: BaseException | None = None
     stop = False
-    pending: set[Future[tuple[_GameSummary, ManifestMatch | None]]] = set()
+    pending: dict[Future[T], int] = {}
     while len(pending) > 0 or (started < games and not stop):
         while started < games and len(pending) < config.concurrency and not stop and not abandoned.exceeded.is_set():
             try:
-                future = pool.submit(play_game, started)
+                future = pool.submit(play_game, jobs[started])
+                pending[future] = started
+                started += 1
+                if on_started is not None:
+                    on_started(started - 1)
             except Exception as error:
                 fatal = error if fatal is None else fatal
                 stop = True
                 break
-            pending.add(future)
-            started += 1
         if len(pending) == 0:
             break
         completed, _ = wait(pending, return_when=FIRST_COMPLETED)
         for future in completed:
-            pending.remove(future)
-            try:
-                result, entry = future.result()
-            except Exception as error:
+            index = pending.pop(future)
+            failed, error = _receive_work(index, future, accept, propagate_callback_errors)
+            if error is not None:
                 fatal = error if fatal is None else fatal
                 stop = True
                 continue
-            aggregate.add(result, on_progress)
-            if entry is not None:
-                entries.append(entry)
-            if config.stop_on_failure and result.outcome == MatchOutcome.FAILED:
+            if config.stop_on_failure and failed:
                 stop = True
         if abandoned.exceeded.is_set():
             stop = True
@@ -190,6 +225,21 @@ def _collect_games(
                 ArenaError("max_abandoned_decisions exceeded; stopped submitting matches") if fatal is None else fatal
             )
     return started, fatal
+
+
+def _receive_work[T](
+    index: int, future: Future[T], accept: Callable[[int, T], bool], propagate_callback_errors: bool
+) -> tuple[bool, BaseException | None]:
+    try:
+        result = future.result()
+    except Exception as error:
+        return False, error
+    if propagate_callback_errors:
+        return accept(index, result), None
+    try:
+        return accept(index, result), None
+    except Exception as error:
+        return False, error
 
 
 def _drive_games(

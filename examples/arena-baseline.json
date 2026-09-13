@@ -1,0 +1,36 @@
+{
+  "catalogue": [
+    {
+      "bot": "random",
+      "label": "Random"
+    },
+    {
+      "bot": "lowest_card",
+      "label": "Lowest card"
+    },
+    {
+      "bot": "highest_card",
+      "label": "Highest card"
+    },
+    {
+      "bot": "lowest_fitting_card",
+      "label": "Lowest fitting card"
+    },
+    {
+      "bot": "highest_fitting_card",
+      "label": "Highest fitting card"
+    },
+    {
+      "bot": "closest_gap",
+      "label": "Closest gap"
+    },
+    {
+      "bot": "coldest_row",
+      "label": "Coldest row"
+    },
+    {
+      "bot": "hand_flexibility",
+      "label": "Hand flexibility"
+    }
+  ]
+}

@@ -4,6 +4,7 @@ from collections.abc import Sequence
 
 from pydantic import BaseModel, Field
 
+from sixnimmt.analytics.metrics import finish_credits
 from sixnimmt.engine.audience import addressed_player
 from sixnimmt.engine.events import Event
 from sixnimmt.engine.replay import replay_events
@@ -18,6 +19,9 @@ class SeatSummary(BaseModel):
     hand_scores: dict[int, int] = Field(default_factory=dict)
     won: bool
     tied: bool
+    win_credit: float | None = None
+    acceptable_credit: float | None = None
+    finishing_distribution: tuple[float, ...] | None = None
     actions_attempted: int = 0
     actions_rejected: int = 0
     messages_sent: int = 0
@@ -60,6 +64,14 @@ def summarise(
         )
         for player in state.players
     }
+    if outcome == "finished":
+        scores = tuple(player.total_score for player in state.players)
+        cutoff = (len(scores) + 1) // 2
+        for index, seat in enumerate(seats.values()):
+            outcome_credits = finish_credits(scores, index, cutoff)
+            seat.win_credit = outcome_credits.win_credit
+            seat.acceptable_credit = outcome_credits.acceptable_credit
+            seat.finishing_distribution = outcome_credits.finishing_distribution
     _count_actions(seats, events, actions)
     _count_events(seats, events)
     notes = ()

@@ -1,11 +1,22 @@
 """Checks for the decorative terminal animation."""
 
+import random
+
 import pytest
 from rich.console import Console
 
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.engine.cards import bull_heads
-from sixnimmt.terminal import _animation_frame, _board, _caption, _doodle_deal, arena_animation
+from sixnimmt.terminal import (
+    _analysis_frame,
+    _animation_frame,
+    _board,
+    _caption,
+    _doodle_deal,
+    _statistics_draw,
+    analysis_animation,
+    arena_animation,
+)
 
 
 def test_doodle_capture_caption_matches_the_cards_taken() -> None:
@@ -88,3 +99,59 @@ def test_progress_displays_completed_matches(completed: int) -> None:
     with console.capture() as capture:
         console.print(_animation_frame(2, 10, 66, 80, ("Alice", "Bob"), completed))
     assert f"Matches completed: {completed}/10 · {completed / 10:.0%}" in capture.get()
+
+
+@pytest.mark.parametrize("width", [32, 40, 54, 80])
+def test_analysis_animation_fits_width_and_labels_toy_statistics(width: int) -> None:
+    console = Console(width=width, color_system=None)
+    with console.capture() as capture:
+        console.print(_analysis_frame(64.9, 1000, 11, 66, width))
+    output = capture.get()
+    assert all(len(line) <= width for line in output.splitlines())
+    assert "Elapsed 01:04" in output
+    assert "1,000 games" in output
+    assert "11 strategies" in output
+    assert "Decorative toy draw" in output
+
+
+def test_analysis_doodle_varies_cards_and_resampled_histogram() -> None:
+    console = Console(width=80, color_system=None)
+    frames: list[str] = []
+    for elapsed in (0.0, 3.0, 8.0, 14.0):
+        with console.capture() as capture:
+            console.print(_analysis_frame(elapsed, 1000, 11, 66, 80))
+        frames.append(capture.get())
+    assert len(set(frames)) == 4
+    assert _statistics_draw(66, 0) != _statistics_draw(66, 1)
+    assert "Toy data, not arena results." in frames[0]
+    assert "%" not in frames[0]
+
+
+def test_statistics_doodle_does_not_consume_shared_randomness() -> None:
+    before = random.getstate()
+    first = _statistics_draw(1234, 2)
+    _analysis_frame(10.0, 100, 11, 1234, 80)
+    assert random.getstate() == before
+    assert _statistics_draw(1234, 2) == first
+
+
+def test_analysis_animation_restores_cursor_after_keyboard_interrupt(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setenv("TTY_COMPATIBLE", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    with pytest.raises(KeyboardInterrupt), analysis_animation(10, 11, 66):
+        raise KeyboardInterrupt
+    output = capsys.readouterr().out
+    assert "\x1b[?25h" in output
+
+
+@pytest.mark.parametrize(
+    ("enabled", "terminal", "term"), [(False, "1", "xterm"), (True, "0", "xterm"), (True, "1", "dumb")]
+)
+def test_analysis_animation_stays_silent_when_disabled_or_noninteractive(
+    monkeypatch: pytest.MonkeyPatch, capsys, enabled: bool, terminal: str, term: str
+) -> None:
+    monkeypatch.setenv("TTY_COMPATIBLE", terminal)
+    monkeypatch.setenv("TERM", term)
+    with analysis_animation(10, 11, 66, enabled=enabled) as animation:
+        assert animation is None
+    assert capsys.readouterr().out == ""

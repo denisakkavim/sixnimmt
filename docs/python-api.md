@@ -2,7 +2,17 @@
 
 Use `run_match` when you have bot instances and want one game's state and events.
 Use `run_arena` for repeated experiments with fresh bots and aggregate results.
+Use `build_arena_plan`, `run_plan`, and `analyse_run` for changing lineups and
+reusable comparison evidence; see the [comparison API example](comparisons.md#python-execution-and-reanalysis).
 Use the engine directly when your application needs to control each action.
+
+`run_plan(plan)` keeps its outcomes in memory and writes nothing; its returned
+`ArenaRun.artifact_dir` is `None`. Supplying `output_dir` saves the evidence, and
+`trace=True` requires that directory. `load_run` reconstructs saved evidence from
+`plan.json`, `results.jsonl`, and `manifest.json`. With `--output-dir`, the CLI also
+writes a readable `report.md` and the full typed analysis in `analysis.json.gz`.
+The comparison guide shows how to recalculate results with `analyse_run` or read
+the compressed analysis directly.
 
 ## Install in another project
 
@@ -108,7 +118,8 @@ own factory in the same process.
 
 `ArenaResult` contains aggregate counters and one `SeatResult` per seat. It does
 not return a list of all individual match results. Use tracing to retain those
-matches for later analysis. Only finished matches contribute scores, wins, and
+matches for later analysis, or `run_plan` to retain compact comparison outcomes
+without full traces. Only finished matches contribute scores, wins, and
 ties; always inspect failure counts alongside averages.
 
 These runners are synchronous and block until their work completes. `concurrency`
@@ -120,7 +131,7 @@ The default backend is `thread`. Process mode constructs bots inside spawned
 workers and requires an importable Python entry module with a
 `if __name__ == "__main__"` guard. It supports importable, picklable custom
 factories but rejects live observers and local/lambda factories. See
-[process execution](arena.md#timeouts-and-concurrency) for a complete example,
+[process execution](arena.md#timeouts-and-concurrency) for execution requirements,
 timeout semantics, and trace handling. These worker settings affect `run_arena`;
 `run_match` always runs locally.
 

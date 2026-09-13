@@ -1,32 +1,58 @@
 # Traces and replay
 
-Set `RunConfig(trace_dir=Path(...))` or CLI `--trace-dir` to preserve an experiment.
-The directory must not already exist. Without tracing, `run_arena` retains
-aggregate results rather than every match's full history; `run_match` returns
-its individual result with events.
+Arena comparisons keep results and provenance in memory by default. Supply
+`--output-dir` to save them, and add `--trace` for detailed logs in that directory's
+`traces/` subdirectory:
+
+```bash
+uv run sixnimmt arena --games 2 --output-dir runs/first-run --trace
+```
+
+`--trace` requires `--output-dir`; the directory must not already exist.
+Without `--output-dir`, the CLI writes no files, including when `--json` prints
+the full report. Python comparisons use
+`run_plan(plan, output_dir=Path(...), trace=True)`. The lower-level `run_match`
+and fixed-lineup `run_arena` APIs retain their `RunConfig(trace_dir=Path(...))`
+option. Without tracing, `run_arena` returns fixed-seat aggregates, while
+`run_match` returns its individual result with events.
 
 ## Files
 
-Use each manifest match entry's filenames rather than guessing generated names.
+Use result records or the trace manifest's filenames rather than guessing names.
+Saved comparison runs contain these artifacts:
 
 | File | Contents |
 | --- | --- |
-| `manifest.json` | Versioned run configuration, seats, outcomes, filenames, seeds, and statistics |
-| `<match>.jsonl` | Complete authoritative event history, including private/admin events |
-| `<match>.actions.jsonl` | Attempt records and decision measurements |
-| `<match>.model.jsonl` | Optional raw model requests, responses, and parsing diagnostics |
+| `manifest.json` | Run status, runtime provenance, and artifact references |
+| `plan.json` | Complete planned schedule, frozen configuration, assignments, seeds, and declared analysis settings |
+| `results.jsonl` | Compact returned outcomes, completed-hand scores, and measurements |
+| `analysis.json.gz` | Full typed analysis in gzip-compressed JSON |
+| `report.md` | Readable strategy tables and collapsed previews of exploratory results |
+| `traces/manifest.json` | Trace filenames and returned outcomes for single-match summaries |
+| `traces/<match>.jsonl` | Complete authoritative event history, including private/admin events |
+| `traces/<match>.actions.jsonl` | Attempt records and decision measurements |
+| `traces/<match>.model.jsonl` | Optional raw model requests, responses, and parsing diagnostics |
 
 Each JSONL line is one JSON object. Event and action writers can add
 `player_display_names` labels to aid inspection; the readers reconstruct the
 typed event/action models independently of those labels.
 
-Manifest version 1 includes `rules`, `protocol`, resolved `run_config`, `seats`,
-the root `seed`, requested/started/completed counts, and `reproducible`.
-Per-match entries include `game_index`, `match_id`, derived `seed`, `outcome`,
+With `--output-dir` and without `--trace`, the output contains only `plan.json`, `results.jsonl`,
+`manifest.json`, `report.md`, and `analysis.json.gz`. The CLI writes both reports
+after execution. The comparison guide includes a [Python example for reading
+the compressed analysis](comparisons.md#python-execution-and-reanalysis).
+
+The trace manifest's version-1 entries include `game_index`, `match_id`, `seed`, `outcome`,
 `winners`, `ended_by`, `reason`, `log`, `actions`, `seat_stats`, and `stats_errors`.
-The manifest is published through a temporary file and rename; it is not a live
-per-action progress feed. An abruptly terminated process may leave logs without
-a completed manifest.
+The root manifest and plan hold the comparison's rules, configuration, and
+identities. Manifests are published through a temporary file and rename.
+Returned outcomes refresh both compact results and trace metadata. A crashed
+worker may leave a partial trace without a returned outcome; its planned job
+remains visible in execution status.
+
+The lower-level Python runners write event files directly in their requested
+trace directory. Their version-1 manifest additionally includes `rules`,
+`protocol`, `run_config`, `seats`, `seed`, run counts, and `reproducible`.
 
 ## Ordering and privacy
 
@@ -49,9 +75,9 @@ observations, not the raw JSONL stream.
 ## Replay and summaries
 
 ```bash
-uv run sixnimmt replay traces/first-run/MATCH_LOG.jsonl
-uv run sixnimmt summarise traces/first-run/MATCH_LOG.jsonl
-uv run sixnimmt summarise traces/first-run/MATCH_LOG.jsonl --manifest traces/first-run/manifest.json
+uv run sixnimmt replay runs/first-run/traces/MATCH_LOG.jsonl
+uv run sixnimmt summarise runs/first-run/traces/MATCH_LOG.jsonl
+uv run sixnimmt summarise runs/first-run/traces/MATCH_LOG.jsonl --manifest runs/first-run/traces/manifest.json
 ```
 
 Replace `MATCH_LOG.jsonl` with the manifest's filename. Replay folds events into
@@ -85,7 +111,14 @@ with older selection-only action accounting; they are intentional test assets.
 
 ## Deterministic seeds
 
-Arena match and bot seeds use the first eight bytes of SHA-256, interpreted as
+Comparison plans save actual match and per-seat bot seeds in every job, along
+with the versioned seed scheme. Changing concurrency or execution backend does
+not change those assignments. Matched replacements record explicit shared-deal
+relationships; equal seeds across different player counts do not mean equal
+dealt states. See [planning](../src/sixnimmt/arena/planning.py).
+
+The fixed-lineup `run_arena` API preserves its existing derivation: match and
+bot seeds use the first eight bytes of SHA-256, interpreted as
 an unsigned big-endian integer, over this UTF-8 string:
 
 ```text

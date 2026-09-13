@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
+from sixnimmt.arena.artifacts import load_run
 from sixnimmt.engine.actions import Action
 from sixnimmt.engine.rules import GameRules, MatchProtocol
 from sixnimmt.engine.setup import create_match, start_hand
@@ -67,21 +68,22 @@ def test_hand_3_deal_is_determined_by_seed_not_prior_play() -> None:
     assert first_hand3.players[0].hand != first.players[0].hand
 
 
-def test_arena_output_is_identical_across_interpreter_hash_seeds(tmp_path: Path) -> None:
+def test_arena_games_are_identical_across_interpreter_hash_seeds(tmp_path: Path) -> None:
     """Reproducibility must never depend on dict or set iteration order."""
-    players_file = tmp_path / "players.json"
-    players_file.write_text('[ {"bot": "random"}, {"bot": "random"}, {"bot": "random"} ]')
+    config_file = tmp_path / "arena.json"
+    config_file.write_text('{"catalogue": [{"bot": "random"}], "player_counts": [3]}')
     command = [
         sys.executable,
         "-c",
         "from sixnimmt.cli import app; app()",
         "arena",
-        "--players-file",
-        str(players_file),
+        "--config",
+        str(config_file),
         "--games",
         "3",
         "--seed",
         "1234",
+        "--json",
     ]
     outputs = set()
 
@@ -89,12 +91,19 @@ def test_arena_output_is_identical_across_interpreter_hash_seeds(tmp_path: Path)
         # A subprocess is the point: PYTHONHASHSEED can only be varied at
         # interpreter start, so this cannot be exercised in-process.
         result = subprocess.run(  # noqa: S603
-            command,
+            [*command, "--output-dir", str(tmp_path / hash_seed)],
             capture_output=True,
             text=True,
             check=True,
             env={**os.environ, "PYTHONHASHSEED": hash_seed},
         )
-        outputs.add(result.stdout)
+        assert result.returncode == 0
+        run = load_run(tmp_path / hash_seed)
+        outputs.add(
+            tuple(
+                (record.job_id, record.scores, record.winners, record.actions_accepted, record.actions_rejected)
+                for record in run.results
+            )
+        )
 
     assert len(outputs) == 1

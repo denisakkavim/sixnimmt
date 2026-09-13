@@ -42,8 +42,8 @@ seeded matches can differ from version 1, which also chose rows randomly.
 
 ## Built-in baselines and board-and-hand heuristics
 
-An [example player file](../examples/arena-baseline-players.json) includes all eight
-strategies for a mixed arena.
+An [example configuration](../examples/arena-baseline.json) includes all eight
+strategies in its catalogue for comparison across sampled lineups.
 
 All these strategies accept no options and are deterministic for a given seed.
 Only `random` uses the seed; the other strategies follow fixed rules. Each uses
@@ -180,7 +180,7 @@ For direct Python use, construct
 
 The registry maps names to `BotSpec` objects. A factory receives a derived seed
 and validated option keywords. Put registration in your Python entry point
-before invoking `run_arena`; a separate CLI process will not inherit a registry
+before building a comparison plan or invoking `run_arena`; a separate CLI process will not inherit a registry
 mutation from another process.
 
 For `RunConfig(backend="process")`, define the factory and options model at
@@ -287,7 +287,7 @@ from `sixnimmt.arena.bots.registry`. Import implementations from these modules:
 
 The former individual bot modules and package-level implementation re-exports
 have been removed. Update Python imports using this table; registered strategy
-names and player JSON files are unchanged. Importing bot contracts no longer
+names and strategy options are unchanged. Importing bot contracts no longer
 initializes the LLM client or numerical strategy catalogue.
 
 A `BotSpec` may provide a `resolve(options, resolve_strategy)` hook returning

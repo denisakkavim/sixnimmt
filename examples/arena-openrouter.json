@@ -1,0 +1,38 @@
+{
+  "catalogue": [
+    {
+      "bot": "llm_memory",
+      "options": {
+        "model": "openai/gpt-5.6-luna",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "memory_max_chars": 4000
+      },
+      "label": "GPT 5.6 Luna",
+      "key": "gpt-5-6-luna"
+    },
+    {
+      "bot": "llm_memory",
+      "options": {
+        "model": "google/gemini-3.1-flash-lite",
+        "simplified_tool_schemas": true,
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "memory_max_chars": 4000
+      },
+      "label": "Gemini 3.1 Flash Lite",
+      "key": "gemini-3-1-flash-lite"
+    },
+    {
+      "bot": "llm_memory",
+      "options": {
+        "model": "anthropic/claude-haiku-4.5",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "memory_max_chars": 4000
+      },
+      "label": "Claude Haiku 4.5",
+      "key": "claude-haiku-4-5"
+    }
+  ]
+}

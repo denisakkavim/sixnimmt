@@ -11,11 +11,13 @@
 | `engine/replay.py` | Reconstruct authoritative state from recorded events |
 | `arena/runner.py`, `scheduling.py`, `config.py`, `results.py` | Offer decisions, schedule seats/matches, enforce limits, aggregate results |
 | `arena/decisions.py`, `transactions.py` | Bot deadlines and validation of atomic proposals |
+| `arena/catalogue.py`, `planning.py` | Frozen strategy identities, populations, concrete assignments, seeds, and dependency blocks |
+| `arena/planned.py`, `records.py`, `artifacts.py`, `persistence/arena.py` | Variable-lineup execution, compact outcomes, durable plans/results, and saved-run loading |
 | `arena/players.py`, `bots/` | Per-seat configuration, registry, strategies, LLM adapters |
 | `arena/tracing.py`, `persistence/` | Experiment provenance and durable JSONL/manifest output |
-| `analytics/summary.py` | Metrics derived from logs |
+| `analytics/` | Shared outcome metrics, trace summaries, population/comparison estimates, uncertainty, and report rendering |
 | `common/text.py` | Shared text validation |
-| `cli.py` | `arena`, `replay`, and `summarise` commands |
+| `cli.py`, `arena_cli.py` | `arena`, `replay`, and `summarise` commands and comparison orchestration |
 
 The engine owns rules and hidden state. It does not call bots, write files, or
 invoke model providers. The arena drives the engine and owns experiment

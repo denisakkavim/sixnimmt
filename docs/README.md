@@ -11,7 +11,8 @@ trace. Then use the following guides:
 | --- | --- |
 | [Using the Python package](python-api.md) | Installation in another project, runners, results, configuration, and direct engine control |
 | [Game rules and information](game-rules.md) | Cards, placement, scoring, communication, and what each player can see |
-| [Running arenas](arena.md) | Player files, Python API, CLI options, scheduling, limits, and outcomes |
+| [Running arenas](arena.md) | Arena configuration, Python API, CLI options, scheduling, limits, and outcomes |
+| [Comparing strategies](comparisons.md) | One-file configuration, exact game counts, compact evidence, population estimates, matched comparisons, and reanalysis |
 | [Evaluating bots](bot-evaluation.md) | Five experiments answering the agreed questions, with setups, metrics, result interpretation, and arena requirements |
 | [Writing bots](bots.md) | Bot contract, registration, rejection feedback, and atomic action batches |
 | [Strategy catalogue](strategy-families.md) | Baseline heuristics and proposed experimental strategies |

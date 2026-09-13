@@ -5,48 +5,71 @@ Install Python 3.13 or newer and `uv`, then install the project and development 
 ```bash
 uv sync --all-groups
 uv run sixnimmt --help
-uv run sixnimmt arena --players-file examples/arena-players.json --games 10 --seed 1234
+uv run sixnimmt arena --games 10 --seed 1234
 ```
 
-The bundled [player file](../examples/arena-players.json) supplies the lineup.
-You can create your own JSON file with two to ten entries:
+This plays ten four-player games using the reference strategy catalogue and
+prints the comparison results. Everything stays in memory; no files or run
+directory are created. Add `--output-dir runs/first-comparison` to save evidence
+and a readable `report.md`. Choose a new directory for each saved run.
+
+Interactive terminals show animations while games run and the analysis is
+prepared. Use `--no-animation` to disable both. Piped output and `--json`
+suppress them automatically; `--json` alone saves no files.
+
+## Choose strategies and table sizes
+
+The bundled [configuration](../examples/arena.json) supplies two strategies:
 
 ```json
-[
-  {"bot": "random", "display_name": "Alice"},
-  {"bot": "lowest_fitting_card", "display_name": "Bob"}
-]
+{
+  "catalogue": [
+    {"bot": "random", "label": "Random"},
+    {"bot": "lowest_fitting_card", "label": "Lowest fitting card"}
+  ]
+}
 ```
 
-Each array position is a seat. The arena assigns IDs `player_1`, `player_2`, and
-so on, preserving the order for every match. Lower scores are better. The output
-reports finished and unfinished outcomes separately; only finished matches count
-toward scores, wins, and ties. A win means a sole winner; a tie means sharing the
-lowest score.
-
-## Save an experiment
-
-Choose a trace directory that does not exist yet:
-
 ```bash
-uv run sixnimmt arena --players-file examples/arena-players.json --games 2 --seed 1234 --trace-dir traces/first-run
+uv run sixnimmt arena --config examples/arena.json \
+  --games 10 --player-count 3 --player-count 6 --output-dir runs/two-sizes
 ```
 
-Open `traces/first-run/manifest.json` and find a match's `log` filename. Substitute
-that filename for `MATCH_LOG.jsonl` below:
+This requests ten games at each table size, twenty games total. Any player count
+from two through ten is supported. Each game draws its lineup from the catalogue;
+the same configuration may occupy several seats. Catalogue entries are strategy
+choices, not a fixed seating order. Bots receive anonymous names.
+
+Only finished games contribute competitive outcomes. Reports show unfinished
+games separately, and split win credit equally among tied lowest-score players.
+See [Running arenas](arena.md) for options and
+[Comparing strategies](comparisons.md) for interpreting the report.
+
+## Save detailed traces
+
+Supply `--output-dir` to save compact results. Add `--trace` for full game logs;
+tracing requires an output directory:
 
 ```bash
-uv run sixnimmt replay traces/first-run/MATCH_LOG.jsonl
-uv run sixnimmt summarise traces/first-run/MATCH_LOG.jsonl
+uv run sixnimmt arena --config examples/arena.json \
+  --games 2 --seed 1234 --output-dir runs/first-traced-run --trace
+```
+
+Open `runs/first-traced-run/traces/manifest.json` and find a match's `log`
+filename. Substitute that filename for `MATCH_LOG.jsonl` below:
+
+```bash
+uv run sixnimmt replay runs/first-traced-run/traces/MATCH_LOG.jsonl
+uv run sixnimmt summarise runs/first-traced-run/traces/MATCH_LOG.jsonl
 ```
 
 Replay reconstructs the final game state without calling the bots again. Summary
 adds action, messaging, latency, and outcome information from the neighboring
-action log and manifest. See [Traces and replay](traces.md) for file details.
+action log and trace manifest. See [Traces and replay](traces.md) for file details.
 
 ## Run a match from Python
 
-For installation in another project and more integration examples, see
+For installation in another project and comparison API examples, see
 [Using sixnimmt from Python](python-api.md).
 
 ```python
@@ -64,12 +87,12 @@ print([(player.player_id, player.total_score) for player in result.final_state.p
 ```
 
 `run_match` receives bot instances; construct new instances for independent
-matches. For a repeated experiment, `run_arena` constructs fresh instances for
-each match from [player configurations](arena.md).
+games. `run_plan` constructs fresh instances for comparison jobs, while
+`run_arena` remains available for fixed ordered lineups in Python.
 
 ## Enable communication
 
 Add `--communication` to an arena command. This enables messages and explicit
-commitment; it does not force bots to talk. The bundled random and lowest fitting card bots
-select and commit without sending messages. Custom bots and LLM players can use
-the extra actions. See [Game rules and information](game-rules.md).
+commitment; it does not force bots to talk. Baseline bots select and commit
+without sending messages. Custom bots and LLM players can use the extra actions.
+See [Game rules and information](game-rules.md).

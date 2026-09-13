@@ -15,12 +15,12 @@ independent continuous `Beta(1,1)` mistake probability for each opponent.
 They receive ordinary player views, without actual opponents' hands, unrevealed
 selections, the match seed, or the actual undealt cards.
 
-## Running an experiment
+## Running a comparison
 
-Use the complete [example player file](../examples/arena-uncertainty-players.json):
+Use the complete [example configuration](../examples/arena-uncertainty.json):
 
 ```bash
-uv run sixnimmt arena --players-file examples/arena-uncertainty-players.json --games 1 --seed 123
+uv run sixnimmt arena --config examples/arena-uncertainty.json --games 1 --seed 123 --output-dir runs/uncertainty-first-run
 ```
 
 The example uses the exploratory settings from our

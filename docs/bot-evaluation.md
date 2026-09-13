@@ -15,6 +15,10 @@ proposed programme, not experiments already run. Concrete starting settings
 are specified so the programme can be reviewed and implemented. The arena audit
 refers to repository commit `2d7a611813321ca52f75758d54436c251d341930`.
 
+The implemented arena supports two to ten players. The four- and five-player
+focus here describes this study, not a runtime restriction. Arena budgets count
+actual games; seat balancing runs across fresh deals within that budget.
+
 ## 1. Evaluation questions
 
 1. **Which bots and strategies perform best generally?** Across a varied set of
@@ -445,9 +449,8 @@ Either would change the comparison. Multiple copies and seat rotations stay
 together. Controlled sampling records support condition-specific estimates,
 not the unweighted IID population average.
 
-**Paired differences.** Within each matched independent deal block, average each
-candidate's outcome over its seat rotations and any bot-randomness repeats.
-Subtract the reference bot's block average, then average these paired differences
+**Paired differences.** On each matched deal, subtract the reference bot's
+outcome from the candidate's outcome, then average these paired differences
 across blocks. Report differences in percentage points and a 95% confidence
 interval obtained by resampling whole independent blocks. Keep both candidates,
 all rotations, and any related state interventions together in each resample.
@@ -502,6 +505,13 @@ from reaching the agreed acceptable positions.
 
 ## 4. Arena support required by these experiments
 
+The routine catalogue comparison workflow is now available through `arena`,
+with planning, compact outcomes, population and paired analytics, and saved-data
+reanalysis. See [Comparing strategies](comparisons.md) for the implemented
+interface. The audit below records the original starting point and proposed
+capabilities; tactical interventions and recognition workflows remain future
+work.
+
 The rules engine already supplies the correct foundation: legal observations,
 deterministic deals, action validation, scoring, and both fixed-hand and
 66-point termination. Experiment scheduling and measurement belong above it.
@@ -533,9 +543,9 @@ There are several implementation details that matter to this plan:
   counter also includes unfinished matches and possibly a partial current hand.
   Derive completed-hand counts from `hand_ended` events or explicit new counters.
 - [Seed derivation](../src/sixnimmt/arena/execution.py) keeps match and bot streams
-  separate, but `run_arena` derives both from one root. The lower-level
-  `run_match(bots, seed)` permits independently seeded bots on a fixed deal;
-  experiment-level controls would make repeated bot randomness convenient.
+  separate, but `run_arena` derives both from one root. The arena derives fresh
+  private bot seeds for each game and preserves those
+  assignments across prescribed replacement arms.
   Changing player count changes dealt hands and starting rows, so do not treat
   equal seeds across four and five players as identical states.
 - [Per-match analytics](../src/sixnimmt/analytics/summary.py) and

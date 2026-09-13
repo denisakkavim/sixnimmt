@@ -1,33 +1,179 @@
 # Running arenas
 
-For designing strategy comparisons, see the [bot evaluation report](bot-evaluation.md).
-It defines experiments for the agreed evaluation questions, including each
-setup, its metrics, result interpretation, and required arena support.
+The `arena` command compares strategies across changing opponent lineups and
+prints readable results. It plays 100 four-player games by default, using the
+reference strategy catalogue. Results remain in memory unless an output directory
+is supplied.
 
-## Player configuration
-
-The CLI reads a JSON array of two to ten player objects:
-
-```json
-[
-  {"bot": "random", "display_name": "Alice", "options": {}, "agent_metadata": {"group": "baseline"}},
-  {"bot": "lowest_fitting_card", "display_name": "Bob"}
-]
+```bash
+uv run sixnimmt arena --games 10
 ```
 
-`bot` names a registered strategy: one of the eight [baseline heuristics](bots.md#built-in-baselines-and-board-and-hand-heuristics),
-[`controlled_burn`](bots.md#controlled-burn),
-[`count_threshold_bait`](bots.md#count-threshold-bait),
-[`hand_aware_row_choice`](bots.md#hand-aware-row-choice),
-[`simulation` or `model_based_bait`](uncertainty-bots.md), `llm`, or `llm_memory`.
-`options` are validated by that strategy's options model; unknown keys fail
-validation. The baseline heuristics accept no options. Names default to `Player 1`,
-`Player 2`, etc. IDs remain `player_1`, `player_2`, etc. Seat metadata is recorded
-for experiment analysis. It overrides registry metadata, while the arena supplies
-the `bot_options` metadata field itself. Options and metadata must not contain
-credentials because traces record them.
+`--games` is the exact number of random-opponent games for each selected player
+count. For example, `--games 10 --player-count 3 --player-count 6` requests 20
+games. Player counts from two through ten are supported. Lineup rotations use
+the requested game budget; they do not multiply it.
+
+Add `--output-dir runs/first-comparison` to save the evidence and reports. Without
+that option, the command creates no run directory or output files.
+
+See [Comparing strategies](comparisons.md) for controlled lineups, replacement
+comparisons, population analysis, and reanalysis of saved results. The
+[bot evaluation report](bot-evaluation.md) explains the evaluation questions.
+
+## Configuration
+
+The default run needs no configuration file. Use one optional JSON file to
+choose strategies and any additional settings. Its `catalogue` array contains
+the strategy configurations:
+
+```json
+{
+  "catalogue": [
+    {"bot": "random", "label": "Random", "family": "card_order"},
+    {"bot": "lowest_fitting_card", "label": "Lowest fitting card", "family": "board_and_hand"}
+  ]
+}
+```
+
+```bash
+uv run sixnimmt arena --config examples/arena.json \
+  --games 10 --seed 1234 --output-dir runs/custom-comparison
+```
+
+Each entry defines a strategy that can fill a seat. The arena samples lineups
+from these entries, allowing multiple copies of the same configuration. Array
+positions do not prescribe seats. Labels and strategy metadata stay in the
+harness; bots see anonymous player names.
+
+`bot` names a registered [baseline or composed strategy](bots.md),
+[`simulation` or `model_based_bait`](uncertainty-bots.md), or
+[`llm` or `llm_memory`](llm-players.md). `options` are validated by that strategy's
+options model; unknown keys fail validation. Baseline heuristics accept no
+options. `label` is an optional report name, and `family` groups related
+strategies for population analysis. Give different parameter settings of the
+same bot distinct `key` values. Defaults and nested options are resolved and
+recorded before execution.
+
+The [baseline catalogue](../examples/arena-baseline.json) contains
+eight inexpensive strategies. Model and probabilistic examples are linked from
+their guides. Keep credentials in the configured environment variables;
+catalogue options are included when run artifacts are saved.
+
+## CLI reference
+
+```bash
+uv run sixnimmt arena --help
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--config` | Built-in settings | One JSON file containing strategies and optional lineup, execution, or analysis settings |
+| `--games` | 100 | Random-opponent games per selected player count |
+| `--player-count` | 4 | Players per game, from 2 to 10; repeat for multiple sizes |
+| `--controlled-games` | 0 | Additional games per selected controlled lineup |
+| `--seed` | 66 | Root seed |
+| `--output-dir` | Unset | Save all run artifacts in this new directory; otherwise keep results in memory |
+| `--trace` | Off | Save detailed logs in `traces/`; requires `--output-dir` |
+| `--json` | Off | Print the full structured report as pretty-printed JSON |
+| `--animation` / `--no-animation` | On | Show game progress and the game/analysis animations in interactive terminals |
+| `--communication` | Off | Explicit commitment and messaging |
+| `--scheduler` | Mode-dependent | `sequential` in classic, `round_robin` in communication |
+| `--concurrency` | 1 | Maximum simultaneous games |
+| `--backend` | `thread` | Thread workers or spawned process workers |
+| `--match-action-limit` | 10,000 | Attempt limit across a game |
+| `--play-action-limit` | Unset classic; 200 communication | Attempt limit across all seats within one play |
+| `--decision-rejection-limit` | 8 | Consecutive rejections within one offered decision |
+| `--decision-timeout` | Unset | Seconds allowed for a bot call |
+| `--max-abandoned-decisions` | Four times concurrency | Bound on timed-out calls still running |
+| `--stop-on-failure` | Off | Stop submitting games after failure; drain submitted work |
+
+Explicit command-line settings override the corresponding configuration-file settings.
+At least one random, controlled, or replacement comparison game must be requested.
+Piped output and `--json` suppress the animation automatically.
+`--json` alone prints the full report without saving files.
+The bull-and-card animation runs during games; a statistics animation follows
+while the analysis and reports are prepared. `--no-animation` disables both.
+
+Classic sequential scheduling can offer one seat until it commits. Communication
+requires round-robin scheduling to avoid starving other seats. Both policies
+skip committed seats and prioritize a required row choice. Rejected attempts
+count toward arena limits. Accepted actions consume the separate engine budget
+where applicable. A final action that finishes a game wins over a limit reached
+by that action.
+
+## Results and failures
+
+The command prints formatted strategy tables with percentages, compact confidence
+intervals, average scores, and completion counts. It also identifies the run's
+context and, when supplied, the output directory. With `--output-dir`,
+`report.md` contains the main comparison and
+collapsed previews of exploratory results; `analysis.json.gz` retains the full
+structured analysis. `plan.json` holds the complete schedule and settings,
+`results.jsonl` preserves returned outcomes, and `manifest.json` records execution
+status and provenance. Without `--output-dir`, these results stay in memory and
+the command only prints them. Full traces require both `--trace` and `--output-dir`.
+
+| Outcome | Typical cause |
+| --- | --- |
+| `finished` | Normal game termination |
+| `abandoned` | Play or match attempt limit |
+| `forfeited` | Repeated illegal proposals reach the rejection limit |
+| `failed` | Bot exception, construction failure, malformed return, or timeout |
+
+Only finished games have competitive scores. Reports show completion coverage,
+missing outcomes, and uncertainty alongside win and acceptable-finish credits.
+See [Comparing strategies](comparisons.md) for tie conventions and denominators.
+
+Invalid configuration stops before execution. Returned bot failures remain
+ordinary result records. Fatal worker, recording, or scheduler errors stop new
+submissions and preserve available results. When an output directory was supplied,
+errors identify the saved evidence there.
+Submitted games without returned outcomes remain visible, as do unstarted games.
+Bot `stats()` failures are recorded separately and do not change a game outcome.
+
+## Timeouts and concurrency
+
+Use process workers for CPU-heavy comparisons and threads when bots mostly wait
+for model responses. Each game advances one bot decision at a time.
+
+```bash
+uv run sixnimmt arena --config examples/arena-baseline.json \
+  --games 100 --seed 1234 --backend process --concurrency 4 \
+  --output-dir runs/baseline-comparison
+```
+
+Every game constructs fresh bot instances. Planned assignments and seeds remain
+the same across backends and worker counts when timing limits do not intervene.
+The parent collects compact results as workers finish and saves them when an
+output directory is supplied. Process startup adds overhead,
+so short runs may be faster with threads.
+
+Custom factories and option models must be importable and picklable for process
+execution. Resolved definitions go to workers once; bot instances need not be
+picklable. Live observer callbacks require the thread backend. Python scripts
+using processes must protect their entry point with `if __name__ == "__main__"`;
+use a script or the CLI instead of an interactive interpreter or notebook cell.
+
+Without a deadline, a bot runs inline on its match worker. With a deadline, its
+call runs on a daemon thread. A timeout finishes the failed game and discards
+late results, but cannot cancel arbitrary Python or provider work. Exceeding
+the abandoned-call bound stops submission. The count and limit are shared across
+process workers. A late call that returns releases its active slot; its action
+never enters a later game. Statistics are skipped for a timed-out seat while its
+call may still mutate the bot.
+
+Set both arena deadlines and provider request timeouts for model runs.
+`stop_on_failure` drains submitted games; without deadlines, that can wait
+indefinitely. Privileged observer callbacks must be thread-safe and must never
+feed hidden state back to bots.
 
 ## Python configuration
+
+The comparison API uses `LineupConfig`, `build_arena_plan`, and `run_plan`;
+see the [Python guide](python-api.md) and [comparison examples](comparisons.md).
+The lower-level `run_arena` API remains useful when a script needs one fixed
+ordered lineup:
 
 ```python
 from sixnimmt.arena.players import PlayerConfig
@@ -44,170 +190,25 @@ result = run_arena(
 print(result.finished, result.players)
 ```
 
-Keep three configuration layers distinct:
+`PlayerConfig` describes a fixed seat and accepts `display_name` and
+`agent_metadata`; it differs from a catalogue entry. `run_arena` preserves its
+fixed-seat aggregates and seed scheme. In thread mode it validates the first
+lineup eagerly; failure to construct the first process lineup is also fatal.
+Later construction failures become returned match failures.
+
+Keep three lower-level configuration layers distinct:
 
 | Model | Responsibility |
 | --- | --- |
 | `GameRules` | Published game shape, player bounds, target score |
-| `MatchProtocol` | Communication, information policy, hand-based termination, per-player action budget |
-| `RunConfig` | Scheduling, attempt limits, deadlines, execution backend, concurrency, tracing |
+| `MatchProtocol` | Communication, information policy, fixed-hand termination, per-player action budget |
+| `RunConfig` | Scheduling, attempt limits, deadlines, backend, concurrency |
 
-The fixed shape is 104 cards, ten cards per hand, four rows, and capacity five;
-alternative values are rejected. Use the Python API for protocol fields that
-the CLI does not expose, such as fixed-hand experiments or hidden message existence.
-
-## CLI reference
-
-```bash
-uv run sixnimmt arena --help
-```
-
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `--players-file` | Required | JSON lineup file |
-| `--games` | Required | Positive number of matches |
-| `--seed` | 66 | Root seed |
-| `--communication` | Off | Explicit commitment and messaging |
-| `--scheduler` | Mode-dependent | `sequential` in classic, `round_robin` in communication |
-| `--concurrency` | 1 | Concurrent match workers |
-| `--backend` | `thread` | `thread` for shared-process workers; `process` for multiple CPU cores |
-| `--trace-dir` | Unset | New directory for logs and manifest |
-| `--match-action-limit` | 10,000 | Attempt limit across a match |
-| `--max-actions-per-match` | 10,000 | Older spelling; explicit `--match-action-limit` takes precedence |
-| `--play-action-limit` | Unset classic; 200 communication | Attempt limit across all seats within one play |
-| `--decision-rejection-limit` | 8 | Consecutive rejections within one offered decision |
-| `--decision-timeout` | Unset | Seconds allowed for a bot call |
-| `--max-abandoned-decisions` | Four times concurrency | Bound on timed-out calls still running |
-| `--stop-on-failure` | Off | Stop submitting matches after a failure; drain started work |
-| `--animation/--no-animation` | On in interactive terminals | Show the animated bull pen while matches run |
-
-Classic sequential scheduling can repeatedly offer one seat until it commits.
-Communication therefore requires round-robin scheduling to avoid starving
-other seats. Both policies skip committed seats and prioritize a required row
-choice. Attempts count toward arena limits even if rejected. Accepted actions
-consume the separate engine budget where applicable. A final action that
-finishes a match wins over a limit reached by that action.
-
-### Terminal results
-
-While the arena runs, interactive terminals show an animated bull pen with four
-rows of five card slots and bull-head totals. Shuffled miniature deals send
-cards to their nearest lower row; a sixth card or a card below every row
-triggers a capture. Captions show the captured row’s actual bull-head total.
-Fresh deals vary the cards, player order, and captured rows.
-It includes elapsed time, the seed, rotating game tips, and a progress bar with
-the completed/requested match count and percentage. All returned outcomes count
-toward progress, including abandoned, forfeited, and failed matches. Runs that
-stop early keep the original requested total. The doodle table uses the configured player count and display names
-in seat order, with pretend card reveals in a shuffled player order. Missing
-names use the same defaults as the results table. The card sequence is a
-decorative doodle, separate from the actual match progress. It works with both thread and process backends and
-clears when the run ends, including on errors. Use `--no-animation` to disable
-it. Redirected output and basic `TERM=dumb` terminals skip the animation.
-
-At the end of a run, the arena prints a formatted summary with the root seed,
-hand and action totals, requested/started/completed match counts, and an outcome
-table. The player table keeps seat order and shows display names, player IDs,
-bot strategies, sole wins, ties, total scores, and average scores per finished
-match. Lower scores are better. If no matches finish, averages display as `—`.
-
-Tables adapt to the terminal width and use color when supported. Redirected
-output remains readable text without automatic ANSI colors. Set `NO_COLOR=1`
-to disable color in the terminal. This replaces the previous `key=value` output.
-For structured per-match data, use [`summarise` or the trace files](traces.md).
-
-## Outcomes and failures
-
-| Outcome | Typical cause |
-| --- | --- |
-| `finished` | Normal game termination |
-| `abandoned` | Play or match attempt limit |
-| `forfeited` | Repeated illegal proposals reach the decision rejection limit |
-| `failed` | Bot exception, malformed return, or decision timeout |
-
-Only finished matches contribute scores, sole wins, and ties. Report unfinished
-outcomes alongside win rates to avoid hiding a strategy's failure rate. Track
-requested, started, and completed counts when submission stops early.
-
-Invalid configuration and failure to construct the initial lineup stop the run.
-Later bot construction failures become match failures. Fatal tracing or scheduler
-errors stop the run with `ArenaError`; a completed manifest may contain partial
-run results. Bot `stats()` failures are recorded separately and do not change
-the game outcome.
-
-## Timeouts and concurrency
-
-`run_arena` defaults to a thread pool. Use the process backend for CPU-heavy
-baseline tournaments; `concurrency` is the maximum number of matches in flight
-and worker processes. Each match still advances one bot decision at a time.
-Threads remain useful when model calls spend most of their time waiting for I/O.
-
-```bash
-uv run sixnimmt arena --players-file examples/arena-baseline-players.json \
-  --games 100 --seed 1234 --backend process --concurrency 4
-```
-
-For Python, save the following in a script and protect the entry point with
-`if __name__ == "__main__"`. Workers use the `spawn` start method, so the entry
-module must be importable; run process arenas from scripts or the CLI, not an
-interactive interpreter or notebook cell.
-
-```python
-from sixnimmt.arena.players import PlayerConfig
-from sixnimmt.arena.runner import RunConfig, run_arena
-
-
-def main() -> None:
-    result = run_arena(
-        [PlayerConfig(bot="random"), PlayerConfig(bot="lowest_fitting_card")],
-        games=100,
-        seed=1234,
-        config=RunConfig(backend="process", concurrency=4),
-    )
-    print(result.finished, result.players)
-
-
-if __name__ == "__main__":
-    main()
-```
-
-Every worker constructs fresh bots for each match, including game zero. Match
-and bot seeds depend on game and seat indices, so changing the worker count or
-backend preserves deterministic game outcomes when timing limits do not intervene.
-Workers write separate trace files; only compact match summaries and manifest
-entries return to the parent. The parent aggregates scores and writes the final
-manifest in game-index order. Process startup has a cost, so very short runs may
-be faster with threads. `run_match` remains a local, single-match operation;
-backend and concurrency settings apply to `run_arena`.
-
-All built-in bots support process mode. Custom factories, options models, and
-resolved settings must be picklable and available from importable modules.
-Register them in the parent before calling `run_arena`; the resolved definitions
-are supplied to workers without requiring registration to run again there.
-Lambdas and local definitions are rejected before workers launch or traces are
-created. Bot instances themselves need not be picklable. Live `observer` callbacks
-are unsupported in process mode; use trace files or the thread backend.
-
-Without a deadline, a bot runs inline on the match worker. With a deadline, its
-call runs on a daemon thread. Timeout finalizes the failed match and discards
-late results, but cannot cancel arbitrary Python or provider work. Exceeding the
-abandoned-call bound stops submission. Statistics are skipped for timed-out
-seats because a late call could still mutate their state.
-
-In process mode, the abandoned-call count and active-call limit are shared across
-all workers. A call that eventually returns releases its active slot. Worker
-processes are reused between matches, and late actions never enter subsequent
-matches. A worker crash stops submission and raises `ArenaError`; the manifest
-records completed matches and the error, without counting lost results as
-completed matches. Initial-lineup construction errors are also fatal, although
-other process matches may already have been submitted when the error arrives.
-
-Set both the arena deadline and provider request timeouts for model experiments.
-`stop_on_failure` drains started matches; without deadlines, that can wait
-indefinitely. In thread mode, an `observer(state, events)` callback must be thread-safe under
-concurrency and must not feed privileged state back into bot decisions.
+The fixed game shape is 104 cards, ten cards per hand, four rows, and capacity
+five. Use the configuration file or Python for protocol fields without individual CLI
+flags, such as fixed-hand termination or hidden message existence.
 
 Sources: [configuration](../src/sixnimmt/arena/config.py),
-[players](../src/sixnimmt/arena/players.py),
-[runner](../src/sixnimmt/arena/runner.py), and
+[planning](../src/sixnimmt/arena/planning.py),
+[execution](../src/sixnimmt/arena/planned.py), and
 [CLI](../src/sixnimmt/cli.py).

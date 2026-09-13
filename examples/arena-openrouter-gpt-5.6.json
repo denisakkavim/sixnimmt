@@ -1,0 +1,37 @@
+{
+  "catalogue": [
+    {
+      "bot": "llm_memory",
+      "options": {
+        "model": "openai/gpt-5.6-luna",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "memory_max_chars": 4000
+      },
+      "label": "GPT 5.6 Luna",
+      "key": "gpt-5-6-luna"
+    },
+    {
+      "bot": "llm_memory",
+      "options": {
+        "model": "openai/gpt-5.6-terra",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "memory_max_chars": 4000
+      },
+      "label": "GPT 5.6 Terra",
+      "key": "gpt-5-6-terra"
+    },
+    {
+      "bot": "llm_memory",
+      "options": {
+        "model": "openai/gpt-5.6-sol",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "memory_max_chars": 4000
+      },
+      "label": "GPT 5.6 Sol",
+      "key": "gpt-5-6-sol"
+    }
+  ]
+}

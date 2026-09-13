@@ -178,3 +178,100 @@ def arena_animation(
     animation = _ArenaAnimation(console, games, seed, tuple(names))
     with Live(console=console, get_renderable=animation.render, refresh_per_second=4, transient=True):
         yield animation
+
+
+_STATISTICS_TIPS = (
+    "The bull is checking its figures. Twice, just to be herd.",
+    "Tied leaders share the win. Even the bull knows how to divide.",
+    "Same opponents, same deal: a fair test for a new strategy.",
+    "A tall toy bar is no victory. The real results are still cooking.",
+)
+_STATISTICS_DRAW_SIZE = 24
+
+
+@lru_cache(maxsize=1)
+def _statistics_draw(seed: int, cycle: int) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    # Decorative resampling must never change game or analysis randomness.
+    rng = Random(f"bull-statistics:{seed}:{cycle}")  # noqa: S311 - independent decorative randomness
+    available = [card for card in range(1, 105) if card != 55]
+    chosen = rng.sample(available, 5)
+    chosen.append(55)
+    cards = tuple(sorted(chosen))
+    draw = tuple(rng.choice(cards) for _ in range(_STATISTICS_DRAW_SIZE))
+    return cards, draw
+
+
+def _statistics_histogram(draw: tuple[int, ...], width: int) -> Table:
+    table = Table.grid(padding=(0, 1))
+    table.add_column(no_wrap=True)
+    table.add_column()
+    table.add_column(justify="right", no_wrap=True)
+    bar_width = max(4, min(24, width - 20))
+    current_heads = bull_heads(draw[-1])
+    for heads in (1, 2, 3, 5, 7):
+        count = sum(bull_heads(card) == heads for card in draw)
+        length = max(1, round(count * bar_width / _STATISTICS_DRAW_SIZE)) if count > 0 else 0
+        style = "bold yellow" if heads == current_heads else "cyan"
+        bar = Text("^" * length, style=style)
+        bar.append("·" * (bar_width - length), style="dim")
+        label = "1 head" if heads == 1 else f"{heads} heads"
+        table.add_row(Text(label, style=style), bar, Text(str(count), style=style))
+    return table
+
+
+def _analysis_frame(elapsed: float, games: int, strategies: int, seed: int, width: int) -> Panel:
+    tick = int(elapsed / 0.45)
+    cycle, position = divmod(tick, _STATISTICS_DRAW_SIZE)
+    cards, draw = _statistics_draw(seed, cycle)
+    sample = draw[: position + 1]
+    eyes = ("(oo)", "(o-)", "(oo)", "(-o)")[tick % 4]
+    minutes, seconds = divmod(int(elapsed), 60)
+    status = Text(f"  \\ /   Calculating statistics\n  {eyes}  Elapsed {minutes:02}:{seconds:02}\n   vv")
+    status.stylize("bold magenta", 0, 7)
+    card_strip = Text("Toy cards: ", style="dim")
+    for card in cards:
+        card_strip.append(f"[{card:3}] ", style="bold yellow" if card == sample[-1] else "cyan")
+    tip = _STATISTICS_TIPS[int(elapsed / 6) % len(_STATISTICS_TIPS)]
+    return Panel(
+        Group(
+            status,
+            Text(f"{games:,} games · {strategies:,} strategies"),
+            Text("Toy data, not arena results.", style="dim"),
+            Text(),
+            card_strip,
+            Text(f"Resampling toy cards · last draw [{sample[-1]}]", style="bold"),
+            _statistics_histogram(sample, width),
+            Text(),
+            Text(tip, style="dim"),
+        ),
+        title="6 nimmt! · The statistics stable",
+        subtitle="Decorative toy draw",
+        border_style="magenta",
+        width=min(width, 76),
+    )
+
+
+@dataclass
+class _AnalysisAnimation:
+    console: Console
+    games: int
+    strategies: int
+    seed: int
+    started: float = field(default_factory=monotonic)
+
+    def render(self) -> Panel:
+        return _analysis_frame(monotonic() - self.started, self.games, self.strategies, self.seed, self.console.width)
+
+
+@contextmanager
+def analysis_animation(
+    games: int, strategies: int, seed: int, *, enabled: bool = True
+) -> Iterator[_AnalysisAnimation | None]:
+    """Entertain during analysis without implying a completion rate or measured performance."""
+    console = Console(highlight=False)
+    if games < 0 or strategies < 1 or not enabled or not console.is_terminal or console.is_dumb_terminal:
+        yield None
+        return
+    animation = _AnalysisAnimation(console, games, strategies, seed)
+    with Live(console=console, get_renderable=animation.render, refresh_per_second=4, transient=True):
+        yield animation

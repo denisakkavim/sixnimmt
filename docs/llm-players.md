@@ -4,21 +4,26 @@
 compatible endpoints. Endpoint calls belong to bots; the engine has no model
 dependency. Each seat can use its own model, endpoint, and strategy prompt.
 
-## Configure a seat
+## Configure a strategy
 
-This is one entry in a player array; replace the model and URL with your provider's
-values and supply its credential through the named environment variable:
+An arena configuration can include a model strategy in its `catalogue` array.
+Replace the model and URL with your provider's values and supply its credential
+through the named environment variable:
 
 ```json
 {
-  "bot": "llm",
-  "display_name": "Cautious player",
-  "options": {
-    "model": "YOUR_TOOL_CAPABLE_MODEL",
-    "base_url": "https://your-provider.example/v1",
-    "api_key_env": "ARENA_MODEL_KEY",
-    "strategy_prompt": "Prefer low-risk plays and keep messages concise."
-  }
+  "catalogue": [
+    {
+      "bot": "llm",
+      "label": "Cautious player",
+      "options": {
+        "model": "YOUR_TOOL_CAPABLE_MODEL",
+        "base_url": "https://your-provider.example/v1",
+        "api_key_env": "ARENA_MODEL_KEY",
+        "strategy_prompt": "Prefer low-risk plays and keep messages concise."
+      }
+    }
+  ]
 }
 ```
 
@@ -28,19 +33,23 @@ not require authentication. It does not implicitly read `OPENAI_API_KEY`.
 The base URL must be an absolute HTTP(S) URL without embedded credentials,
 query parameters, or a fragment.
 
-The repository includes [LLM](../examples/arena-llm-players.json),
-[memory comparison](../examples/arena-llm-memory-players.json), and
-[OpenRouter](../examples/arena-openrouter-players.json) lineup examples. Treat
+The repository includes [LLM](../examples/arena-llm.json),
+[memory comparison](../examples/arena-llm-memory.json), and
+[OpenRouter](../examples/arena-openrouter.json) configuration examples. Treat
 their model names as example configuration, not availability guarantees.
 
-After editing the lineup for your endpoint:
+After editing the configuration for your endpoint:
 
 ```bash
-uv run sixnimmt arena --players-file examples/arena-llm-players.json --games 1 --seed 1234 --decision-timeout 130 --trace-dir traces/llm-first-run
+uv run sixnimmt arena --config examples/arena-llm.json --games 1 --seed 1234 --decision-timeout 130 --output-dir runs/llm-first-run --trace
 ```
 
-Start with one match and concurrency one to check tool compatibility and response
-latency. Add `--communication` to offer messages and explicit commitment.
+Start with a small game budget and concurrency one to check tool compatibility
+and response latency. Random lineups can omit a configuration in a small run;
+inspect the report's appearance counts. A model-only catalogue ensures that
+every seat uses the adapter. Add `--communication` to offer messages and explicit
+commitment. Give different models or prompts using the same bot distinct `key`
+values, as in the OpenRouter examples.
 
 ## Options
 
@@ -112,8 +121,8 @@ privileged model request/response logs.
 
 ## Reading results
 
-Model runs are marked non-reproducible: a root seed does not make a provider
-repeat its answers. Recorded game events can still be replayed without calling
+Model configurations are recorded as nondeterministic: a root seed does not
+make a provider reproduce its answers. Recorded game events can still be replayed without calling
 the provider. Statistics record usage when supplied, missing usage, requests,
 repairs, errors, and latency; the project does not calculate monetary costs.
 

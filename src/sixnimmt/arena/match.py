@@ -139,6 +139,9 @@ class _Match:
         while True:
             view = self.folders[seat].view()
             decision = decide(bot, view, rejection, self.config.decision_timeout_seconds, abandoned)
+            record_call = getattr(self.sink, "record_call", None)
+            if record_call is not None:
+                record_call(player_id, decision.duration_ms)
             if isinstance(decision.action, ActionBatch):
                 result, rejection = self.apply_batch(bot, seat, decision, decision.action)
             else:

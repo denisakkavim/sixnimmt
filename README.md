@@ -19,15 +19,20 @@ Run these commands from the repository root:
 
 ```bash
 uv sync --all-groups
-uv run sixnimmt arena --players-file examples/arena-players.json --games 10 --seed 1234
+uv run sixnimmt arena --games 100 --player-count 4
 ```
 
-The [player file](examples/arena-players.json) configures one bot per seat.
-Lower scores are better. Output distinguishes finished, abandoned, forfeited,
-and failed matches; only finished matches contribute scores, wins, and ties.
+The arena compares the reference strategies across fresh opponent lineups.
+Use `--config` with an [arena configuration](examples/arena.json) to choose
+strategies and settings. Player counts from 2 to 10 are supported. Runs stay in
+memory and print readable results by default. Add `--output-dir runs/first-run`
+to save compact results, a readable `report.md`, and the full structured analysis
+in `analysis.json.gz`.
 
 Add `--communication` to enable messaging and explicit commitment. Add
-`--trace-dir traces/my-run` to save logs and a manifest in a new directory.
+`--trace` with `--output-dir` to also save detailed game logs in its `traces/` folder.
+Interactive terminals show animations while games run and reports are prepared;
+use `--no-animation` to disable them.
 Use `uv run sixnimmt --help` to see the `arena`, `replay`, and `summarise` commands.
 
 ## Python usage
@@ -43,7 +48,7 @@ print([(player.player_id, player.total_score) for player in result.final_state.p
 
 Custom bots implement `act(view, rejection=None)` and return an `Action` or
 `ActionBatch`. They are trusted Python code running in the same process.
-For LLM experiments, configure the endpoint and model in the player file and
+For LLM comparisons, configure the endpoint and model in the configuration file and
 set provider timeouts plus an arena `--decision-timeout`.
 
 Seeded scripted strategies are reproducible within the same runtime and
@@ -58,6 +63,7 @@ Start with the [documentation index](docs/README.md) or jump to:
 - [Using the Python package](docs/python-api.md)
 - [Game rules and information boundaries](docs/game-rules.md)
 - [Arena configuration and limits](docs/arena.md)
+- [Strategy comparisons and saved reports](docs/comparisons.md)
 - [Writing bots](docs/bots.md)
 - [LLM players and private memory](docs/llm-players.md)
 - [Traces, replay, and analytics](docs/traces.md)

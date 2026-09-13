@@ -1,0 +1,23 @@
+{
+  "catalogue": [
+    {
+      "bot": "llm",
+      "options": {
+        "model": "gemma4:e2b-mlx",
+        "base_url": "http://localhost:11434/v1",
+        "strategy_prompt": "Do whatever it takes to win."
+      },
+      "label": "Model without memory"
+    },
+    {
+      "bot": "llm_memory",
+      "options": {
+        "model": "gemma4:e2b-mlx",
+        "base_url": "http://localhost:11434/v1",
+        "strategy_prompt": "Do whatever it takes to win.",
+        "memory_max_chars": 4000
+      },
+      "label": "Model with memory"
+    }
+  ]
+}

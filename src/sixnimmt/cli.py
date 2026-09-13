@@ -1,24 +1,19 @@
-"""Command-line interface for deterministic arenas and replay."""
+"""Command-line interface for strategy comparisons and match inspection."""
 
 import json
 from pathlib import Path
 from typing import Annotated
 
 import typer
-from pydantic import TypeAdapter, ValidationError
-from rich import box
-from rich.console import Console
-from rich.table import Table
-from rich.text import Text
+from pydantic import ValidationError
 
 from sixnimmt.analytics.summary import summarise as summarise_match
-from sixnimmt.arena.players import PlayerConfig
-from sixnimmt.arena.runner import ArenaError, ArenaResult, RunConfig, run_arena
+from sixnimmt.arena.config import RunConfig
+from sixnimmt.arena.match import ArenaError
+from sixnimmt.arena_cli import ComparisonOptions, run_comparison
 from sixnimmt.engine.replay import ReplayedMatch, replay_events
-from sixnimmt.engine.rules import MatchProtocol
 from sixnimmt.persistence.manifest import ManifestMatch
 from sixnimmt.persistence.sink import read_action_log, read_event_log
-from sixnimmt.terminal import arena_animation
 
 app = typer.Typer(help="Run deterministic 6 nimmt! tools.", no_args_is_help=True)
 
@@ -28,128 +23,87 @@ def main() -> None:
     """Run deterministic 6 nimmt! tools."""
 
 
-def _print_result(result: ArenaResult) -> None:
-    console = Console(highlight=False)
-    console.print("\n6 nimmt! · Arena results", style="bold cyan")
-    console.print(f"Seed {result.seed} · Hands {result.total_hands:,} · Actions {result.total_actions:,}", style="dim")
-    console.print(
-        f"Matches: {result.games_requested:,} requested · "
-        f"{result.games_started:,} started · {result.games_completed:,} completed"
-    )
-
-    outcomes = Table(box=box.SIMPLE, padding=(0, 1))
-    for label, count, style in (
-        ("Finished", result.finished, "green"),
-        ("Abandoned", result.abandoned, "yellow"),
-        ("Forfeited", result.forfeited, "yellow"),
-        ("Failed", result.failed, "red"),
-    ):
-        outcomes.add_column(label, justify="right", header_style="bold", style=style if count > 0 else "dim")
-    outcomes.add_row(*(f"{count:,}" for count in (result.finished, result.abandoned, result.forfeited, result.failed)))
-    console.print(outcomes)
-
-    scores = Table(box=box.SIMPLE_HEAD, header_style="bold", padding=(0, 1), leading=1)
-    scores.add_column("Player", overflow="fold")
-    scores.add_column("Bot", overflow="fold", style="dim")
-    for label in ("Wins", "Ties", "Total", "Avg"):
-        scores.add_column(label, justify="right")
-    for player in result.players:
-        name = Text(player.display_name if player.display_name != "" else player.player_id, style="bold")
-        name.append(f"\n{player.player_id}", style="dim")
-        average_score = f"{player.total_score / result.finished:,.2f}" if result.finished > 0 else "—"
-        scores.add_row(
-            name,
-            Text(player.bot_name),
-            f"{player.wins:,}",
-            f"{player.ties:,}",
-            f"{player.total_score:,}",
-            average_score,
-        )
-    console.print(scores)
-    console.print("Scores count finished matches only. Lower is better. Wins exclude ties.", style="dim")
-    if result.finished == 0:
-        console.print("No finished matches; average scores are unavailable.", style="yellow")
-    console.print()
-
-
 @app.command()
 def arena(
-    players_file: Annotated[
-        Path,
-        typer.Option(
-            "--players-file", help="JSON array of per-player bot, display_name, options, and agent_metadata settings."
-        ),
-    ],
-    games: Annotated[int, typer.Option("--games", help="Number of matches to run.")],
-    seed: Annotated[int, typer.Option("--seed", help="Root seed for deterministic matches.")] = 66,
-    max_actions_per_match: Annotated[
-        int,
-        typer.Option("--max-actions-per-match", help="Maximum bot actions allowed in each match."),
-    ] = 10_000,
-    communication: Annotated[
-        bool,
-        typer.Option("--communication", help="Allow optional messages and card changes before explicit commitment."),
-    ] = False,
-    scheduler: Annotated[str | None, typer.Option("--scheduler")] = None,
-    trace_dir: Annotated[
+    ctx: typer.Context,
+    config_file: Annotated[
         Path | None,
+        typer.Option("--config", help="JSON strategy and arena settings; defaults to the reference strategies."),
+    ] = None,
+    games: Annotated[
+        int | None, typer.Option("--games", min=0, help="Random-opponent games per player count; default 100.")
+    ] = None,
+    player_count: Annotated[
+        list[int] | None,
         typer.Option(
-            "--trace-dir", help="New directory for experiment traces; without it, only smoke-test aggregates are kept."
+            "--player-count", min=2, max=10, help="Players per game; default 4. Repeat to compare table sizes."
         ),
     ] = None,
-    concurrency: Annotated[int, typer.Option("--concurrency")] = 1,
-    backend: Annotated[str, typer.Option("--backend", help="Match execution backend: thread or process.")] = "thread",
-    decision_timeout: Annotated[
-        float | None,
-        typer.Option("--decision-timeout", help="Seconds per bot call; model bots should also set client timeouts."),
+    controlled_games: Annotated[
+        int | None,
+        typer.Option("--controlled-games", min=0, help="Additional games per selected opponent lineup; default 0."),
     ] = None,
-    play_action_limit: Annotated[int | None, typer.Option("--play-action-limit")] = None,
-    match_action_limit: Annotated[int | None, typer.Option("--match-action-limit")] = None,
-    decision_rejection_limit: Annotated[int, typer.Option("--decision-rejection-limit")] = 8,
-    max_abandoned_decisions: Annotated[int | None, typer.Option("--max-abandoned-decisions")] = None,
-    stop_on_failure: Annotated[bool, typer.Option("--stop-on-failure")] = False,
+    seed: Annotated[int, typer.Option("--seed", help="Seed for reproducible games.")] = 66,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", help="Save results and reports in this new directory; omit to run in memory."),
+    ] = None,
+    trace: Annotated[
+        bool,
+        typer.Option("--trace", help="Save detailed game logs under traces/; requires --output-dir."),
+    ] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Print the structured report as JSON.")] = False,
     animation: Annotated[
         bool,
         typer.Option("--animation/--no-animation", help="Show a bull-and-card animation in interactive terminals."),
     ] = True,
+    communication: Annotated[
+        bool, typer.Option("--communication", help="Allow messages and card changes before explicit commitment.")
+    ] = False,
+    concurrency: Annotated[int, typer.Option("--concurrency", min=1, help="Maximum games running at once.")] = 1,
+    backend: Annotated[str, typer.Option("--backend", help="Execution backend: thread or process.")] = "thread",
+    decision_timeout: Annotated[
+        float | None, typer.Option("--decision-timeout", help="Seconds allowed for each bot call.")
+    ] = None,
+    match_action_limit: Annotated[
+        int, typer.Option("--match-action-limit", min=1, help="Maximum attempted actions in a game.")
+    ] = 10_000,
+    play_action_limit: Annotated[int | None, typer.Option("--play-action-limit", min=1)] = None,
+    decision_rejection_limit: Annotated[int, typer.Option("--decision-rejection-limit", min=1)] = 8,
+    max_abandoned_decisions: Annotated[int | None, typer.Option("--max-abandoned-decisions", min=0)] = None,
+    scheduler: Annotated[str | None, typer.Option("--scheduler")] = None,
+    stop_on_failure: Annotated[bool, typer.Option("--stop-on-failure")] = False,
 ) -> None:
-    """Run an arena and print outcomes and finished-match scores."""
-    if stop_on_failure and decision_timeout is None:
-        typer.echo(
-            "Warning: --stop-on-failure without --decision-timeout can wait indefinitely for an in-flight bot.",
-            err=True,
-        )
+    """Play games across opponent lineups and compare their results."""
     try:
-        players = _read_players(players_file)
         config = RunConfig(
             scheduler=scheduler,
-            trace_dir=trace_dir,
             concurrency=concurrency,
             backend=backend,
             decision_timeout_seconds=decision_timeout,
             play_action_limit=play_action_limit,
-            match_action_limit=match_action_limit if match_action_limit is not None else max_actions_per_match,
+            match_action_limit=match_action_limit,
             decision_rejection_limit=decision_rejection_limit,
             max_abandoned_decisions=max_abandoned_decisions,
             stop_on_failure=stop_on_failure,
         )
-        with arena_animation(games, seed, players, enabled=animation) as display:
-            result = run_arena(
-                players,
-                games,
-                seed,
-                protocol=MatchProtocol(communication_enabled=communication),
-                config=config,
-                on_progress=display.update if display is not None else None,
-            )
+        options = ComparisonOptions(
+            config_file=config_file,
+            player_counts=None if player_count is None else tuple(player_count),
+            games=games,
+            controlled_games=controlled_games,
+            output_dir=output_dir,
+            trace=trace,
+            json_output=json_output,
+            animation=animation,
+        )
+        run_comparison(ctx, options, config, seed=seed, communication=communication)
     except ValueError as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=2) from error
     except (ArenaError, OSError) as error:
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(code=1) from error
-
-    _print_result(result)
 
 
 def _print_replay(replayed: ReplayedMatch, events: int) -> None:
@@ -216,12 +170,3 @@ def _manifest_entry(path: Path, log_name: str) -> ManifestMatch:
         msg = "manifest must contain exactly one entry for this log"
         raise ValueError(msg)
     return ManifestMatch.model_validate(entries[0])
-
-
-def _read_players(path: Path) -> list[PlayerConfig]:
-    """Parse the same structured seat configuration accepted by Python callers."""
-    try:
-        return TypeAdapter(list[PlayerConfig]).validate_json(path.read_text(encoding="utf-8"))
-    except OSError as error:
-        msg = f"cannot read players file {path}: {error}"
-        raise ValueError(msg) from error

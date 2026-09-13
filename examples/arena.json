@@ -1,0 +1,15 @@
+{
+  "catalogue": [
+    {
+      "bot": "random",
+      "options": {},
+      "label": "Alice",
+      "family": "baseline"
+    },
+    {
+      "bot": "lowest_fitting_card",
+      "options": {},
+      "label": "Bob"
+    }
+  ]
+}

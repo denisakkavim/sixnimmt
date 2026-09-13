@@ -135,15 +135,24 @@ def test_cli_passes_validated_options_to_factory(monkeypatch: pytest.MonkeyPatch
         return RandomBot(seed)
 
     monkeypatch.setitem(REGISTRY, "strategy", BotSpec("strategy", build, True, {}, StrategyOptions))
-    path = tmp_path / "players.json"
+    path = tmp_path / "arena.json"
     path.write_text(
-        json.dumps([
-            {"bot": "strategy", "display_name": "Alice", "options": {"temperature": 0.2}},
-            {"bot": "strategy", "display_name": "Bob", "options": {"temperature": 0.8}},
-        ])
+        json.dumps({
+            "catalogue": [
+                {"key": "alice", "bot": "strategy", "label": "Alice", "options": {"temperature": 0.2}},
+                {"key": "bob", "bot": "strategy", "label": "Bob", "options": {"temperature": 0.8}},
+            ],
+            "player_counts": [2],
+            "games": 0,
+            "controlled_games": 1,
+            "controlled_coverage": "explicit",
+            "compositions": [["alice", "bob"]],
+        })
     )
-    result = CliRunner().invoke(app, ["arena", "--players-file", str(path), "--games", "1", "--seed", "123"])
+    result = CliRunner().invoke(
+        app, ["arena", "--config", str(path), "--seed", "123", "--output-dir", str(tmp_path / "run")]
+    )
     assert result.exit_code == 0, result.output
-    assert options_received == [(0.2, "Play carefully", []), (0.8, "Play carefully", [])]
+    assert sorted(options_received) == [(0.2, "Play carefully", []), (0.8, "Play carefully", [])]
     assert "Alice" in result.stdout
     assert "Bob" in result.stdout
