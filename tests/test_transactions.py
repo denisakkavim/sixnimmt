@@ -123,3 +123,51 @@ def test_transaction_traces_share_offered_view_and_count_latency_once(tmp_path) 
     assert len({record["from_view"] for record in records}) == 1
     assert sum(record["decision_duration_ms"] is not None for record in records) == 1
     assert [record["type"] for record in records] == ["select_card", "commit", "update_memory"]
+
+
+class MalformedBatchBot:
+    def __init__(self, proposal: object) -> None:
+        self.proposal = proposal
+
+    def act(self, view: MatchView, rejection: Rejection | None = None) -> ActionBatch:
+        return self.proposal  # ty: ignore[invalid-return-type] -- exercise untrusted runtime values
+
+
+class FailingMemoryBot(TransactionBot):
+    def accept_batch(self, batch: ActionBatch) -> None:
+        self.memory = "partially changed private notes"
+        raise RuntimeError(self.memory)
+
+
+@pytest.mark.parametrize(
+    "proposal",
+    [object(), ActionBatch((object(),)), ActionBatch((), 123)],  # ty: ignore[invalid-argument-type] -- malformed returns
+)
+def test_malformed_bot_returns_fail_without_game_effects(proposal: object, tmp_path) -> None:
+    result = run_match(
+        [MalformedBatchBot(proposal), LowestFittingCardBot()],
+        123,
+        config=RunConfig(trace_dir=tmp_path / "trace"),
+    )
+    assert result.outcome == "failed"
+    assert result.actions_accepted == 0
+    assert result.final_state.players[0].selection is None
+    records = [json.loads(line) for line in (tmp_path / "trace" / "arena_0.actions.jsonl").read_text().splitlines()]
+    assert [record["outcome"] for record in records] == ["error"]
+
+
+def test_memory_acceptance_failure_terminates_without_publishing_actions(tmp_path) -> None:
+    bot = FailingMemoryBot()
+    result = run_match(
+        [bot, LowestFittingCardBot()],
+        123,
+        protocol=MatchProtocol(communication_enabled=True),
+        config=RunConfig(trace_dir=tmp_path / "trace"),
+    )
+    assert result.outcome == "failed"
+    assert result.actions_accepted == 0
+    assert result.final_state.players[0].selection is None
+    assert bot.memory == "partially changed private notes"
+    assert all(bot.memory not in str(event.data) for event in result.events if event.audience == "public")
+    records = [json.loads(line) for line in (tmp_path / "trace" / "arena_0.actions.jsonl").read_text().splitlines()]
+    assert [(record["type"], record["outcome"]) for record in records] == [("update_memory", "error")]

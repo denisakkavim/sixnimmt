@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -43,6 +43,33 @@ class Bot(Protocol):
     """One instance per match. Atomic batches are validated before publication."""
 
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action | ActionBatch: ...
+
+
+class MemoryBot(Protocol):
+    """Accept preflighted memory synchronously, without provider calls."""
+
+    def accept_batch(self, batch: ActionBatch) -> None: ...
+
+
+class StatisticsBot(Protocol):
+    def stats(self) -> dict[str, Any]: ...
+
+
+class TracedBot(Protocol):
+    def set_trace(self, callback: Callable[[dict[str, Any]], None] | None) -> None: ...
+
+
+def memory_bot(bot: Bot) -> MemoryBot | None:
+    # Delegate bots forward optional capabilities through __getattr__.
+    return cast(MemoryBot, bot) if callable(getattr(bot, "accept_batch", None)) else None
+
+
+def statistics_bot(bot: Bot) -> StatisticsBot | None:
+    return cast(StatisticsBot, bot) if callable(getattr(bot, "stats", None)) else None
+
+
+def traced_bot(bot: Bot) -> TracedBot | None:
+    return cast(TracedBot, bot) if callable(getattr(bot, "set_trace", None)) else None
 
 
 @dataclass(frozen=True)

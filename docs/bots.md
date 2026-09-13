@@ -257,3 +257,14 @@ Source: [bot contracts](../src/sixnimmt/arena/bots/base.py) and
 The registered `simulation` and `model_based_bait` bots share learned opponent
 models and engine-backed rollout evaluation. See [Probabilistic bots](uncertainty-bots.md)
 for required configuration, model modes, risk objectives, and inference limits.
+
+Memory acceptance runs synchronously after preflight and outside the decision
+deadline. Keep `accept_batch()` short and free of provider calls. If it raises,
+the match fails before publishing the proposed game actions; any private mutation
+already made by the bot cannot be rolled back. Malformed batch members and memory
+values also fail the match. Exception details remain in privileged diagnostics.
+
+Batch atomicity covers game-action preflight. Memory acceptance, action records,
+event-log writes, and observer callbacks are separate publication stages, not one
+storage transaction. Storage and observer errors remain harness failures; optional
+statistics errors are recorded diagnostically.

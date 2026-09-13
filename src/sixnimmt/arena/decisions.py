@@ -11,7 +11,7 @@ from queue import Empty, Queue
 from time import monotonic
 
 from sixnimmt.arena.bots import Bot, Rejection
-from sixnimmt.arena.bots.base import ActionBatch
+from sixnimmt.arena.bots.base import ActionBatch, memory_bot
 from sixnimmt.engine.actions import (
     Action,
     ChooseRowAction,
@@ -136,17 +136,29 @@ def decide(
 def _call_bot(bot: Bot, view: MatchView, rejection: Rejection | None) -> Action | ActionBatch:
     result = bot.act(view, rejection)
     if isinstance(result, ActionBatch):
+        if not isinstance(result.actions, tuple):
+            msg = "batch actions must be a tuple"
+            raise TypeError(msg)
+        for action in result.actions:
+            _validate_action(action)
+        if result.memory is not None and not isinstance(result.memory, str):
+            msg = "batch memory must be a string or None"
+            raise TypeError(msg)
         if not 1 <= result.size <= 8:
             msg = "a batch must contain one to eight calls"
             raise ValueError(msg)
-        if result.memory is not None and not callable(getattr(bot, "accept_batch", None)):
+        if result.memory is not None and memory_bot(bot) is None:
             msg = "bot does not support transactional memory"
             raise TypeError(msg)
         return result
+    _validate_action(result)
+    return result
+
+
+def _validate_action(result: object) -> None:
     if not isinstance(result, (SelectCardAction, CommitAction, UncommitAction, SendMessageAction, ChooseRowAction)):
         msg = f"bot returned {type(result).__name__}, expected an Action"
         raise TypeError(msg)
-    return result
 
 
 def _queue_decision(

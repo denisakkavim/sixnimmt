@@ -11,7 +11,7 @@ from multiprocessing import get_context
 from typing import Literal
 
 from sixnimmt.arena.bots import Bot, Rejection
-from sixnimmt.arena.bots.base import ActionBatch
+from sixnimmt.arena.bots.base import ActionBatch, memory_bot, traced_bot
 from sixnimmt.arena.config import RunConfig as RunConfig
 from sixnimmt.arena.config import resolve as resolve
 from sixnimmt.arena.decisions import AbandonedDecisions, Decision, SharedAbandonedState, decide
@@ -269,11 +269,16 @@ class _Match:
         # No game effects or notebook writes escape preflight. Once validated,
         # publish each action with its own sequence number and apply memory once.
         if proposal.memory is not None:
-            accept = getattr(bot, "accept_batch", None)
-            if accept is None:
+            memory = memory_bot(bot)
+            if memory is None:
                 msg = "bot does not support transactional memory"
                 raise ArenaError(msg)
-            accept(proposal)
+            try:
+                memory.accept_batch(proposal)
+            except Exception as error:
+                reason = repr(error)
+                self.record_decision(seat, decision, "update_memory", "error", reason)
+                return self.finish(MatchOutcome.FAILED, player_id, reason), None
         all_events = []
         offered_view = self.folders[seat].view().view_id
         for index, (action, (state, events)) in enumerate(zip(proposal.actions, prepared.steps, strict=True)):
@@ -291,7 +296,7 @@ class _Match:
                 "accepted",
                 None,
                 from_view=offered_view,
-                record_timing=not proposal.actions,
+                record_timing=len(proposal.actions) == 0,
             )
         self.play_attempts += proposal.size
         self.accepted[seat] += proposal.size
@@ -374,13 +379,13 @@ def decision_reason(decision: Decision, refused: Rejection | None) -> str | None
 def _attach_bot_traces(bots: Sequence[Bot], seats: Sequence[PlayerSeat], sink: EventSink) -> None:
     record_model = getattr(sink, "record_model", None)
     for bot, player in zip(bots, seats, strict=True):
-        set_trace = getattr(bot, "set_trace", None)
-        if set_trace is None:
+        traced = traced_bot(bot)
+        if traced is None:
             continue
         callback = None
         if record_model is not None:
             callback = partial(record_model, player_id=player.player_id, display_name=player.name_or_id)
-        set_trace(callback)
+        traced.set_trace(callback)
 
 
 def run_match(

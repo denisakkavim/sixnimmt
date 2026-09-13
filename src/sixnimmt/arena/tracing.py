@@ -7,6 +7,7 @@ from dataclasses import asdict
 from typing import Any
 
 from sixnimmt.arena.bots import Bot
+from sixnimmt.arena.bots.base import statistics_bot
 from sixnimmt.arena.config import RunConfig
 from sixnimmt.arena.results import MatchResult
 from sixnimmt.engine.rules import GameRules, MatchProtocol
@@ -26,11 +27,11 @@ def collect_stats(
             # The abandoned call may still mutate the bot or hold its locks.
             errors[player_id] = "statistics unavailable while a timed-out decision may still be running"
             continue
-        report = getattr(bot, "stats", None)
-        if report is None:
+        reporter = statistics_bot(bot)
+        if reporter is None:
             continue
         try:
-            value = report()
+            value = reporter.stats()
             json.dumps(value, allow_nan=False)
             stats[player_id] = deepcopy(value)
         except Exception as error:
