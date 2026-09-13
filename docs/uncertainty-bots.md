@@ -50,17 +50,15 @@ The simulation player's options are:
   "continuation_policy": "closest_gap",
   "row_policy": {"policy": "cheapest"},
   "objective": {"kind": "mean"},
-  "cutoff_evaluation": "zero",
-  "fallback_strategy": "closest_gap"
+  "cutoff_evaluation": "zero"
 }
 ```
 
 All fields above are required. Older configurations must add `chain_count` and
 `draw_interval`; setting them to `particle_count` and `1` respectively preserves
-the old number of chains and retained draws. `fallback_options` is optional and empty when
-omitted; it supplies options for the explicitly named fallback. Unsupported
-policies, unknown keys, and invalid or missing parameters are rejected. Nested
-fallback settings are validated before arena workers start.
+the old number of chains and retained draws. Lookahead has no recovery strategy;
+remove `fallback_strategy` and `fallback_options` from older simulation configurations.
+Unsupported policies, unknown keys, and invalid or missing parameters are rejected.
 
 ## Opponent model
 
@@ -156,8 +154,6 @@ speed improvements from sampling-quality changes.
 | `row_policy` | Our actual and simulated row-choice rule |
 | `objective` | Function of accumulated bull-head penalties |
 | `cutoff_evaluation` | Must explicitly be `zero`; no estimate beyond the horizon |
-| `fallback_strategy` | Registered bot used for inference recovery; also the reference play for bait |
-| `fallback_options` | Options for that fallback; empty when omitted |
 
 The horizon stops at the current hand boundary; no new hands are dealt. Each rollout
 keeps the same sampled opponent hands, policies, and epsilon values, removing played
@@ -184,9 +180,14 @@ Upper-tail evaluation includes only the required fraction of a boundary sample.
 All objectives use accumulated penalties over the horizon, excluding prior points.
 
 `model_based_bait` requires horizon 1, mean penalty, and cheapest row choice. Other
-settings remain explicit, including the unused continuation policy. If its fallback
-returns a batch or anything other than one legal card proposal, it passes that
-proposal through and records recovery. It never drops batch memory/messages or
+settings remain explicit, including the unused continuation policy. Bait additionally
+requires `fallback_strategy`: the registered reference strategy to follow unless
+bait has a strictly better estimated cost. `fallback_options` configures that
+strategy and is empty when omitted. Nested settings are validated before workers
+start. These settings belong only to bait, not to lookahead.
+
+If the reference strategy returns a batch or anything other than one legal card
+proposal, bait passes that proposal through. It never drops batch memory/messages or
 calls the fallback twice to obtain the same proposal. When the fallback is the only
 candidate, bait returns it without inference or rollouts. Both bots also return a
 sole legal card immediately. Public history is still accumulated on these turns.
@@ -195,14 +196,15 @@ sole legal card immediately. Public history is still accumulated on these turns.
 
 Bot statistics include inference method and budgets, observed-play count, empirical
 policy weights per opponent, epsilon means and central 90% intervals, latest candidate
-values, and recovery counts/reasons. Chain count, draw interval, and whether a warm
+values. Chain count, draw interval, and whether a warm
 start was used are reported. `evaluation` identifies simulation, a sole card or
-candidate, or fallback recovery. Model diagnostics describe the last inference;
+candidate, or a bait reference proposal. Model diagnostics describe the last inference;
 skipped decisions clear candidate values but retain those earlier model diagnostics. The normal bot-statistics trace mechanism
 records these values.
 
-Missing or inconsistent history triggers the configured fallback and a diagnostic.
-The bot normally needs to be present from the start of a hand. A new instance is
+Missing or inconsistent history and other inference errors propagate to the arena
+and fail the match. Neither bot switches strategies to conceal an inference error.
+The bot needs to be present from the start of a hand. A new instance is
 created per match; there is no cross-match identity tracking.
 
 Fixed seeds reproduce decisions across thread and process workers in the same

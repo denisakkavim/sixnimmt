@@ -83,7 +83,7 @@ def measure(bot: Any, history: PublicHistory, view: MatchView) -> dict:
     started = time.perf_counter()
     action = bot.act(view)
     seconds = time.perf_counter() - started
-    if bot.failures != 0:
+    if getattr(bot, "failures", 0) != 0:
         raise RuntimeError(bot.last_error)
     return {
         "seconds": seconds,
@@ -172,7 +172,10 @@ def main() -> None:
                 continue
             runs = []
             for repeat in range(args.repetitions):
-                bot = bot_class(123 + repeat, configured, REGISTRY["closest_gap"].build(123 + repeat))
+                if label == "before":
+                    bot = old_bot(123 + repeat, configured, REGISTRY["closest_gap"].build(123 + repeat))
+                else:
+                    bot = bot_class(123 + repeat, configured)
                 bot.model = TimedModel(model_class(configured.model))
                 runs.append(measure(bot, history, view))
             row["runs"][label] = runs
@@ -187,7 +190,7 @@ def main() -> None:
         result["cases"].append(row)
         args.output.write_text(json.dumps(result, indent=2) + "\n")
     for players in [3, 5, 10]:
-        bot = SimulationBot(123, options, REGISTRY["closest_gap"].build(123))
+        bot = SimulationBot(123, options)
         bot.model = TimedModel(OpponentModel(options.model))
         decisions = []
         for (hand, play), (history, view) in sorted(trajectories[players].items()):

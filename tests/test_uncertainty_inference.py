@@ -206,7 +206,7 @@ def test_empty_evidence_samples_prior_without_burn_in(
 def test_last_card_and_bait_without_candidates_skip_inference_but_keep_history(
     model_options: OpponentModelOptions, trajectory: HistorySnapshots
 ) -> None:
-    from sixnimmt.arena.bots.simulation import SimulationBot
+    from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot
     from sixnimmt.arena.bots.uncertainty.options import ModelBasedBaitOptions, SimulationOptions
 
     settings = {
@@ -217,10 +217,9 @@ def test_last_card_and_bait_without_candidates_skip_inference_but_keep_history(
         "row_policy": {"policy": "cheapest"},
         "objective": {"kind": "mean"},
         "cutoff_evaluation": "zero",
-        "fallback_strategy": "closest_gap",
     }
     history, view = trajectory[1, 10]
-    bot = SimulationBot(1, SimulationOptions.model_validate(settings), REGISTRY["closest_gap"].build(1))
+    bot = SimulationBot(1, SimulationOptions.model_validate(settings))
     bot.history = history
     action = bot.act(view)
     assert isinstance(action, SelectCardAction)
@@ -228,7 +227,11 @@ def test_last_card_and_bait_without_candidates_skip_inference_but_keep_history(
     assert bot.model.diagnostics == {}
     assert len(bot.history.current(view).turns) == 9
     history, view = trajectory[1, 1]
-    bait = SimulationBot(1, ModelBasedBaitOptions.model_validate(settings), REGISTRY["closest_gap"].build(1))
+    bait = ModelBasedBaitBot(
+        1,
+        ModelBasedBaitOptions.model_validate({**settings, "fallback_strategy": "closest_gap"}),
+        REGISTRY["closest_gap"].build(1),
+    )
     assert bait.act(view) == REGISTRY["closest_gap"].build(1).act(view)
     assert bait.model.diagnostics == {}
     assert bait.history.current(view).own_initial_hand == view.you.hand

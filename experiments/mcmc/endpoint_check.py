@@ -34,7 +34,6 @@ def candidate_costs(
         row_policy=RowPolicyOptions(policy="cheapest"),
         objective=PenaltyObjective(kind="mean"),
         cutoff_evaluation="zero",
-        fallback_strategy="closest_gap",
     )
     candidates = sorted(view.you.hand)
     costs = np.empty((len(coordinates), len(candidates)))

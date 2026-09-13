@@ -12,8 +12,8 @@ from sixnimmt.arena.bots import REGISTRY, Bot, BotSpec
 from sixnimmt.arena.bots.controlled_burn import ControlledBurnBot, ControlledBurnOptions
 from sixnimmt.arena.bots.count_threshold_bait import CandidateRanking, CountThresholdBaitBot, CountThresholdBaitOptions
 from sixnimmt.arena.bots.hand_aware_row_choice import HandAwareRowChoiceBot, HandAwareRowChoiceOptions
-from sixnimmt.arena.bots.simulation import SimulationBot
-from sixnimmt.arena.bots.uncertainty.options import SimulationOptions
+from sixnimmt.arena.bots.simulation import ModelBasedBaitBot
+from sixnimmt.arena.bots.uncertainty.options import ModelBasedBaitOptions
 from sixnimmt.common.text import check_representable
 
 
@@ -99,13 +99,13 @@ def resolve_players(players: Sequence[PlayerConfig]) -> list[ResolvedPlayer]:
             )
             recorded_options["fallback_options"] = fallback.recorded_options
             build_options["fallback_options"] = fallback.options
-        elif isinstance(options, SimulationOptions):
+        elif isinstance(options, ModelBasedBaitOptions):
             fallback = resolve_players([PlayerConfig(bot=options.fallback_strategy, options=options.fallback_options)])[
                 0
             ]
             spec = replace(
                 spec,
-                build=partial(_build_simulation, fallback=fallback, options_type=type(options)),
+                build=partial(_build_model_based_bait, fallback=fallback),
                 deterministic=fallback.deterministic,
                 metadata={**spec.metadata, "fallback_metadata": fallback.metadata},
             )
@@ -149,7 +149,5 @@ def _build_hand_aware_row_choice(
     return HandAwareRowChoiceBot(max_extra_penalty, card_strategy_resolved.build(seed))
 
 
-def _build_simulation(
-    seed: int, *, fallback: ResolvedPlayer, options_type: type[SimulationOptions], **settings: Any
-) -> SimulationBot:
-    return SimulationBot(seed, options_type.model_validate(settings), fallback.build(seed))
+def _build_model_based_bait(seed: int, *, fallback: ResolvedPlayer, **settings: Any) -> ModelBasedBaitBot:
+    return ModelBasedBaitBot(seed, ModelBasedBaitOptions.model_validate(settings), fallback.build(seed))

@@ -16,29 +16,17 @@ from .uncertainty.simulation import penalty_value, rollout, select_row
 
 
 class SimulationBot:
-    def __init__(self, seed: int, options: SimulationOptions, fallback: Bot) -> None:
+    def __init__(self, seed: int, options: SimulationOptions) -> None:
         self.seed = seed
         self.options = options
-        self.fallback = fallback
         self.history = PublicHistory()
         self.model = OpponentModel(options.model)
         self.last_key: tuple[int, int] | None = None
         self.last_card: int | None = None
-        self.failures = 0
-        self.last_error: str | None = None
         self.estimates: dict[str, float] = {}
         self.last_evaluation: str | None = None
 
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action | ActionBatch:
-        try:
-            return self._act(view, rejection)
-        except InferenceError as error:
-            self.failures += 1
-            self.last_error = str(error)
-            self.last_evaluation = "inference_recovery"
-            return self.fallback.act(view, rejection)
-
-    def _act(self, view: MatchView, rejection: Rejection | None) -> Action | ActionBatch:
         self.history.observe(view)
         if "choose_row" in view.legal_actions:
             if view.awaiting_card is None:
@@ -62,22 +50,15 @@ class SimulationBot:
         return action
 
     def evaluate(self, view: MatchView, rejection: Rejection | None) -> Action | ActionBatch:
+        return self._evaluate_candidates(view, sorted(view.you.hand), None)
+
+    def _evaluate_candidates(
+        self, view: MatchView, candidates: list[int], fallback_card: int | None
+    ) -> SelectCardAction:
         seed_bytes = f"{self.seed}:uncertainty:{view.hand_number}:{view.play_number}".encode()
         seed = int.from_bytes(hashlib.sha256(seed_bytes).digest()[:8], "big")
         rng = random.Random(seed)  # noqa: S311 -- private deterministic sampling
         self.estimates = {}
-        fallback_card = None
-        candidates = sorted(view.you.hand)
-        if isinstance(self.options, ModelBasedBaitOptions):
-            proposal = self.fallback.act(view, rejection)
-            if not isinstance(proposal, SelectCardAction) or proposal.card not in view.you.hand:
-                self.last_evaluation = "fallback_proposal"
-                self.failures += 1
-                self.last_error = "bait fallback did not return a single legal card selection"
-                return proposal
-            fallback_card = proposal.card
-            candidates = [card for card in candidates if _targets_full_row(card, view)]
-            candidates = sorted({*candidates, fallback_card})
         if len(candidates) == 1:
             self.last_evaluation = "only_candidate"
             return SelectCardAction(card=candidates[0])
@@ -101,9 +82,22 @@ class SimulationBot:
             "model": self.model.diagnostics,
             "evaluation": self.last_evaluation,
             "candidate_values": self.estimates,
-            "recovery_count": self.failures,
-            "last_recovery_reason": self.last_error,
         }
+
+
+class ModelBasedBaitBot(SimulationBot):
+    def __init__(self, seed: int, options: ModelBasedBaitOptions, fallback: Bot) -> None:
+        super().__init__(seed, options)
+        self.fallback = fallback
+
+    def evaluate(self, view: MatchView, rejection: Rejection | None) -> Action | ActionBatch:
+        proposal = self.fallback.act(view, rejection)
+        if not isinstance(proposal, SelectCardAction) or proposal.card not in view.you.hand:
+            self.estimates = {}
+            self.last_evaluation = "fallback_proposal"
+            return proposal
+        candidates = [card for card in view.you.hand if _targets_full_row(card, view)]
+        return self._evaluate_candidates(view, sorted({*candidates, proposal.card}), proposal.card)
 
     def __getattr__(self, name: str) -> Any:
         fallback = self.__dict__.get("fallback")
@@ -118,16 +112,12 @@ def _targets_full_row(card: int, view: MatchView) -> bool:
 
 
 def build_simulation(seed: int, **settings: Any) -> SimulationBot:
-    from sixnimmt.arena.players import PlayerConfig, resolve_players
-
-    options = SimulationOptions.model_validate(settings)
-    fallback = resolve_players([PlayerConfig(bot=options.fallback_strategy, options=options.fallback_options)])[0]
-    return SimulationBot(seed, options, fallback.build(seed))
+    return SimulationBot(seed, SimulationOptions.model_validate(settings))
 
 
-def build_model_based_bait(seed: int, **settings: Any) -> SimulationBot:
+def build_model_based_bait(seed: int, **settings: Any) -> ModelBasedBaitBot:
     from sixnimmt.arena.players import PlayerConfig, resolve_players
 
     options = ModelBasedBaitOptions.model_validate(settings)
     fallback = resolve_players([PlayerConfig(bot=options.fallback_strategy, options=options.fallback_options)])[0]
-    return SimulationBot(seed, options, fallback.build(seed))
+    return ModelBasedBaitBot(seed, options, fallback.build(seed))

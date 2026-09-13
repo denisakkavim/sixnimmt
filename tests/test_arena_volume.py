@@ -385,8 +385,9 @@ def test_uncertainty_matches_preserve_intermediate_invariants(
             "row_policy": {"policy": "cheapest"},
             "objective": {"kind": "mean"},
             "cutoff_evaluation": "zero",
-            "fallback_strategy": "highest_fitting_card",
         }
+        if strategy == "model_based_bait":
+            options["fallback_strategy"] = "highest_fitting_card"
         if options["model"]["mode"] == "single_policy":
             options["model"]["policies"] = ["highest_card"]
         bot = REGISTRY[strategy].build(derive_seed(4321, "bot", game, 0), **options)
@@ -400,7 +401,6 @@ def test_uncertainty_matches_preserve_intermediate_invariants(
             protocol=MatchProtocol(communication_enabled=communication),
         )
         assert result.final_state.phase == Phase.FINISHED, result.reason
-        assert bot.stats()["recovery_count"] == 0
         assert ledger.finished
         assert result.actions_rejected == 0
         _assert_replay_matches(ledger.log, result.final_state)

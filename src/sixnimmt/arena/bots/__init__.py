@@ -86,7 +86,7 @@ def _build_lowest_fitting_card(seed: int) -> LowestFittingCardBot:
 
 REGISTRY: dict[str, BotSpec] = {
     "simulation": BotSpec(
-        "simulation", build_simulation, False, {"strategy_id": "simulation", "version": "1"}, SimulationOptions
+        "simulation", build_simulation, True, {"strategy_id": "simulation", "version": "1"}, SimulationOptions
     ),
     "model_based_bait": BotSpec(
         "model_based_bait",

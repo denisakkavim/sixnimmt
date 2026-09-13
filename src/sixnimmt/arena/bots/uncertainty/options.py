@@ -77,8 +77,6 @@ class SimulationOptions(BotOptions):
     row_policy: RowPolicyOptions
     objective: PenaltyObjective
     cutoff_evaluation: Literal["zero"]
-    fallback_strategy: str = Field(min_length=1)
-    fallback_options: dict[str, JsonValue] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_horizon(self) -> Self:
@@ -89,6 +87,9 @@ class SimulationOptions(BotOptions):
 
 
 class ModelBasedBaitOptions(SimulationOptions):
+    fallback_strategy: str = Field(min_length=1)
+    fallback_options: dict[str, JsonValue] = Field(default_factory=dict)
+
     @model_validator(mode="after")
     def validate_bait(self) -> Self:
         if self.horizon != 1 or self.objective.kind != "mean" or self.row_policy.policy != "cheapest":

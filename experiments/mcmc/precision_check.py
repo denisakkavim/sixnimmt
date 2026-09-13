@@ -38,7 +38,6 @@ def main() -> None:
         "row_policy": {"policy": "cheapest"},
         "objective": {"kind": "mean"},
         "cutoff_evaluation": "zero",
-        "fallback_strategy": "closest_gap",
     })
     posterior = OpponentModel(options.model)._posterior(history, view)
     chain = np.load(args.reference.with_suffix(".npz"))["chain"][10000:]

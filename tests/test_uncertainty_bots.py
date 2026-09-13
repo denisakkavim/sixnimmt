@@ -13,7 +13,7 @@ from scipy.special import expit, logit
 
 from sixnimmt.arena.bots import REGISTRY
 from sixnimmt.arena.bots.base import ActionBatch
-from sixnimmt.arena.bots.simulation import SimulationBot
+from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot
 from sixnimmt.arena.bots.uncertainty.history import HandHistory, ObservedTurn, PublicHistory
 from sixnimmt.arena.bots.uncertainty.inference import LegalProposal, OpponentModel, Posterior, World, log_likelihood
 from sixnimmt.arena.bots.uncertainty.options import (
@@ -55,7 +55,6 @@ def options() -> SimulationOptions:
         "row_policy": {"policy": "cheapest"},
         "objective": {"kind": "mean"},
         "cutoff_evaluation": "zero",
-        "fallback_strategy": "closest_gap",
     })
 
 
@@ -75,7 +74,6 @@ def view() -> MatchView:
         "row_policy",
         "objective",
         "cutoff_evaluation",
-        "fallback_strategy",
     ],
 )
 def test_requires_explicit_experiment_settings(options: SimulationOptions, field: str) -> None:
@@ -203,19 +201,31 @@ def test_inference_does_not_change_global_numpy_random_state(view: MatchView, op
 
 
 def test_history_is_not_counted_twice(view: MatchView, options: SimulationOptions) -> None:
-    bot = SimulationBot(4, options, REGISTRY["closest_gap"].build(4))
+    bot = SimulationBot(4, options)
     first = bot.act(view)
     assert bot.act(view) == first
     assert bot.model.diagnostics["observed_plays"] == 0
     assert len(bot.history.hands) == 1
 
 
-def test_incomplete_history_uses_configured_fallback(view: MatchView, options: SimulationOptions) -> None:
-    fallback = REGISTRY["highest_card"].build(1)
-    bot = SimulationBot(4, options, fallback)
+def test_incomplete_history_raises_inference_error(view: MatchView, options: SimulationOptions) -> None:
+    from sixnimmt.arena.bots.uncertainty.history import InferenceError
+
+    bot = SimulationBot(4, options)
     incomplete = view.model_copy(update={"play_number": 2})
-    assert bot.act(incomplete) == fallback.act(incomplete)
-    assert bot.stats()["recovery_count"] == 1
+    with pytest.raises(InferenceError, match="learning must start at the beginning of a hand"):
+        bot.act(incomplete)
+
+
+def test_simulation_rejects_fallback_settings(options: SimulationOptions) -> None:
+    with pytest.raises(ValidationError):
+        SimulationOptions.model_validate({**options.model_dump(), "fallback_strategy": "closest_gap"})
+
+
+def test_simulation_is_deterministic_without_a_fallback(options: SimulationOptions) -> None:
+    player = resolve_players([PlayerConfig(bot="simulation", options=options.model_dump(mode="json"))])[0]
+    assert player.deterministic
+    assert "fallback_metadata" not in player.metadata
 
 
 def test_rollout_resolves_card_order_and_caps_at_end_of_hand(view: MatchView, options: SimulationOptions) -> None:
@@ -244,7 +254,10 @@ def test_rollout_resolves_card_order_and_caps_at_end_of_hand(view: MatchView, op
 def test_bots_finish_games_and_retain_cross_hand_learning(
     options: SimulationOptions, communication: bool, name: str
 ) -> None:
-    bot = REGISTRY[name].build(8, **options.model_dump())
+    settings = options.model_dump()
+    if name == "model_based_bait":
+        settings["fallback_strategy"] = "closest_gap"
+    bot = REGISTRY[name].build(8, **settings)
     assert isinstance(bot, SimulationBot)
     result = run_match(
         [bot, REGISTRY["highest_card"].build(2), REGISTRY["random"].build(3)],
@@ -253,7 +266,6 @@ def test_bots_finish_games_and_retain_cross_hand_learning(
         protocol=MatchProtocol(communication_enabled=communication),
     )
     assert result.final_state.phase == Phase.FINISHED, result.reason
-    assert bot.failures == 0
     assert sum(len(hand.turns) for hand in bot.history.hands.values()) >= result.final_state.hand_number * 10 - 1
     assert len(bot.history.hands) == result.final_state.hand_number
 
@@ -274,20 +286,20 @@ def test_seeded_arena_is_repeatable_across_workers(options: SimulationOptions, b
 
 
 def test_parallel_inference_uses_independent_rngs(view: MatchView, options: SimulationOptions) -> None:
-    bots = [SimulationBot(4, options, REGISTRY["closest_gap"].build(4)) for _ in range(4)]
+    bots = [SimulationBot(4, options) for _ in range(4)]
     with ThreadPoolExecutor(max_workers=4) as pool:
         actions = list(pool.map(lambda bot: bot.act(view), bots))
     assert all(action == actions[0] for action in actions)
     assert all(bot.stats() == bots[0].stats() for bot in bots)
 
 
-def test_resolves_nested_fallback_before_construction(options: SimulationOptions) -> None:
+def test_bait_resolves_nested_fallback_before_construction(options: SimulationOptions) -> None:
     settings = {
         **options.model_dump(mode="json"),
         "fallback_strategy": "controlled_burn",
         "fallback_options": {"K": 2, "fallback_strategy": "highest_card"},
     }
-    player = resolve_players([PlayerConfig(bot="simulation", options=settings)])[0]
+    player = resolve_players([PlayerConfig(bot="model_based_bait", options=settings)])[0]
     assert player.deterministic
     assert player.metadata["fallback_metadata"]["strategy_id"] == "controlled_burn"
     assert isinstance(player.build(3), SimulationBot)
@@ -323,17 +335,20 @@ class BatchFallback:
 
 def test_bait_preserves_fallback_batches_without_calling_twice(view: MatchView, options: SimulationOptions) -> None:
     fallback = BatchFallback()
-    bait = SimulationBot(3, ModelBasedBaitOptions.model_validate(options.model_dump()), fallback)
+    bait = ModelBasedBaitBot(
+        3, ModelBasedBaitOptions.model_validate({**options.model_dump(), "fallback_strategy": "closest_gap"}), fallback
+    )
     action = bait.act(view)
     assert isinstance(action, ActionBatch)
     assert action.memory == "preserve me"
     assert fallback.calls == 1
-    assert bait.failures == 1
 
 
 def test_bait_keeps_fallback_when_no_full_row_is_targeted(view: MatchView, options: SimulationOptions) -> None:
     fallback = REGISTRY["highest_card"].build(1)
-    bot = SimulationBot(3, ModelBasedBaitOptions.model_validate(options.model_dump()), fallback)
+    bot = ModelBasedBaitBot(
+        3, ModelBasedBaitOptions.model_validate({**options.model_dump(), "fallback_strategy": "closest_gap"}), fallback
+    )
     assert bot.act(view) == fallback.act(view)
 
 
@@ -356,7 +371,7 @@ def test_simulated_low_card_uses_configured_actual_row_rule(
     view: MatchView, options: SimulationOptions, policy: Literal["cheapest", "hand_aware"]
 ) -> None:
     row_options = RowPolicyOptions(policy=policy, max_extra_penalty=2 if policy == "hand_aware" else None)
-    bot = SimulationBot(4, options.model_copy(update={"row_policy": row_options}), REGISTRY["closest_gap"].build(4))
+    bot = SimulationBot(4, options.model_copy(update={"row_policy": row_options}))
     bot.history.observe(view)
     low_view = view.model_copy(
         update={
@@ -373,3 +388,23 @@ def test_simulated_low_card_uses_configured_actual_row_rule(
     )
     resolved = resolve_turn(state, {"a": 1}, "a", row_options)
     assert resolved.rows[chosen.row_index].cards == (1,)
+
+
+def test_inference_error_fails_the_arena_match(view: MatchView, options: SimulationOptions) -> None:
+    bot = SimulationBot(4, options)
+    # Reusing state from another match violates the learning contract.
+    bot.history.observe(view)
+    result = run_match([bot, REGISTRY["highest_card"].build(2)], 123)
+    assert result.outcome.value == "failed"
+    assert result.actions_accepted == 0
+
+
+@pytest.mark.parametrize("field", ["fallback_strategy", "fallback_options"])
+def test_bait_requires_its_reference_strategy_but_not_reference_options(options: SimulationOptions, field: str) -> None:
+    settings = {**options.model_dump(), "fallback_strategy": "closest_gap", "fallback_options": {}}
+    del settings[field]
+    if field == "fallback_strategy":
+        with pytest.raises(ValidationError):
+            ModelBasedBaitOptions.model_validate(settings)
+    else:
+        assert ModelBasedBaitOptions.model_validate(settings).fallback_options == {}
