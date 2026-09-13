@@ -113,7 +113,7 @@ def rollout(
 
 
 def penalty_value(samples: list[int], objective: PenaltyObjective) -> float:
-    if not samples:
+    if len(samples) == 0:
         msg = "penalty evaluation requires samples"
         raise ValueError(msg)
     if objective.kind == "mean":

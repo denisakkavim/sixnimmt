@@ -24,7 +24,7 @@ class Viewer:
     player_id: str | None = None
 
     def __post_init__(self) -> None:
-        if self.role == ViewRole.PLAYER and not self.player_id:
+        if self.role == ViewRole.PLAYER and (self.player_id is None or self.player_id == ""):
             msg = "a player viewer needs a player_id"
             raise ValueError(msg)
 

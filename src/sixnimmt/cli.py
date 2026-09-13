@@ -54,7 +54,7 @@ def _print_result(result: ArenaResult) -> None:
     for label in ("Wins", "Ties", "Total", "Avg"):
         scores.add_column(label, justify="right")
     for player in result.players:
-        name = Text(player.display_name or player.player_id, style="bold")
+        name = Text(player.display_name if player.display_name != "" else player.player_id, style="bold")
         name.append(f"\n{player.player_id}", style="dim")
         average_score = f"{player.total_score / result.finished:,.2f}" if result.finished > 0 else "—"
         scores.add_row(

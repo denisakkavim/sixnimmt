@@ -74,7 +74,7 @@ class MatchLedger:
         data = event.data
         row = data["row"]
         captured = data["captured"]
-        assert self.pending
+        assert len(self.pending) > 0
         assert self.capture_row is None
         self.before_rows = [list(cards) for cards in self.rows]
         self.capture_row = row
@@ -100,7 +100,7 @@ class MatchLedger:
         assert card == self.pending[0]
         previous = self.before_rows if self.before_rows is not None else self.rows
         eligible = [index for index, cards in enumerate(previous) if cards[-1] < card]
-        if eligible:
+        if len(eligible) > 0:
             assert row == max(eligible, key=lambda index: previous[index][-1])
         else:
             assert self.capture_row == row

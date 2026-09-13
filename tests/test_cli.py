@@ -31,9 +31,9 @@ def test_runs_arena_with_structured_players(players_file: Path) -> None:
     assert "Arena results" in result.stdout
     assert "Seed 1234" in result.stdout
     assert "1 requested · 1 started · 1 completed" in result.stdout
-    assert re.search(r"Finished\s+Abandoned\s+Forfeited\s+Failed\s+[^\d]+1\s+0\s+0\s+0", result.stdout)
-    assert re.search(r"Player\s+Bot\s+Wins\s+Ties\s+Total\s+Avg", result.stdout)
-    assert re.search(r"Alice\s+random\s+\d+\s+\d+\s+\d+\s+\d+\.\d{2}", result.stdout)
+    assert re.search(r"Finished\s+Abandoned\s+Forfeited\s+Failed\s+[^\d]+1\s+0\s+0\s+0", result.stdout) is not None
+    assert re.search(r"Player\s+Bot\s+Wins\s+Ties\s+Total\s+Avg", result.stdout) is not None
+    assert re.search(r"Alice\s+random\s+\d+\s+\d+\s+\d+\s+\d+\.\d{2}", result.stdout) is not None
     assert "Bob" in result.stdout
     assert "player_1" in result.stdout
     assert "player_2" in result.stdout
@@ -128,9 +128,9 @@ def test_rejects_nonpositive_run_settings(players_file: Path, flag: str) -> None
 def test_reports_action_limit_abandonment(players_file: Path) -> None:
     result = invoke_arena(players_file, "--max-actions-per-match", "1")
     assert result.exit_code == 0
-    assert re.search(r"Finished\s+Abandoned\s+Forfeited\s+Failed\s+[^\d]+0\s+1\s+0\s+0", result.stdout)
+    assert re.search(r"Finished\s+Abandoned\s+Forfeited\s+Failed\s+[^\d]+0\s+1\s+0\s+0", result.stdout) is not None
     assert "No finished matches; average scores are unavailable." in result.stdout
-    assert re.search(r"Alice\s+random\s+0\s+0\s+0\s+—", result.stdout)
+    assert re.search(r"Alice\s+random\s+0\s+0\s+0\s+—", result.stdout) is not None
 
 
 def test_cli_does_not_accept_name_only_players() -> None:
@@ -151,7 +151,7 @@ def test_communication_cli_traces_and_summarises(tmp_path: Path, players_file: P
     directory = tmp_path / "trace"
     result = invoke_arena(players_file, "--communication", "--concurrency", "2", "--trace-dir", str(directory))
     assert result.exit_code == 0, result.output
-    assert re.search(r"Finished\s+Abandoned\s+Forfeited\s+Failed\s+[^\d]+1\s+0\s+0\s+0", result.stdout)
+    assert re.search(r"Finished\s+Abandoned\s+Forfeited\s+Failed\s+[^\d]+1\s+0\s+0\s+0", result.stdout) is not None
     logs = [path for path in directory.glob("*.jsonl") if not path.name.endswith(".actions.jsonl")]
     summary = runner.invoke(app, ["summarise", str(logs[0])])
     assert summary.exit_code == 0, summary.output

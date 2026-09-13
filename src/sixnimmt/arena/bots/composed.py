@@ -34,7 +34,7 @@ class ControlledBurnBot:
             return CommitAction()
         lowest_end = min(row.cards[-1] for row in view.rows)
         candidates = [card for card in view.you.hand if card < lowest_end]
-        if candidates and row_penalty(cheapest_row(view.rows)) <= self.K:
+        if len(candidates) > 0 and row_penalty(cheapest_row(view.rows)) <= self.K:
             card = min(candidates, key=lambda card: (bull_heads(card), card))
             return SelectCardAction(card=card)
         return self.fallback.act(view, rejection)
@@ -96,7 +96,7 @@ class CountThresholdBaitBot:
             intervening = sum(value not in unavailable for value in range(row.cards[-1] + 1, card))
             if intervening >= self.intervening_card_threshold:
                 candidates.append(_Candidate(card, intervening, row_penalty(row)))
-        if not candidates:
+        if len(candidates) == 0:
             return self.fallback.act(view, rejection)
         selected = min(candidates, key=self._rank)
         return SelectCardAction(card=selected.card)

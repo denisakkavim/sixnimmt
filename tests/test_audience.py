@@ -104,7 +104,7 @@ def test_a_player_never_sees_another_players_dealt_hand() -> None:
 
     dealt = [event for event in visible_events(events, ALICE) if event.type == EventType.CARDS_DEALT]
 
-    assert dealt
+    assert len(dealt) > 0
     assert all(event.data["player_id"] == "alice" for event in dealt)
 
 
@@ -139,7 +139,7 @@ def test_a_players_cursor_ignores_events_addressed_to_someone_else() -> None:
     )
     bobs_private = [event for event in produced if event.audience == "player:bob"]
 
-    assert bobs_private
+    assert len(bobs_private) > 0
     assert view_version([*opening, *bobs_private], ALICE) == before
 
 

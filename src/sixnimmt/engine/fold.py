@@ -105,7 +105,7 @@ def _apply_match_created(state: _Fold, data: MatchCreatedData) -> None:
     state.max_actions_per_play = state.protocol.max_actions_per_play
     for entry in data.get("players", []):
         seat = _seat(state, entry["player_id"])
-        seat.display_name = entry.get("display_name") or entry["player_id"]
+        seat.display_name = entry["display_name"] if entry["display_name"] != "" else entry["player_id"]
 
 
 def _start_hand(state: _Fold, hand_number: int) -> None:
@@ -179,7 +179,7 @@ def _apply_reveal(state: _Fold, data: CardsRevealedData) -> None:
 
 
 def _record_placement(state: _Fold, data: CardPlacedData) -> None:
-    if not state.play_history:
+    if len(state.play_history) == 0:
         return
     play = state.play_history[-1]
     cards = tuple(
@@ -189,7 +189,7 @@ def _record_placement(state: _Fold, data: CardPlacedData) -> None:
 
 
 def _record_capture(state: _Fold, data: RowTakenData) -> None:
-    if not state.play_history:
+    if len(state.play_history) == 0:
         return
     play = state.play_history[-1]
     cards = tuple(
@@ -319,7 +319,7 @@ def _legal_actions(state: _Fold, viewer: Viewer) -> tuple[str, ...]:
         return ("choose_row",) if state.awaiting == viewer.player_id else ()
     if state.phase != Phase.SELECTING:
         return ()
-    seat = state.seats.get(viewer.player_id or "")
+    seat = state.seats.get(viewer.player_id if viewer.player_id is not None else "")
     if seat is None:
         return ()
     if state.max_actions_per_play is not None and state.own_actions >= state.max_actions_per_play:
@@ -343,7 +343,7 @@ def _displayed_name(state: _Fold, seat: _Seat, viewer: Viewer) -> str:
     """
     anonymous_roles = (ViewRole.PLAYER, ViewRole.PUBLIC_SPECTATOR)
     if not state.anonymise_display_names or viewer.role not in anonymous_roles:
-        return seat.display_name or seat.player_id
+        return seat.display_name if seat.display_name != "" else seat.player_id
     seat_number = state.order.index(seat.player_id) + 1
     return f"Player {seat_number}"
 
@@ -354,23 +354,23 @@ def _view_id(viewer: Viewer, view_version: int) -> str:
     Never from the global seq, a global version, or a timestamp: a view_id that
     encodes global state reintroduces exactly the leak the cursor closes.
     """
-    material = f"{viewer.role.value}:{viewer.player_id or ''}:{view_version}"
+    material = f"{viewer.role.value}:{viewer.player_id if viewer.player_id is not None else ''}:{view_version}"
     return "v_" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
 
 
 def _self_view(state: _Fold, viewer: Viewer) -> PlayerSelfView:
-    seat = state.seats.get(viewer.player_id or "") if viewer.player_id else None
+    seat = state.seats.get(viewer.player_id) if viewer.player_id is not None else None
     remaining = state.own_remaining
     if not state.explicit_counts and state.max_actions_per_play is not None:
         remaining = max(0, state.max_actions_per_play - state.own_actions)
     return PlayerSelfView(
-        player_id=viewer.player_id or "",
+        player_id=viewer.player_id if viewer.player_id is not None else "",
         hand=tuple(state.own_hand),
         selection=state.own_selection,
-        committed=seat.committed if seat else False,
-        penalty_cards=tuple(seat.penalty_cards) if seat else (),
-        score_this_hand=seat.score_this_hand if seat else 0,
-        total_score=seat.total_score if seat else 0,
+        committed=seat.committed if seat is not None else False,
+        penalty_cards=tuple(seat.penalty_cards) if seat is not None else (),
+        score_this_hand=seat.score_this_hand if seat is not None else 0,
+        total_score=seat.total_score if seat is not None else 0,
         actions_taken_this_play=state.own_actions,
         actions_remaining_this_play=remaining,
     )

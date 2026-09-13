@@ -312,7 +312,7 @@ class OpponentModel:
         unseen = sorted(set(range(1, 105)) - known)
         sizes = tuple(player.cards_in_hand for player in opponents)
         expected_size = 10 - len(current.turns)
-        if not opponents or any(size != expected_size for size in sizes) or sum(sizes) > len(unseen):
+        if len(opponents) == 0 or any(size != expected_size for size in sizes) or sum(sizes) > len(unseen):
             msg = "public hand sizes disagree with observed plays"
             raise InferenceError(msg)
         own_played = {dict(turn.choices)[view.you.player_id] for turn in current.turns}

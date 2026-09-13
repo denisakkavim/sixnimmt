@@ -114,7 +114,7 @@ def test_configured_names_reach_observer_without_changing_seat_ids(short_protoco
     identities = []
 
     def observe(state: MatchState, events: tuple[Event, ...]) -> None:
-        if not identities:
+        if len(identities) == 0:
             identities.extend((seat.player_id, seat.display_name) for seat in state.players)
 
     run_arena(

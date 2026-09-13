@@ -14,7 +14,7 @@ def cheapest_row(rows: tuple[RowView, ...]) -> RowView:
 
 def applicable_row(card: int, rows: tuple[RowView, ...]) -> RowView | None:
     lower_rows = [row for row in rows if row.cards[-1] < card]
-    if not lower_rows:
+    if len(lower_rows) == 0:
         return None
     return max(lower_rows, key=lambda row: row.cards[-1])
 
@@ -91,7 +91,7 @@ class LowestFittingCardBot(Bot):
             return CommitAction()
 
         fitting_cards = [card for card in view.you.hand if currently_fits(card, view.rows)]
-        if fitting_cards:
+        if len(fitting_cards) > 0:
             return SelectCardAction(card=min(fitting_cards))
 
         card = min(view.you.hand, key=lambda card: (immediate_penalty(card, view.rows), card))
@@ -109,7 +109,7 @@ class HighestFittingCardBot(Bot):
             return CommitAction()
 
         fitting_cards = [card for card in view.you.hand if currently_fits(card, view.rows)]
-        if fitting_cards:
+        if len(fitting_cards) > 0:
             return SelectCardAction(card=max(fitting_cards))
 
         card = min(view.you.hand, key=lambda card: (immediate_penalty(card, view.rows), card))
@@ -134,7 +134,7 @@ class ClosestGapBot(Bot):
             gap = card - row.cards[-1]
             fitting_candidates.append((gap, card))
 
-        if fitting_candidates:
+        if len(fitting_candidates) > 0:
             _, card = min(fitting_candidates)
             return SelectCardAction(card=card)
 
@@ -160,7 +160,7 @@ class ColdestRowBot(Bot):
             occupancy = len(row.cards)
             fitting_candidates.append((occupancy, card))
 
-        if fitting_candidates:
+        if len(fitting_candidates) > 0:
             _, card = min(fitting_candidates)
             return SelectCardAction(card=card)
 

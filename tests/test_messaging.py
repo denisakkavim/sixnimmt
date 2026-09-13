@@ -62,7 +62,7 @@ def test_direct_message_emits_separate_content_copies_and_optional_occurrence(ex
     )
     occurrences = [event for event in events if event.type == "private_message_occurred"]
     assert len(occurrences) == (1 if existence == "visible" else 0)
-    if occurrences:
+    if len(occurrences) > 0:
         assert occurrences[0].audience == "public"
         assert occurrences[0].data == {"from": "bob", "to": "cara"}
 
@@ -151,7 +151,7 @@ def test_each_role_counts_a_direct_message_exactly_once(
     assert len(view.messages) == content * MAX_VIEW_MESSAGES
     assert len(view.private_messages_observed) == occurrence * MAX_VIEW_MESSAGES
     assert view.messages_omitted == 1
-    if occurrence:
+    if occurrence > 0:
         assert "secret" not in view.model_dump_json()
         assert all("body" not in entry.model_dump() for entry in view.private_messages_observed)
 
@@ -167,7 +167,7 @@ def test_hidden_messages_including_budget_exhaustion_leave_nonparty_view_identic
     viewer = Viewer(role=ViewRole.PLAYER, player_id="alice")
     before = build_view(log, viewer).model_dump_json()
     visible_before = visible_events(log, viewer)
-    for _ in range(budget or 3):
+    for _ in range(budget if budget is not None else 3):
         state, events = transition(
             state, "bob", SendMessageAction(visibility="direct", to_player="cara", body="secret"), protocol, RULES
         )
@@ -212,7 +212,7 @@ def test_replay_and_own_accounting_match_after_every_communication_action() -> N
         UncommitAction(),
     ]
     while state.phase != Phase.FINISHED:
-        if initial:
+        if len(initial) > 0:
             actor, action = "alice", initial.pop(0)
         elif state.phase == Phase.AWAITING_ROW_CHOICE:
             assert state.resolution is not None and state.resolution.awaiting_player is not None

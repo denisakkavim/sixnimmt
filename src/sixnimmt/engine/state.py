@@ -27,7 +27,7 @@ class PlayerSeat(BaseModel):
 
     @property
     def name_or_id(self) -> str:
-        return self.display_name or self.player_id
+        return self.display_name if self.display_name != "" else self.player_id
 
 
 class PlayerState(BaseModel):

@@ -116,10 +116,10 @@ def test_every_offer_can_recover_from_a_private_rejection(short_protocol: MatchP
     assert result.outcome == MatchOutcome.FINISHED
     assert result.actions_accepted == result.actions_rejected
     for index, bot in enumerate(bots):
-        assert bot.refusals
+        assert len(bot.refusals) > 0
         for refusal, view in zip(bot.refusals, bot.views[1::2], strict=True):
             assert refusal.legal_actions == view.legal_actions
-            assert refusal.message
+            assert refusal.message != ""
         own = Viewer(ViewRole.PLAYER, f"player_{index + 1}")
         assert all(
             event.audience == f"player:{own.player_id}"
@@ -612,7 +612,7 @@ def test_hidden_direct_messages_do_not_change_uninvolved_bot_view(short_protocol
 
     result = run_match([HiddenSender(1), RandomBot(2), Observed(3)], 123, protocol=protocol, observer=inspect)
     assert result.outcome == MatchOutcome.FINISHED
-    assert views
+    assert len(views) > 0
     assert all(view.messages == () and view.private_messages_observed == () for view in views)
 
 

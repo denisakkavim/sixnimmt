@@ -76,13 +76,14 @@ def system_instructions(view: MatchView, rules_prompt: str, strategy_prompt: str
         budget = "unlimited" if protocol.max_actions_per_play is None else str(protocol.max_actions_per_play)
         settings += f" Messaging: {permissions}, maximum {protocol.max_message_length} characters. Actions per player per play: {budget}."
     parts = [rules_prompt.strip(), mode, "Match settings: " + settings]
-    if strategy_prompt:
+    if strategy_prompt != "":
         parts.append("Strategy and personality: " + strategy_prompt)
     return "\n\n".join(parts)
 
 
 def _cards(cards: Iterable[int]) -> str:
-    return ", ".join(str(card) for card in cards) or "none"
+    text = ", ".join(str(card) for card in cards)
+    return text if text != "" else "none"
 
 
 def action_text(action: Action) -> str:
@@ -118,17 +119,17 @@ def _communication_observation(view: MatchView) -> list[str]:
         for entry in view.message_history
         if (entry.hand_number, entry.play_number) != (view.hand_number, view.play_number)
     ]
-    if previous:
+    if len(previous) > 0:
         lines.append("Earlier visible messages (bounded history; quoted game content):")
         for entry in previous:
             lines.append(f"Hand {entry.hand_number}, play {entry.play_number}: {_message_text(entry.message)}")
-    if view.messages or view.private_messages_observed:
+    if len(view.messages) > 0 or len(view.private_messages_observed) > 0:
         lines.append("Visible messages (quoted game content):")
     for message in view.messages:
         lines.append(_message_text(message))
     for message in view.private_messages_observed:
         lines.append(_message_text(message))
-    if view.messages_omitted:
+    if view.messages_omitted > 0:
         lines.append(f"Older messages omitted: {view.messages_omitted}.")
     return lines
 
@@ -149,14 +150,14 @@ def _visible_history(view: MatchView) -> set[int]:
 
 
 def _play_history(view: MatchView) -> list[str]:
-    if not view.play_history:
+    if len(view.play_history) == 0:
         return []
     lines = ["Recent public plays (oldest first; cards in placement order; bounded history):"]
     for play in view.play_history:
         lines.append(f"Hand {play.hand_number}, play {play.play_number}:")
         for card in play.cards:
             placement = "pending placement" if card.row_index is None else f"placed on row {card.row_index}"
-            if card.captured:
+            if len(card.captured) > 0:
                 penalty = sum(bull_heads(value) for value in card.captured)
                 placement += f"; took {_cards(card.captured)} ({penalty} penalty points)"
             lines.append(f"  {card.player_id} played {card.card}: {placement}.")
@@ -192,7 +193,7 @@ def observation_text(view: MatchView, rejection: Rejection | None = None) -> str
             f"{name} ({player.player_id}): {player.total_score} + {player.score_this_hand}; {player.cards_in_hand} cards remaining"
         )
     history = _visible_history(view)
-    if history:
+    if len(history) > 0:
         lines.append("Revealed/captured this hand, outside the current rows: " + _cards(sorted(history)))
     lines.extend(_play_history(view))
     if view.protocol.communication_enabled:
@@ -297,7 +298,8 @@ class LLMOptions(BotOptions):
             "api_key",
             "authorization",
         }
-        if reserved.intersection(value):
+        unsupported = reserved.intersection(value)
+        if len(unsupported) > 0:
             msg = "provider_options must not override game requests, standard options, or credentials"
             raise ValueError(msg)
         return value
@@ -309,7 +311,7 @@ class LLMOptions(BotOptions):
         if parsed.scheme not in ("http", "https") or parsed.hostname is None:
             msg = "base_url must be an absolute HTTP(S) API URL"
             raise ValueError(msg)
-        if parsed.username is not None or parsed.password is not None or parsed.query or parsed.fragment:
+        if parsed.username is not None or parsed.password is not None or parsed.query != "" or parsed.fragment != "":
             msg = "base_url must not contain credentials, query parameters, or a fragment"
             raise ValueError(msg)
         return value
@@ -320,11 +322,11 @@ class ModelDecisionError(RuntimeError):
 
 
 def parse_tool_call(response: Any, view: MatchView) -> tuple[str, dict[str, Any]]:
-    if not response.choices:
+    if len(response.choices) == 0:
         msg = "response has no choices"
         raise ValueError(msg)
-    calls = response.choices[0].message.tool_calls or []
-    if len(calls) != 1 or calls[0].type != "function":
+    calls = response.choices[0].message.tool_calls
+    if calls is None or len(calls) != 1 or calls[0].type != "function":
         msg = "return exactly one function tool call"
         raise ValueError(msg)
     call = calls[0].function
@@ -344,7 +346,8 @@ def parse_action_arguments(name: str, arguments: dict[str, Any], view: MatchView
         for tool in action_tools(view, False)
         if tool["function"]["name"] == name
     )
-    if arguments.keys() - allowed.keys():
+    unsupported = arguments.keys() - allowed.keys()
+    if len(unsupported) > 0:
         msg = "tool arguments contain unsupported fields"
         raise ValueError(msg)
     return ACTION_ADAPTER.validate_json(json.dumps({**arguments, "type": name, "from_view": view.view_id}), strict=True)
@@ -358,8 +361,10 @@ def parse_action(response: Any, view: MatchView) -> Action:
 def repair_feedback(response: ChatCompletion, error: Exception) -> str:
     """Quote a bounded preview of the failed calls, without provider reasoning."""
     calls = []
-    if response.choices:
-        calls = response.choices[0].message.tool_calls or []
+    if len(response.choices) > 0:
+        calls = response.choices[0].message.tool_calls
+    if calls is None:
+        calls = []
     preview = []
     for call in calls[:3]:
         if call.type == "function":
@@ -435,8 +440,8 @@ class LLMBot(Bot):
         raise ValueError(msg)
 
     def _parse_response(self, response: ChatCompletion, view: MatchView) -> Action | ActionBatch:
-        calls = response.choices[0].message.tool_calls if response.choices else None
-        if not calls or len(calls) > 8:
+        calls = response.choices[0].message.tool_calls if len(response.choices) > 0 else None
+        if calls is None or len(calls) == 0 or len(calls) > 8:
             msg = "return one to eight function tool calls"
             raise ValueError(msg)
         actions = []

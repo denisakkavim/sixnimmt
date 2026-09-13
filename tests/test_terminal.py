@@ -28,7 +28,7 @@ def test_doodle_varies_rows_capture_totals_and_played_cards() -> None:
 def test_doodle_cards_follow_placement_rules() -> None:
     for play in _doodle_deal(66, 0, 5):
         eligible = [index for index, row in enumerate(play.rows) if row[-1] < play.card]
-        if eligible:
+        if len(eligible) > 0:
             assert play.target == max(eligible, key=lambda index: play.rows[index][-1])
             assert play.takes_row == (len(play.rows[play.target]) == 5)
         else:

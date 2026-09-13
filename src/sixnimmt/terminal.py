@@ -56,8 +56,8 @@ def _doodle_deal(seed: int, deal: int, players: int) -> tuple[_DoodlePlay, ...]:
         if turn % len(seats) == 0:
             rng.shuffle(seats)
         eligible = [index for index, row in enumerate(rows) if row[-1] < card]
-        target = max(eligible, key=lambda index: rows[index][-1]) if eligible else rng.randrange(4)
-        play = _DoodlePlay(rows, card, seats[turn % len(seats)], target, not eligible or len(rows[target]) == 5)
+        target = max(eligible, key=lambda index: rows[index][-1]) if len(eligible) > 0 else rng.randrange(4)
+        play = _DoodlePlay(rows, card, seats[turn % len(seats)], target, len(eligible) == 0 or len(rows[target]) == 5)
         plays.append(play)
         rows = play.placed_rows()
     return tuple(plays)

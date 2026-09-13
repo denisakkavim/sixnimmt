@@ -196,7 +196,7 @@ class JsonlEventSink(EventSink):
             self._remember_names(event)
 
     def append(self, events: Sequence[Event]) -> None:
-        if not events:
+        if len(events) == 0:
             return
         payloads = []
         for event in events:
@@ -250,7 +250,7 @@ class JsonlEventSink(EventSink):
             for player_id in sorted(player_ids)
             if player_id in self._player_names
         }
-        if names:
+        if len(names) > 0:
             payload["player_display_names"] = names
         return payload
 

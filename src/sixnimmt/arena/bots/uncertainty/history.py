@@ -44,7 +44,7 @@ class HandHistory:
                 msg = "public placement has no matching row"
                 raise InferenceError(msg)
             row = rows[index]
-            if card.captured:
+            if len(card.captured) > 0:
                 if card.captured != row.cards:
                     msg = "capture disagrees with public board"
                     raise InferenceError(msg)

@@ -33,15 +33,15 @@ def _check_seats(seats: tuple[PlayerSeat, ...], rules: GameRules) -> None:
     # caller. An id has to survive an event audience, a token map key and a
     # UTF-8 log, and a lone surrogate is a legal JSON string that cannot be
     # encoded at all — including into the very refusal that names it.
-    unusable = sorted({seat.player_id for seat in seats if not PLAYER_ID_PATTERN.match(seat.player_id)})
-    if unusable:
+    unusable = sorted({seat.player_id for seat in seats if PLAYER_ID_PATTERN.match(seat.player_id) is None})
+    if len(unusable) > 0:
         # `ascii` so that an id which cannot be encoded is still reportable.
         rejected = ", ".join(ascii(player_id) for player_id in unusable)
         msg = f"player ids must be 1-64 characters of letters, digits, '_' or '-', rejected: {rejected}"
         raise EngineRejection(ErrorCode.INVALID_PLAYER_ID, msg)
     identifiers = [seat.player_id for seat in seats]
     duplicates = sorted({name for name in identifiers if identifiers.count(name) > 1})
-    if duplicates:
+    if len(duplicates) > 0:
         msg = f"player ids must be unique, repeated: {', '.join(duplicates)}"
         raise EngineRejection(ErrorCode.DUPLICATE_PLAYER_ID, msg)
 
@@ -54,8 +54,8 @@ def open_match(
     protocol: MatchProtocol | None = None,
 ) -> tuple[MatchState, list[Event]]:
     """Register a match without dealing. The first hand arrives with start_match."""
-    rules = rules or GameRules()
-    protocol = protocol or MatchProtocol()
+    rules = GameRules() if rules is None else rules
+    protocol = MatchProtocol() if protocol is None else protocol
     seats = _seats(players)
     _check_seats(seats, rules)
 

@@ -23,7 +23,9 @@ def _play_one_card(
     protocol: MatchProtocol | None = None,
 ) -> MatchState:
     action = _ACTION_ADAPTER.validate_python({"type": "select_card", "card": card})
-    new_state, _ = transition(state, player_id, action, protocol or MatchProtocol(), GameRules())
+    new_state, _ = transition(
+        state, player_id, action, protocol if protocol is not None else MatchProtocol(), GameRules()
+    )
     return new_state
 
 
@@ -35,7 +37,7 @@ def _choose_row(state: MatchState, protocol: MatchProtocol | None = None) -> Mat
         state,
         state.resolution.awaiting_player,
         action,
-        protocol or MatchProtocol(),
+        protocol if protocol is not None else MatchProtocol(),
         GameRules(),
     )
     return new_state
@@ -166,7 +168,9 @@ def _play_full_play_collecting_events(
     collected: list = []
     for player in state.players:
         action = _ACTION_ADAPTER.validate_python({"type": "select_card", "card": player.hand[0]})
-        current, events = transition(current, player.player_id, action, protocol or MatchProtocol(), GameRules())
+        current, events = transition(
+            current, player.player_id, action, protocol if protocol is not None else MatchProtocol(), GameRules()
+        )
         collected.extend(events)
         while current.phase == Phase.AWAITING_ROW_CHOICE:
             assert current.resolution is not None and current.resolution.awaiting_player is not None
@@ -175,7 +179,7 @@ def _play_full_play_collecting_events(
                 current,
                 current.resolution.awaiting_player,
                 choice,
-                protocol or MatchProtocol(),
+                protocol if protocol is not None else MatchProtocol(),
                 GameRules(),
             )
             collected.extend(events)

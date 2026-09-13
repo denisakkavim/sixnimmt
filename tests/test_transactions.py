@@ -56,7 +56,7 @@ def test_rejected_transaction_preserves_state_and_memory_before_retry(invalid: s
     assert retry_view.you.selection is None
     assert not retry_view.you.committed
     assert retry_view.rows == first_view.rows
-    assert not retry_view.messages
+    assert len(retry_view.messages) == 0
     assert rejection is not None
     assert "Nothing was applied; memory is unchanged" in rejection.message
     assert all("must not escape" not in str(event.data) for event in result.events)
