@@ -125,11 +125,19 @@ def main() -> None:
     options = SimulationOptions.model_validate(settings)
     matched = options.model_copy(
         update={
-            "model": options.model.model_copy(update={"chain_count": options.model.particle_count, "draw_interval": 1})
+            "model": options.model.model_validate({
+                **options.model.model_dump(),
+                **{"chain_count": options.model.particle_count, "draw_interval": 1},
+            })
         }
     )
     retained = options.model_copy(
-        update={"model": options.model.model_copy(update={"chain_count": 8, "draw_interval": 100})}
+        update={
+            "model": options.model.model_validate({
+                **options.model.model_dump(),
+                **{"chain_count": 8, "draw_interval": 100},
+            })
+        }
     )
     trajectories = {players: capture(players) for players in [3, 5, 10]}
     result = {

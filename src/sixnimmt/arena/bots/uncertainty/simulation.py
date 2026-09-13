@@ -12,7 +12,7 @@ from sixnimmt.engine.state import MatchState, Phase, PlayerState, ResolutionStat
 from sixnimmt.engine.views import MatchView, RowView
 
 from .inference import World
-from .options import PenaltyObjective, RowPolicyOptions, SimulationOptions
+from .options import ModelBasedBaitOptions, PenaltyObjective, RowPolicyOptions, SimulationOptions
 from .policies import choose_card, observation
 
 
@@ -20,9 +20,6 @@ def select_row(rows: tuple[RowView, ...], hand: tuple[int, ...], card: int, poli
     if policy.policy == "cheapest":
         return cheapest_row(rows).index
     view = observation(rows, hand).model_copy(update={"legal_actions": ("choose_row",), "awaiting_card": card})
-    if policy.max_extra_penalty is None:
-        msg = "hand-aware row choice requires max_extra_penalty"
-        raise ValueError(msg)
     bot = HandAwareRowChoiceBot(policy.max_extra_penalty, HighestCardBot())
     action = bot.act(view)
     if not isinstance(action, ChooseRowAction):
@@ -93,7 +90,9 @@ def resolve_turn(
     return state.model_copy(update={"phase": Phase.SELECTING, "resolution": None, "play_number": state.play_number + 1})
 
 
-def rollout(view: MatchView, world: World, candidate: int, options: SimulationOptions, seed: int) -> int:
+def rollout(
+    view: MatchView, world: World, candidate: int, options: SimulationOptions | ModelBasedBaitOptions, seed: int
+) -> int:
     rng = random.Random(seed)  # noqa: S311 -- seeded experimental simulation
     state = initial_state(view, world)
     turns = len(view.you.hand) if options.horizon == "remaining_hand" else min(options.horizon, len(view.you.hand))
@@ -122,11 +121,8 @@ def penalty_value(samples: list[int], objective: PenaltyObjective) -> float:
         return sum(samples) / len(samples)
     if objective.kind == "pickup_probability":
         return sum(value > 0 for value in samples) / len(samples)
-    if objective.kind == "threshold_exceedance" and objective.threshold is not None:
+    if objective.kind == "threshold_exceedance":
         return sum(value > objective.threshold for value in samples) / len(samples)
-    if objective.tail_fraction is None:
-        msg = "upper-tail evaluation requires tail_fraction"
-        raise ValueError(msg)
     mass = objective.tail_fraction * len(samples)
     ordered = sorted(samples, reverse=True)
     complete = math.floor(mass)

@@ -13,10 +13,10 @@ from scipy.special import logit
 from experiments.mcmc.diagnose import capture, json_safe, observable_traces
 from sixnimmt.arena.bots.uncertainty.inference import LegalProposal, OpponentModel, Posterior
 from sixnimmt.arena.bots.uncertainty.options import (
+    CheapestRow,
+    MeanPenalty,
     OpponentModelOptions,
-    PenaltyObjective,
     PolicyName,
-    RowPolicyOptions,
     SimulationOptions,
 )
 from sixnimmt.arena.bots.uncertainty.simulation import rollout
@@ -31,8 +31,8 @@ def candidate_costs(
         sample_count=1,
         horizon=horizon,
         continuation_policy="closest_gap",
-        row_policy=RowPolicyOptions(policy="cheapest"),
-        objective=PenaltyObjective(kind="mean"),
+        row_policy=CheapestRow(),
+        objective=MeanPenalty(),
         cutoff_evaluation="zero",
     )
     candidates = sorted(view.you.hand)

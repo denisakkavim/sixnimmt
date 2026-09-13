@@ -75,7 +75,10 @@ def test_batched_likelihood_matches_scalar_for_every_policy_and_extreme_epsilon(
 def test_batched_sampler_matches_enumerated_hidden_hand_and_epsilon(model_options: OpponentModelOptions) -> None:
     rows = tuple(RowView(index=i, cards=(v,)) for i, v in enumerate([1, 2, 3, 4]))
     history = HandHistory(rows, (), rows, turns=[ObservedTurn(rows, (("b", 50),))])
-    options = model_options.model_copy(update={"policies": ["highest_card"], "mode": "single_policy"})
+    options = model_options.model_validate({
+        **model_options.model_dump(),
+        **{"policies": ["highest_card"], "mode": "single_policy"},
+    })
     posterior = Posterior(history, ("b",), ((),), (2,), [10, 20, 60, 70], options)
     rng = np.random.RandomState(123)
     coordinates = np.array([np.r_[rng.permutation(posterior.unseen), 0, logit(rng.uniform())] for _ in range(16)])
@@ -113,9 +116,12 @@ def test_particle_count_requires_a_positive_divisor_chain_count(
 def test_batched_proposals_conserve_the_deck_and_respect_fixed_labels(
     model_options: OpponentModelOptions, mode: str
 ) -> None:
-    options = model_options.model_copy(update={"mode": mode})
+    policies = ("random",) if mode == "single_policy" else model_options.policies
+    options = model_options.model_validate({**model_options.model_dump(), "mode": mode, "policies": policies})
     rng = np.random.RandomState(81)
-    coordinates = np.array([np.r_[rng.permutation([1, 2, 3, 4]), 0, 1, 0.0, 0.0] for _ in range(32)])
+    coordinates = np.array([
+        np.r_[rng.permutation([1, 2, 3, 4]), 0, 0 if mode == "single_policy" else 1, 0.0, 0.0] for _ in range(32)
+    ])
     labels = coordinates[:, 4:6].copy()
     proposal = BatchedLegalProposal(4, 2, options)
     for _ in range(50):
@@ -155,7 +161,10 @@ def trajectory() -> HistorySnapshots:
 def test_warm_starts_remove_reveals_and_redeal_cards_without_forgetting_behaviour(
     model_options: OpponentModelOptions, trajectory: HistorySnapshots
 ) -> None:
-    options = model_options.model_copy(update={"policies": ["highest_card", "lowest_card"], "burn_in_steps": 10})
+    options = model_options.model_validate({
+        **model_options.model_dump(),
+        **{"policies": ["highest_card", "lowest_card"], "burn_in_steps": 10},
+    })
     model = OpponentModel(options)
     for key in [(1, 1), (1, 2), (1, 5), (1, 9), (2, 1), (3, 5)]:
         history, view = trajectory[key]
@@ -179,9 +188,10 @@ def test_warm_starts_remove_reveals_and_redeal_cards_without_forgetting_behaviou
 def test_fixed_mixture_keeps_equal_chain_weight_when_retaining_multiple_draws(
     model_options: OpponentModelOptions, trajectory: HistorySnapshots
 ) -> None:
-    options = model_options.model_copy(
-        update={"policies": ["highest_card", "lowest_card"], "mode": "fixed_mixture", "burn_in_steps": 10}
-    )
+    options = model_options.model_validate({
+        **model_options.model_dump(),
+        **{"policies": ["highest_card", "lowest_card"], "mode": "fixed_mixture", "burn_in_steps": 10},
+    })
     model = OpponentModel(options)
     history, view = trajectory[1, 1]
     first = model.infer(history, view, random.Random(42))  # noqa: S311 -- reproducible sampling
@@ -238,9 +248,10 @@ def test_last_card_and_bait_without_candidates_skip_inference_but_keep_history(
 def test_cached_completed_hands_match_the_full_uncached_history_target(
     model_options: OpponentModelOptions, trajectory: HistorySnapshots
 ) -> None:
-    options = model_options.model_copy(
-        update={"policies": ["highest_card", "lowest_card", "closest_gap"], "burn_in_steps": 10}
-    )
+    options = model_options.model_validate({
+        **model_options.model_dump(),
+        **{"policies": ["highest_card", "lowest_card", "closest_gap"], "burn_in_steps": 10},
+    })
     model = OpponentModel(options)
     rng = np.random.RandomState(51)
     for key in [(1, 5), (2, 5), (3, 5)]:

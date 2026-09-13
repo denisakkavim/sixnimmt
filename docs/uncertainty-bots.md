@@ -214,3 +214,23 @@ lockfile with experiment provenance.
 Timing-aware urgency selection, nonzero cutoff evaluators, and richer learned
 row-choice or history-dependent policies remain unimplemented. Their behavioural
 choices require further specification.
+
+### Python option types
+
+Objectives and row policies are discriminated unions. Construct `MeanPenalty`,
+`PickupProbability`, `ThresholdExceedance(threshold=...)`, `UpperTailPenalty(tail_fraction=...)`,
+`CheapestRow`, or `HandAwareRow(max_extra_penalty=...)` from
+`sixnimmt.arena.bots.uncertainty.options`. For dictionaries use
+`parse_penalty_objective()` and `parse_row_policy()`; the old union names are type
+aliases, not constructors or classes with `model_validate()`.
+
+Documented JSON input remains valid. Old irrelevant null placeholders are accepted
+and omitted on serialization; irrelevant non-null parameters are rejected. Policy
+catalogues accept Python lists and JSON arrays and are stored as ordered tuples.
+Bait has its own schema fixing horizon 1, mean penalty, and cheapest row choice;
+its explicit continuation setting remains required for configuration compatibility.
+
+`model_copy(update=...)` is for trusted updates and does not validate. To change
+configuration, validate a merged `model_dump()` dictionary through the appropriate
+options class. Do not assume validating an existing model repairs an unchecked
+copy or nested mutation.

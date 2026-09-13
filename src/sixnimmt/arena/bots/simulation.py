@@ -16,7 +16,7 @@ from .uncertainty.simulation import penalty_value, rollout, select_row
 
 
 class SimulationBot:
-    def __init__(self, seed: int, options: SimulationOptions) -> None:
+    def __init__(self, seed: int, options: SimulationOptions | ModelBasedBaitOptions) -> None:
         self.seed = seed
         self.options = options
         self.history = PublicHistory()

@@ -18,10 +18,11 @@ from sixnimmt.arena.bots.uncertainty.history import HandHistory, InferenceError,
 from sixnimmt.arena.bots.uncertainty.inference import LegalProposal, OpponentModel, Posterior, World, log_likelihood
 from sixnimmt.arena.bots.uncertainty.options import (
     ModelBasedBaitOptions,
-    PenaltyObjective,
+    OpponentModelOptions,
     PolicyName,
-    RowPolicyOptions,
     SimulationOptions,
+    parse_penalty_objective,
+    parse_row_policy,
 )
 from sixnimmt.arena.bots.uncertainty.policies import probability
 from sixnimmt.arena.bots.uncertainty.simulation import initial_state, penalty_value, resolve_turn, rollout
@@ -100,7 +101,7 @@ def test_rejects_invalid_horizon(options: SimulationOptions, horizon: object) ->
 )
 def test_requires_only_relevant_objective_parameters(settings: dict) -> None:
     with pytest.raises(ValidationError):
-        PenaltyObjective.model_validate(settings)
+        parse_penalty_objective(settings)
 
 
 @pytest.mark.parametrize(
@@ -114,7 +115,7 @@ def test_requires_only_relevant_objective_parameters(settings: dict) -> None:
     ],
 )
 def test_penalty_objectives_include_fractional_tail_mass(objective: dict, expected: float) -> None:
-    assert penalty_value([0, 2, 4, 8], PenaltyObjective.model_validate(objective)) == pytest.approx(expected)
+    assert penalty_value([0, 2, 4, 8], parse_penalty_objective(objective)) == pytest.approx(expected)
 
 
 @pytest.mark.parametrize(
@@ -149,7 +150,10 @@ def test_joint_sampler_matches_enumerated_hidden_hand_and_continuous_posterior(o
     # and E[epsilon | play]=5/9 under the uniform priors.
     rows = tuple(RowView(index=i, cards=(v,)) for i, v in enumerate([1, 2, 3, 4]))
     history = HandHistory(rows, (), rows, turns=[ObservedTurn(rows, (("b", 50),))])
-    model = options.model.model_copy(update={"policies": ["highest_card"], "mode": "single_policy"})
+    model = options.model.model_validate({
+        **options.model.model_dump(),
+        **{"policies": ["highest_card"], "mode": "single_policy"},
+    })
     posterior = Posterior(history, ("b",), ((),), (2,), [10, 20, 60, 70], model)
     rng = np.random.RandomState(123)
     initial = np.array([np.r_[rng.permutation(posterior.unseen), 0, logit(rng.uniform())] for _ in range(32)])
@@ -180,7 +184,7 @@ def test_sampled_worlds_conserve_cards_and_are_repeatable(view: MatchView, optio
 
 
 def test_fixed_mixture_preserves_policy_assignments(options: SimulationOptions) -> None:
-    fixed = options.model.model_copy(update={"mode": "fixed_mixture"})
+    fixed = options.model.model_validate({**options.model.model_dump(), **{"mode": "fixed_mixture"}})
     proposal = LegalProposal(4, 1, fixed)
     coordinates = np.array([[10.0, 20.0, 60.0, 70.0, 1.0, 0.0]])
     rng = np.random.RandomState(8)
@@ -243,7 +247,7 @@ def test_rollout_resolves_card_order_and_caps_at_end_of_hand(view: MatchView, op
     assert all(player.hand == () for player in state.players)
     assert state.hand_number == small.hand_number
     for horizon in [1, 5, "remaining_hand"]:
-        configured = options.model_copy(update={"horizon": horizon})
+        configured = options.model_validate({**options.model_dump(), **{"horizon": horizon}})
         assert rollout(small, world, 16, configured, 7) == 0
 
 
@@ -310,7 +314,7 @@ def test_policy_learning_can_be_enabled_or_held_fixed(
     # Completed hands make historical alternatives known. Eight selections all
     # agree with policy 0 and disagree with policy 1.
     history = HandHistory((), (), ())
-    model = options.model.model_copy(update={"mode": mode})
+    model = options.model.model_validate({**options.model.model_dump(), **{"mode": mode}})
     past = tuple(((1.0, 0.0), size) for size in range(10, 2, -1))
     posterior = Posterior(history, ("b",), (past,), (0,), [], model)
     rng = np.random.RandomState(8)
@@ -361,15 +365,15 @@ def test_rollout_accumulates_future_penalties(view: MatchView, options: Simulati
     )
     world = World(((70, 80),), (), (0,), (0.0,))
     assert rollout(small, world, 14, options, 1) == 0
-    assert rollout(small, world, 14, options.model_copy(update={"horizon": 2}), 1) == 11
+    assert rollout(small, world, 14, options.model_validate({**options.model_dump(), **{"horizon": 2}}), 1) == 11
 
 
 @pytest.mark.parametrize("policy", ["cheapest", "hand_aware"])
 def test_simulated_low_card_uses_configured_actual_row_rule(
     view: MatchView, options: SimulationOptions, policy: Literal["cheapest", "hand_aware"]
 ) -> None:
-    row_options = RowPolicyOptions(policy=policy, max_extra_penalty=2 if policy == "hand_aware" else None)
-    bot = SimulationBot(4, options.model_copy(update={"row_policy": row_options}))
+    row_options = parse_row_policy({"policy": policy, "max_extra_penalty": 2 if policy == "hand_aware" else None})
+    bot = SimulationBot(4, options.model_validate({**options.model_dump(), **{"row_policy": row_options}}))
     bot.history.observe(view)
     low_view = view.model_copy(
         update={
@@ -406,3 +410,28 @@ def test_bait_requires_its_reference_strategy_but_not_reference_options(options:
             ModelBasedBaitOptions.model_validate(settings)
     else:
         assert ModelBasedBaitOptions.model_validate(settings).fallback_options == {}
+
+
+def test_policy_catalogue_copies_python_lists_to_immutable_tuple(options: SimulationOptions) -> None:
+    settings = options.model.model_dump(mode="json")
+    policies = settings["policies"]
+    parsed = OpponentModelOptions.model_validate(settings)
+    policies.append("random")
+    assert isinstance(parsed.policies, tuple)
+    assert len(parsed.policies) == len(options.model.policies)
+    assert OpponentModelOptions.model_validate_json(parsed.model_dump_json()) == parsed
+
+
+def test_objective_schema_exposes_variant_requirements() -> None:
+    schema = SimulationOptions.model_json_schema()
+    assert schema["properties"]["objective"]["discriminator"]["propertyName"] == "kind"
+    assert "threshold" in schema["$defs"]["ThresholdExceedance"]["required"]
+    assert schema["properties"]["horizon"]["anyOf"][0]["exclusiveMinimum"] == 0
+
+
+def test_legacy_null_placeholders_normalize_without_weakening_validation() -> None:
+    objective = parse_penalty_objective({"kind": "mean", "threshold": None, "tail_fraction": None})
+    assert objective.model_dump() == {"kind": "mean"}
+    assert parse_row_policy({"policy": "cheapest", "max_extra_penalty": None}).model_dump() == {"policy": "cheapest"}
+    with pytest.raises(ValueError):
+        parse_penalty_objective({"kind": "mean", "threshold": 1})
