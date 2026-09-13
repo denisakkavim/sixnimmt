@@ -31,7 +31,7 @@
 * Prefer straightforward, explicit code over clever Python idioms when the latter reduce readability.
 * Use intermediate variables when they make the code easier to understand; don't optimize them away just to reduce lines.
 * Prefer comprehensions for simple transformations; use explicit loops when the logic becomes complex or harder to read.
-* Don't rely on implicit truthiness when None, False, 0, or "" have different meanings.
+* Avoid non-boolean truthiness: use explicit checks such as `is not None`, `len(items) > 0`, or `text != ""`, including in assertions and fallbacks. Direct boolean checks such as `if enabled:` are fine; avoid `value or default` for non-booleans.
 * Prefer early returns / guard clauses over nested if statements. Keep nesting shallow.
 * Keep the happy path unindented and easy to follow.
 * Avoid deeply nested logic and large functions with multiple levels of branching.
