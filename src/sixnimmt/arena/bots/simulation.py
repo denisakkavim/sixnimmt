@@ -2,9 +2,10 @@
 
 import hashlib
 import random
-from typing import Any
+from functools import partial
+from typing import TYPE_CHECKING, Any
 
-from sixnimmt.arena.bots.base import ActionBatch, Bot, Rejection
+from sixnimmt.arena.bots.base import ActionBatch, Bot, BotOptions, Rejection, ResolveStrategy, StrategyConstruction
 from sixnimmt.arena.bots.heuristics import applicable_row
 from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt.engine.views import MatchView
@@ -113,3 +114,30 @@ def _targets_full_row(card: int, view: MatchView) -> bool:
 
 def build_simulation(seed: int, **settings: Any) -> SimulationBot:
     return SimulationBot(seed, SimulationOptions.model_validate(settings))
+
+
+if TYPE_CHECKING:
+    from sixnimmt.arena.players import ResolvedPlayer
+
+
+def resolve_simulation(options: BotOptions, resolve: ResolveStrategy) -> StrategyConstruction:
+    if isinstance(options, ModelBasedBaitOptions):
+        delegate = resolve(options.fallback_strategy, options.fallback_options)
+        return StrategyConstruction(
+            partial(_build_resolved_bait, options=options, delegate=delegate),
+            delegate.deterministic,
+            {"fallback_metadata": delegate.metadata},
+            {"fallback_options": delegate.recorded_options},
+        )
+    if isinstance(options, SimulationOptions):
+        return StrategyConstruction(partial(_build_resolved_simulation, options=options), True)
+    msg = f"unsupported simulation options: {type(options).__name__}"
+    raise TypeError(msg)
+
+
+def _build_resolved_simulation(seed: int, *, options: SimulationOptions) -> SimulationBot:
+    return SimulationBot(seed, options.model_copy(deep=True))
+
+
+def _build_resolved_bait(seed: int, *, options: ModelBasedBaitOptions, delegate: "ResolvedPlayer") -> ModelBasedBaitBot:
+    return ModelBasedBaitBot(seed, options.model_copy(deep=True), delegate.build(seed))

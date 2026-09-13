@@ -13,6 +13,7 @@ from sixnimmt.arena.bots.composed import (
     CountThresholdBaitOptions,
     HandAwareRowChoiceBot,
     HandAwareRowChoiceOptions,
+    resolve_composed,
 )
 from sixnimmt.arena.bots.heuristics import (
     ClosestGapBot,
@@ -24,8 +25,8 @@ from sixnimmt.arena.bots.heuristics import (
     LowestFittingCardBot,
     RandomBot,
 )
-from sixnimmt.arena.bots.llm import LLMBot, LLMMemoryBot, LLMMemoryOptions, LLMOptions
-from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot, build_simulation
+from sixnimmt.arena.bots.llm import LLMBot, LLMMemoryBot, LLMMemoryOptions, LLMOptions, resolve_llm
+from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot, build_simulation, resolve_simulation
 from sixnimmt.arena.bots.uncertainty.options import ModelBasedBaitOptions, SimulationOptions
 
 __all__ = [
@@ -127,7 +128,12 @@ def build_model_based_bait(seed: int, **settings: Any) -> ModelBasedBaitBot:
 
 REGISTRY: dict[str, BotSpec] = {
     "simulation": BotSpec(
-        "simulation", build_simulation, True, {"strategy_id": "simulation", "version": "1"}, SimulationOptions
+        "simulation",
+        build_simulation,
+        True,
+        {"strategy_id": "simulation", "version": "1"},
+        SimulationOptions,
+        resolve_simulation,
     ),
     "model_based_bait": BotSpec(
         "model_based_bait",
@@ -135,6 +141,7 @@ REGISTRY: dict[str, BotSpec] = {
         False,
         {"strategy_id": "model_based_bait", "version": "1"},
         ModelBasedBaitOptions,
+        resolve_simulation,
     ),
     "hand_aware_row_choice": BotSpec(
         "hand_aware_row_choice",
@@ -142,6 +149,7 @@ REGISTRY: dict[str, BotSpec] = {
         False,
         {"strategy_id": "hand_aware_row_choice", "version": "1"},
         HandAwareRowChoiceOptions,
+        resolve_composed,
     ),
     "count_threshold_bait": BotSpec(
         "count_threshold_bait",
@@ -149,6 +157,7 @@ REGISTRY: dict[str, BotSpec] = {
         False,
         {"strategy_id": "count_threshold_bait", "version": "1"},
         CountThresholdBaitOptions,
+        resolve_composed,
     ),
     "controlled_burn": BotSpec(
         "controlled_burn",
@@ -156,6 +165,7 @@ REGISTRY: dict[str, BotSpec] = {
         False,
         {"strategy_id": "controlled_burn", "version": "1"},
         ControlledBurnOptions,
+        resolve_composed,
     ),
     "hand_flexibility": BotSpec(
         "hand_flexibility", _build_hand_flexibility, True, {"strategy_id": "hand_flexibility", "version": "1"}
@@ -170,9 +180,9 @@ REGISTRY: dict[str, BotSpec] = {
     "closest_gap": BotSpec("closest_gap", _build_closest_gap, True, {"strategy_id": "closest_gap", "version": "1"}),
     "highest_card": BotSpec("highest_card", _build_highest_card, True, {"strategy_id": "highest_card", "version": "1"}),
     "lowest_card": BotSpec("lowest_card", _build_lowest_card, True, {"strategy_id": "lowest_card", "version": "1"}),
-    "llm": BotSpec("llm", LLMBot, False, {"strategy_id": "llm", "version": "1"}, LLMOptions),
+    "llm": BotSpec("llm", LLMBot, False, {"strategy_id": "llm", "version": "1"}, LLMOptions, resolve_llm),
     "llm_memory": BotSpec(
-        "llm_memory", LLMMemoryBot, False, {"strategy_id": "llm_memory", "version": "1"}, LLMMemoryOptions
+        "llm_memory", LLMMemoryBot, False, {"strategy_id": "llm_memory", "version": "1"}, LLMMemoryOptions, resolve_llm
     ),
     "random": BotSpec("random", RandomBot, True, {"strategy_id": "random", "version": "2"}),
     "lowest_fitting_card": BotSpec(

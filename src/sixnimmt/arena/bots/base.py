@@ -2,13 +2,16 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, JsonValue
 
 from sixnimmt.engine.actions import Action
 from sixnimmt.engine.errors import ErrorCode
 from sixnimmt.engine.views import MatchView
+
+if TYPE_CHECKING:
+    from sixnimmt.arena.players import ResolvedPlayer
 
 
 class BotOptions(BaseModel):
@@ -81,3 +84,18 @@ class BotSpec:
     deterministic: bool
     metadata: dict[str, Any]
     options_model: type[BotOptions] = BotOptions
+    resolve: Callable[[BotOptions, "ResolveStrategy"], "StrategyConstruction"] | None = None
+
+
+class ResolveStrategy(Protocol):
+    def __call__(self, name: str, options: dict[str, JsonValue]) -> "ResolvedPlayer": ...
+
+
+@dataclass(frozen=True)
+class StrategyConstruction:
+    """A picklable factory with resolved delegate provenance."""
+
+    build: Callable[[int], Bot]
+    deterministic: bool
+    metadata: dict[str, Any] = field(default_factory=dict)
+    recorded_options: dict[str, Any] = field(default_factory=dict)

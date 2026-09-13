@@ -1,26 +1,14 @@
 """Per-seat bot configuration and validated construction settings."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from functools import partial
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
-from sixnimmt.arena.bots.base import Bot, BotSpec
-from sixnimmt.arena.bots.composed import (
-    CandidateRanking,
-    ControlledBurnBot,
-    ControlledBurnOptions,
-    CountThresholdBaitBot,
-    CountThresholdBaitOptions,
-    HandAwareRowChoiceBot,
-    HandAwareRowChoiceOptions,
-)
+from sixnimmt.arena.bots.base import Bot, BotOptions, BotSpec
 from sixnimmt.arena.bots.registry import REGISTRY
-from sixnimmt.arena.bots.simulation import ModelBasedBaitBot
-from sixnimmt.arena.bots.uncertainty.options import ModelBasedBaitOptions
 from sixnimmt.common.text import check_representable
 
 
@@ -45,8 +33,9 @@ class PlayerConfig(BaseModel):
 class ResolvedPlayer:
     config: PlayerConfig
     spec: BotSpec
-    options: dict[str, Any]
+    options: BotOptions
     recorded_options: dict[str, Any]
+    factory: Callable[[int], Bot] | None = None
 
     @property
     def name(self) -> str:
@@ -64,14 +53,9 @@ class ResolvedPlayer:
 
     def build(self, seed: int) -> Bot:
         # A factory may mutate a nested option; no other game or seat shares it.
-        return self.spec.build(seed, **deepcopy(self.options))
-
-
-def _build_controlled_burn(
-    seed: int, *, K: int, fallback_strategy: str, fallback_options: dict[str, Any], fallback: ResolvedPlayer
-) -> ControlledBurnBot:
-    # The resolved factory travels to process workers; their registry may differ.
-    return ControlledBurnBot(K, fallback.build(seed))
+        if self.factory is not None:
+            return self.factory(seed)
+        return self.spec.build(seed, **self.options.model_dump())
 
 
 def resolve_players(players: Sequence[PlayerConfig]) -> list[ResolvedPlayer]:
@@ -89,72 +73,18 @@ def resolve_players(players: Sequence[PlayerConfig]) -> list[ResolvedPlayer]:
         except ValueError as error:
             msg = f"invalid options for player {index + 1} ({player.bot}): {error}"
             raise ValueError(msg) from error
-        build_options = options.model_dump()
         recorded_options = options.model_dump(mode="json")
-        if isinstance(options, (ControlledBurnOptions, CountThresholdBaitOptions)):
-            fallback = resolve_players([PlayerConfig(bot=options.fallback_strategy, options=options.fallback_options)])[
-                0
-            ]
-            builder = (
-                _build_controlled_burn if isinstance(options, ControlledBurnOptions) else _build_count_threshold_bait
-            )
+        factory = None
+        if spec.resolve is not None:
+            construction = spec.resolve(options, _resolve_strategy)
+            factory = construction.build
             spec = replace(
-                spec,
-                build=partial(builder, fallback=fallback),
-                deterministic=fallback.deterministic,
-                metadata={**spec.metadata, "fallback_metadata": fallback.metadata},
+                spec, deterministic=construction.deterministic, metadata={**spec.metadata, **construction.metadata}
             )
-            recorded_options["fallback_options"] = fallback.recorded_options
-            build_options["fallback_options"] = fallback.options
-        elif isinstance(options, ModelBasedBaitOptions):
-            fallback = resolve_players([PlayerConfig(bot=options.fallback_strategy, options=options.fallback_options)])[
-                0
-            ]
-            spec = replace(
-                spec,
-                build=partial(_build_model_based_bait, fallback=fallback),
-                deterministic=fallback.deterministic,
-                metadata={**spec.metadata, "fallback_metadata": fallback.metadata},
-            )
-            recorded_options["fallback_options"] = fallback.recorded_options
-            build_options["fallback_options"] = fallback.options
-        elif isinstance(options, HandAwareRowChoiceOptions):
-            card_player = PlayerConfig(bot=options.card_strategy, options=options.card_options)
-            card_strategy = resolve_players([card_player])[0]
-            spec = replace(
-                spec,
-                build=partial(_build_hand_aware_row_choice, card_strategy_resolved=card_strategy),
-                deterministic=card_strategy.deterministic,
-                metadata={**spec.metadata, "card_strategy_metadata": card_strategy.metadata},
-            )
-            recorded_options["card_options"] = card_strategy.recorded_options
-            build_options["card_options"] = card_strategy.options
-        resolved.append(ResolvedPlayer(player.model_copy(deep=True), spec, build_options, recorded_options))
+            recorded_options.update(construction.recorded_options)
+        resolved.append(ResolvedPlayer(player.model_copy(deep=True), spec, options, recorded_options, factory))
     return resolved
 
 
-def _build_count_threshold_bait(
-    seed: int,
-    *,
-    intervening_card_threshold: int,
-    candidate_ranking: CandidateRanking,
-    fallback_strategy: str,
-    fallback_options: dict[str, Any],
-    fallback: ResolvedPlayer,
-) -> CountThresholdBaitBot:
-    return CountThresholdBaitBot(intervening_card_threshold, candidate_ranking, fallback.build(seed))
-
-
-def _build_hand_aware_row_choice(
-    seed: int,
-    *,
-    max_extra_penalty: int,
-    card_strategy: str,
-    card_options: dict[str, Any],
-    card_strategy_resolved: ResolvedPlayer,
-) -> HandAwareRowChoiceBot:
-    return HandAwareRowChoiceBot(max_extra_penalty, card_strategy_resolved.build(seed))
-
-
-def _build_model_based_bait(seed: int, *, fallback: ResolvedPlayer, **settings: Any) -> ModelBasedBaitBot:
-    return ModelBasedBaitBot(seed, ModelBasedBaitOptions.model_validate(settings), fallback.build(seed))
+def _resolve_strategy(name: str, options: dict[str, JsonValue]) -> ResolvedPlayer:
+    return resolve_players([PlayerConfig(bot=name, options=options)])[0]

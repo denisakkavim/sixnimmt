@@ -125,3 +125,8 @@ publish. See [Traces and replay](traces.md).
 Sources: [LLM options and adapter](../src/sixnimmt/arena/bots/llm.py),
 [memory adapter](../src/sixnimmt/arena/bots/llm.py), and
 [prompt/tool construction](../src/sixnimmt/arena/bots/llm.py).
+
+Python callers with validated `LLMOptions` or `LLMMemoryOptions` can pass them as
+`validated_options=` to the corresponding bot constructor. Supply either that
+model or option keywords. The constructor copies validated settings for the bot;
+registry resolution uses this path to avoid serializing and validating them again.

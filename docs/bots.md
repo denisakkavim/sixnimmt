@@ -288,3 +288,10 @@ The former individual bot modules and package-level implementation re-exports
 have been removed. Update Python imports using this table; registered strategy
 names and player JSON files are unchanged. Importing bot contracts no longer
 initializes the LLM client or numerical strategy catalogue.
+
+A `BotSpec` may provide a `resolve(options, resolve_strategy)` hook returning
+`StrategyConstruction`. The hook owns delegate selection and returns an importable,
+picklable factory, determinism, and additional provenance. The common player
+resolver owns lookup and input validation; it does not branch on built-in classes.
+Validated options remain typed until construction. Existing custom factories keep
+receiving `(seed, **options)`, with fresh option dictionaries for each game.

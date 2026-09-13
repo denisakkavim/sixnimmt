@@ -7,6 +7,7 @@ import json
 import os
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
+from functools import partial
 from time import monotonic
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -16,7 +17,7 @@ from openai import APIError, OpenAI
 from openai.types.chat import ChatCompletion
 from pydantic import Field, JsonValue, TypeAdapter, ValidationError, field_validator, model_validator
 
-from sixnimmt.arena.bots.base import ActionBatch, Bot, BotOptions, Rejection
+from sixnimmt.arena.bots.base import ActionBatch, Bot, BotOptions, Rejection, ResolveStrategy, StrategyConstruction
 from sixnimmt.common.text import check_representable
 from sixnimmt.engine.actions import Action
 from sixnimmt.engine.cards import bull_heads
@@ -373,8 +374,13 @@ def repair_feedback(response: ChatCompletion, error: Exception) -> str:
 
 
 class LLMBot(Bot):
-    def __init__(self, seed: int, **options: Any) -> None:
-        self.options = LLMOptions.model_validate(options)
+    def __init__(self, seed: int, *, validated_options: LLMOptions | None = None, **options: Any) -> None:
+        if validated_options is not None and len(options) > 0:
+            msg = "provide validated_options or option keywords, not both"
+            raise ValueError(msg)
+        self.options = (
+            LLMOptions.model_validate(options) if validated_options is None else validated_options.model_copy(deep=True)
+        )
         self._api_key = "unused"
         if self.options.api_key_env is not None:
             key = os.environ.get(self.options.api_key_env)
@@ -604,9 +610,12 @@ class LLMMemoryOptions(LLMOptions):
 
 
 class LLMMemoryBot(LLMBot):
-    def __init__(self, seed: int, **options: Any) -> None:
-        settings = LLMMemoryOptions.model_validate(options)
-        super().__init__(seed, **settings.model_dump(exclude={"memory_max_chars"}))
+    def __init__(self, seed: int, *, validated_options: LLMMemoryOptions | None = None, **options: Any) -> None:
+        if validated_options is not None and len(options) > 0:
+            msg = "provide validated_options or option keywords, not both"
+            raise ValueError(msg)
+        settings = LLMMemoryOptions.model_validate(options) if validated_options is None else validated_options
+        super().__init__(seed, validated_options=settings)
         self._memory_max_chars = settings.memory_max_chars
         self._identity: tuple[str, str] | None = None
         self._memory = ""
@@ -672,3 +681,16 @@ class LLMMemoryBot(LLMBot):
             self._identity = identity
             self._memory = ""
         return super().act(view, rejection)
+
+
+def resolve_llm(options: BotOptions, resolve: ResolveStrategy) -> StrategyConstruction:
+    if not isinstance(options, LLMOptions):
+        msg = "LLM construction requires LLM options"
+        raise TypeError(msg)
+    return StrategyConstruction(partial(_build_llm, options=options), False)
+
+
+def _build_llm(seed: int, *, options: LLMOptions) -> LLMBot:
+    if isinstance(options, LLMMemoryOptions):
+        return LLMMemoryBot(seed, validated_options=options)
+    return LLMBot(seed, validated_options=options)

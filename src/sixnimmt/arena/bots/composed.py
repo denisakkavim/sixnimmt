@@ -1,11 +1,12 @@
 """Composed bot implementations and their supporting types."""
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from functools import partial
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field, JsonValue
 
-from sixnimmt.arena.bots.base import ActionBatch, Bot, BotOptions, Rejection
+from sixnimmt.arena.bots.base import ActionBatch, Bot, BotOptions, Rejection, ResolveStrategy, StrategyConstruction
 from sixnimmt.arena.bots.heuristics import applicable_row, cheapest_row, currently_fits, row_penalty
 from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt.engine.cards import bull_heads
@@ -160,3 +161,40 @@ class HandAwareRowChoiceBot:
         if card_bot is None:
             raise AttributeError(name)
         return getattr(card_bot, name)
+
+
+if TYPE_CHECKING:
+    from sixnimmt.arena.players import ResolvedPlayer
+
+
+def resolve_composed(options: BotOptions, resolve: ResolveStrategy) -> StrategyConstruction:
+    if isinstance(options, HandAwareRowChoiceOptions):
+        delegate = resolve(options.card_strategy, options.card_options)
+        return StrategyConstruction(
+            partial(_build_hand_aware, options=options, delegate=delegate),
+            delegate.deterministic,
+            {"card_strategy_metadata": delegate.metadata},
+            {"card_options": delegate.recorded_options},
+        )
+    if isinstance(options, (ControlledBurnOptions, CountThresholdBaitOptions)):
+        delegate = resolve(options.fallback_strategy, options.fallback_options)
+        return StrategyConstruction(
+            partial(_build_bait, options=options, delegate=delegate),
+            delegate.deterministic,
+            {"fallback_metadata": delegate.metadata},
+            {"fallback_options": delegate.recorded_options},
+        )
+    msg = f"unsupported composed options: {type(options).__name__}"
+    raise TypeError(msg)
+
+
+def _build_hand_aware(seed: int, *, options: HandAwareRowChoiceOptions, delegate: "ResolvedPlayer") -> Bot:
+    return HandAwareRowChoiceBot(options.max_extra_penalty, delegate.build(seed))
+
+
+def _build_bait(
+    seed: int, *, options: ControlledBurnOptions | CountThresholdBaitOptions, delegate: "ResolvedPlayer"
+) -> Bot:
+    if isinstance(options, ControlledBurnOptions):
+        return ControlledBurnBot(options.K, delegate.build(seed))
+    return CountThresholdBaitBot(options.intervening_card_threshold, options.candidate_ranking, delegate.build(seed))
