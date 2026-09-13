@@ -12,6 +12,7 @@ trace. Then use the following guides:
 | [Using the Python package](python-api.md) | Installation in another project, runners, results, configuration, and direct engine control |
 | [Game rules and information](game-rules.md) | Cards, placement, scoring, communication, and what each player can see |
 | [Running arenas](arena.md) | Player files, Python API, CLI options, scheduling, limits, and outcomes |
+| [Evaluating bots](bot-evaluation.md) | Five experiments answering the agreed questions, with setups, metrics, result interpretation, and arena requirements |
 | [Writing bots](bots.md) | Bot contract, registration, rejection feedback, and atomic action batches |
 | [Strategy catalogue](strategy-families.md) | Baseline heuristics and proposed experimental strategies |
 | [Probabilistic gameplay model](uncertainty-model.md) | Uniform-deal priors, learned opponent policies and random-choice probabilities, posterior inference, and candidate evaluation |

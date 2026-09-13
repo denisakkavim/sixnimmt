@@ -1,5 +1,9 @@
 # Running arenas
 
+For designing strategy comparisons, see the [bot evaluation report](bot-evaluation.md).
+It defines experiments for the agreed evaluation questions, including each
+setup, its metrics, result interpretation, and required arena support.
+
 ## Player configuration
 
 The CLI reads a JSON array of two to ten player objects:
