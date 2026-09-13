@@ -11,6 +11,8 @@ from sixnimmt.engine.rules import (
     MatchProtocol,
     OnInvalidAction,
     PrivateMessageExistence,
+    protocol_from_recording,
+    rules_from_recording,
 )
 
 
@@ -102,7 +104,7 @@ def test_game_rules_rejects_a_shape_the_engine_does_not_play(field_name: str, va
     Accepting a different value would report a ruleset the match never plays.
     """
     with pytest.raises(ValidationError):
-        GameRules(**{field_name: value})
+        GameRules.model_validate({field_name: value})
 
 
 def test_game_rules_allows_a_target_score_the_engine_honours() -> None:
@@ -110,3 +112,35 @@ def test_game_rules_allows_a_target_score_the_engine_honours() -> None:
     rules = GameRules(target_score=30)
 
     assert rules.target_score == 30
+
+
+@pytest.mark.parametrize(
+    "model,settings", [(GameRules, {"target_socre": 30}), (InformationPolicy, {"private_message_existnce": "hidden"})]
+)
+def test_configuration_rejects_misspelled_settings(model, settings: dict) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        model.model_validate(settings)
+
+
+@pytest.mark.parametrize("target", [0, -1])
+def test_new_rules_require_a_positive_target(target: int) -> None:
+    with pytest.raises(ValidationError):
+        GameRules(target_score=target)
+
+
+def test_protocol_rejects_negative_message_length_but_accepts_zero() -> None:
+    with pytest.raises(ValidationError):
+        MatchProtocol(max_message_length=-1)
+    assert MatchProtocol(max_message_length=0).max_message_length == 0
+
+
+def test_recorded_configuration_keeps_historical_values() -> None:
+    assert rules_from_recording({"target_score": 0, "old_annotation": "kept in the log"}).target_score == 0
+    assert protocol_from_recording({"max_message_length": -1}).max_message_length == -1
+
+
+def test_recorded_configuration_retains_public_model_equality() -> None:
+    rules = GameRules(target_score=30)
+    protocol = MatchProtocol(max_message_length=73)
+    assert rules_from_recording(rules.model_dump()) == rules
+    assert protocol_from_recording(protocol.model_dump()) == protocol

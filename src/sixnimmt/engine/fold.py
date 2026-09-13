@@ -21,7 +21,7 @@ from sixnimmt.engine.events import (
     PrivateMessageOccurredEvent,
     RowTakenData,
 )
-from sixnimmt.engine.rules import GameRules, MatchProtocol
+from sixnimmt.engine.rules import MatchProtocol, protocol_from_recording, rules_from_recording
 from sixnimmt.engine.state import Phase
 from sixnimmt.engine.views import (
     MatchView,
@@ -98,8 +98,8 @@ def _seat(state: _Fold, player_id: str) -> _Seat:
 def _apply_match_created(state: _Fold, data: MatchCreatedData) -> None:
     rules = data.get("rules", {})
     protocol = data.get("protocol", {})
-    state.protocol = MatchProtocol.model_validate(protocol)
-    state.target_score = GameRules.model_validate(rules, extra="ignore").target_score
+    state.protocol = protocol_from_recording(protocol)
+    state.target_score = rules_from_recording(rules).target_score
     state.communication_enabled = state.protocol.communication_enabled
     state.anonymise_display_names = state.protocol.anonymise_display_names
     state.max_actions_per_play = state.protocol.max_actions_per_play

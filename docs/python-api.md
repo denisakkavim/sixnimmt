@@ -294,3 +294,17 @@ types. For example, constructing a `CardPlacedEvent` requires `card`, `row`, and
 `row_cards` in `data`; an empty payload raises a validation error immediately.
 Check an event's `type` before accessing specific payload fields. Serialized event
 structure is unchanged; see [event contracts](traces.md#event-payload-contracts).
+
+## Configuration validation
+
+New `GameRules` and `InformationPolicy` input rejects unknown keys. The published
+hand, deck, and row sizes are literal schema values, and a new target score must
+be positive. `max_message_length` must be nonnegative; zero allows only empty
+messages when communication is enabled. An irrelevant `hands` setting under
+score-based termination remains accepted for compatibility.
+
+Historical configuration is decoded through `rules_from_recording()` and
+`protocol_from_recording()`, which preserve older numeric values and tolerate
+unknown keys when folding logs. These readers are not experiment-input validators.
+Engine state transitions may use unchecked `model_copy(update=...)` after
+establishing invariants; changing external configuration requires validation.
