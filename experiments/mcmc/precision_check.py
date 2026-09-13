@@ -27,6 +27,8 @@ def main() -> None:
             "policies": ["highest_card", "lowest_card", "closest_gap"],
             "mode": case["mode"],
             "particle_count": 1,
+            "chain_count": 1,
+            "draw_interval": 1,
             "burn_in_steps": 1,
             "epsilon_proposal_scale": case["scale"],
         },

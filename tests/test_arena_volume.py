@@ -374,6 +374,8 @@ def test_uncertainty_matches_preserve_intermediate_invariants(
                 "policies": ["lowest_card", "highest_card", "random"],
                 "mode": ("single_policy", "fixed_mixture", "learned_mixture")[game % 3],
                 "particle_count": 2,
+                "chain_count": 2,
+                "draw_interval": 1,
                 "burn_in_steps": 4,
                 "epsilon_proposal_scale": 1.0,
             },

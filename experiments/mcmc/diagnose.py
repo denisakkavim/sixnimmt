@@ -140,7 +140,13 @@ def run_case(args: argparse.Namespace) -> None:
     if args.mode == "single_policy":
         policies = ["highest_card"]
     options = OpponentModelOptions(
-        policies=policies, mode=args.mode, particle_count=4, burn_in_steps=1, epsilon_proposal_scale=args.scale
+        policies=policies,
+        mode=args.mode,
+        particle_count=4,
+        chain_count=4,
+        draw_interval=1,
+        burn_in_steps=1,
+        epsilon_proposal_scale=args.scale,
     )
     posterior = OpponentModel(options)._posterior(history, view)
     rng = np.random.RandomState(args.seed + 100)

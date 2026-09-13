@@ -112,41 +112,130 @@ class LegalProposal:
         return proposed, np.zeros(len(proposed))
 
 
+class BatchedLegalProposal:
+    """Vectorised symmetric moves; emcee still owns MH acceptance."""
+
+    def __init__(self, deck_size: int, opponent_count: int, options: OpponentModelOptions) -> None:
+        self.deck_size = deck_size
+        self.opponent_count = opponent_count
+        self.options = options
+
+    def __call__(
+        self, coordinates: NDArray[np.float64], rng: np.random.RandomState
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        proposed = coordinates.copy()
+        count = len(proposed)
+        moves = rng.randint(3 if self.options.mode == "learned_mixture" else 2, size=count)
+        swaps = np.flatnonzero(moves == 0)
+        if self.deck_size >= 2:
+            first = rng.randint(self.deck_size, size=len(swaps))
+            second = rng.randint(self.deck_size - 1, size=len(swaps))
+            second += second >= first
+            proposed[swaps, first], proposed[swaps, second] = (
+                proposed[swaps, second].copy(),
+                proposed[swaps, first].copy(),
+            )
+        epsilon_moves = np.flatnonzero(moves == 1)
+        indices = self.deck_size + self.opponent_count + rng.randint(self.opponent_count, size=len(epsilon_moves))
+        proposed[epsilon_moves, indices] += rng.normal(
+            scale=self.options.epsilon_proposal_scale, size=len(epsilon_moves)
+        )
+        policy_moves = np.flatnonzero(moves == 2)
+        indices = self.deck_size + rng.randint(self.opponent_count, size=len(policy_moves))
+        proposed[policy_moves, indices] = rng.randint(len(self.options.policies), size=len(policy_moves))
+        return proposed, np.zeros(count)
+
+
 class OpponentModel:
     def __init__(self, options: OpponentModelOptions) -> None:
         self.options = options
         self.diagnostics: dict = {}
+        self._rankings: dict = {}
+        self._completed: dict[tuple[int, str], Features] = {}
+        self._previous: tuple[str, int, int, tuple[str, ...], list[World]] | None = None
 
     def infer(self, history: PublicHistory, view: MatchView, rng: random.Random) -> list[World]:
+        from .likelihood import BatchedPosterior
+
         posterior = self._posterior(history, view)
         # emcee owns a private RandomState; never seed NumPy's process-global RNG.
         sampling_rng = np.random.RandomState(rng.getrandbits(32))
-        positions = []
-        for _ in range(self.options.particle_count):
-            deck = sampling_rng.permutation(posterior.unseen)
-            policies = sampling_rng.randint(len(self.options.policies), size=len(posterior.opponent_ids))
-            epsilons = sampling_rng.uniform(np.nextafter(0.0, 1.0), 1.0, size=len(posterior.opponent_ids))
-            positions.append(np.concatenate((deck, policies, logit(epsilons))))
-        coordinates = np.asarray(positions, dtype=float)
-        proposal = LegalProposal(len(posterior.unseen), len(posterior.opponent_ids), self.options)
-        sampler = emcee.EnsembleSampler(
-            len(positions), coordinates.shape[1], posterior, moves=emcee.moves.MHMove(proposal)
-        )
-        sampler.random_state = sampling_rng.get_state()
-        # Independent MH proposals do not need the rank condition of stretch moves.
-        warmed = sampler.run_mcmc(coordinates, self.options.burn_in_steps, skip_initial_state_check=True, store=False)
-        # Discard warm-up entirely; retain one subsequent draw per chain.
-        final = sampler.run_mcmc(warmed, 1, skip_initial_state_check=True, store=False)
-        worlds = [posterior.world(row) for row in final.coords]
+        coordinates, reused = self._initial(posterior, view, sampling_rng)
+        observed = sum(len(hand.turns) for hand in history.hands.values())
+        if observed == 0:
+            # With no behavioural evidence the conditional legal-deal prior is
+            # the posterior. No Markov chain or burn-in is needed.
+            labels = coordinates[:, len(posterior.unseen) : len(posterior.unseen) + len(posterior.opponent_ids)]
+            coordinates = self._prior(posterior, sampling_rng, self.options.particle_count)
+            if self.options.mode == "fixed_mixture":
+                coordinates[:, len(posterior.unseen) : len(posterior.unseen) + len(posterior.opponent_ids)] = np.tile(
+                    labels, (self.options.particle_count // self.options.chain_count, 1)
+                )
+            worlds = [posterior.world(row) for row in coordinates]
+            endpoints = worlds[: self.options.chain_count]
+            method = "exact_prior"
+        else:
+            target = BatchedPosterior(posterior, self._rankings)
+            proposal = BatchedLegalProposal(len(posterior.unseen), len(posterior.opponent_ids), self.options)
+            sampler = emcee.EnsembleSampler(
+                len(coordinates), coordinates.shape[1], target, moves=emcee.moves.MHMove(proposal), vectorize=True
+            )
+            sampler.random_state = sampling_rng.get_state()
+            # Repaired previous worlds are warm starts, not posterior draws.
+            # Always run the configured burn-in against the full current target.
+            state = sampler.run_mcmc(
+                coordinates, self.options.burn_in_steps, skip_initial_state_check=True, store=False
+            )
+            worlds = []
+            for _ in range(self.options.particle_count // self.options.chain_count):
+                state = sampler.run_mcmc(state, self.options.draw_interval, skip_initial_state_check=True, store=False)
+                worlds.extend(posterior.world(row) for row in state.coords)
+            endpoints = [posterior.world(row) for row in state.coords]
+            method = "emcee_batched_mh"
+        self._previous = (view.match_id, view.hand_number, view.play_number, posterior.opponent_ids, endpoints)
         self.diagnostics = {
-            "method": "emcee_independent_mh",
+            "method": method,
             "particles": len(worlds),
-            "burn_in_steps": self.options.burn_in_steps,
-            "retained_draws_per_chain": 1,
-            "observed_plays": sum(len(hand.turns) for hand in history.hands.values()),
+            "chains": self.options.chain_count,
+            "burn_in_steps": 0 if observed == 0 else self.options.burn_in_steps,
+            "draw_interval": self.options.draw_interval,
+            "retained_draws_per_chain": self.options.particle_count // self.options.chain_count,
+            "warm_start": reused,
+            "observed_plays": observed,
             "opponents": _summaries(worlds, posterior.opponent_ids, self.options),
         }
         return worlds
+
+    def _prior(self, posterior: Posterior, rng: np.random.RandomState, count: int) -> NDArray[np.float64]:
+        positions = []
+        for _ in range(count):
+            deck = rng.permutation(posterior.unseen)
+            policies = rng.randint(len(self.options.policies), size=len(posterior.opponent_ids))
+            epsilons = rng.uniform(np.nextafter(0.0, 1.0), 1.0, size=len(posterior.opponent_ids))
+            positions.append(np.concatenate((deck, policies, logit(epsilons))))
+        return np.asarray(positions, dtype=float)
+
+    def _initial(
+        self, posterior: Posterior, view: MatchView, rng: np.random.RandomState
+    ) -> tuple[NDArray[np.float64], bool]:
+        coordinates = self._prior(posterior, rng, self.options.chain_count)
+        if self._previous is None:
+            return coordinates, False
+        match_id, hand, play, opponents, worlds = self._previous
+        if match_id != view.match_id or opponents != posterior.opponent_ids:
+            msg = "opponent inference state belongs to another match or player roster"
+            raise InferenceError(msg)
+        if (hand, play) >= (view.hand_number, view.play_number):
+            # Never initialise an earlier target from later evidence.
+            return coordinates, False
+        boundary = len(posterior.unseen)
+        count = len(opponents)
+        for index, world in enumerate(worlds):
+            coordinates[index, boundary : boundary + count] = world.policies
+            coordinates[index, boundary + count :] = logit(world.epsilons)
+            if hand == view.hand_number:
+                coordinates[index, :boundary] = _repair_deal(world, posterior, play - 1, rng)
+        return coordinates, True
 
     def _posterior(self, history: PublicHistory, view: MatchView) -> Posterior:
         current = history.current(view)
@@ -169,11 +258,33 @@ class OpponentModel:
             records: Features = ()
             for number, hand in sorted(history.hands.items()):
                 if number < view.hand_number:
-                    records += _features(hand, player.player_id, (), self.options)
+                    key = (number, player.player_id)
+                    if key not in self._completed:
+                        self._completed[key] = _features(hand, player.player_id, (), self.options)
+                    records += self._completed[key]
             past.append(records)
+        # Board rankings are needed only for the current hand.
+        if self._previous is not None and self._previous[1] != view.hand_number:
+            self._rankings.clear()
         return Posterior(
             current, tuple(player.player_id for player in opponents), tuple(past), sizes, unseen, self.options
         )
+
+
+def _repair_deal(world: World, posterior: Posterior, observed: int, rng: np.random.RandomState) -> list[int]:
+    """Construct a legal warm start, never an unweighted posterior update."""
+    piles = [list(hand) for hand in world.hands] + [list(world.undealt)]
+    for turn in posterior.current.turns[observed:]:
+        choices = dict(turn.choices)
+        for opponent, player_id in enumerate(posterior.opponent_ids):
+            revealed = choices[player_id]
+            owner = next(index for index, pile in enumerate(piles) if revealed in pile)
+            if owner != opponent:
+                slot = int(rng.randint(len(piles[opponent])))
+                source = piles[owner].index(revealed)
+                piles[owner][source], piles[opponent][slot] = piles[opponent][slot], revealed
+            piles[opponent].remove(revealed)
+    return [card for pile in piles for card in pile]
 
 
 def _partition(deck: list[int], sizes: tuple[int, ...]) -> tuple[tuple[tuple[int, ...], ...], tuple[int, ...]]:

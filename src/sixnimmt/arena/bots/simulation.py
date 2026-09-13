@@ -27,6 +27,7 @@ class SimulationBot:
         self.failures = 0
         self.last_error: str | None = None
         self.estimates: dict[str, float] = {}
+        self.last_evaluation: str | None = None
 
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action | ActionBatch:
         try:
@@ -34,6 +35,7 @@ class SimulationBot:
         except InferenceError as error:
             self.failures += 1
             self.last_error = str(error)
+            self.last_evaluation = "inference_recovery"
             return self.fallback.act(view, rejection)
 
     def _act(self, view: MatchView, rejection: Rejection | None) -> Action | ActionBatch:
@@ -50,6 +52,10 @@ class SimulationBot:
         key = (view.hand_number, view.play_number)
         if key == self.last_key and self.last_card in view.you.hand:
             return SelectCardAction(card=self.last_card)
+        if len(view.you.hand) == 1:
+            self.last_evaluation = "only_legal_card"
+            self.estimates = {}
+            return SelectCardAction(card=view.you.hand[0])
         action = self.evaluate(view, rejection)
         if isinstance(action, SelectCardAction):
             self.last_key, self.last_card = key, action.card
@@ -59,18 +65,24 @@ class SimulationBot:
         seed_bytes = f"{self.seed}:uncertainty:{view.hand_number}:{view.play_number}".encode()
         seed = int.from_bytes(hashlib.sha256(seed_bytes).digest()[:8], "big")
         rng = random.Random(seed)  # noqa: S311 -- private deterministic sampling
-        worlds = self.model.infer(self.history, view, rng)
+        self.estimates = {}
         fallback_card = None
         candidates = sorted(view.you.hand)
         if isinstance(self.options, ModelBasedBaitOptions):
             proposal = self.fallback.act(view, rejection)
             if not isinstance(proposal, SelectCardAction) or proposal.card not in view.you.hand:
+                self.last_evaluation = "fallback_proposal"
                 self.failures += 1
                 self.last_error = "bait fallback did not return a single legal card selection"
                 return proposal
             fallback_card = proposal.card
             candidates = [card for card in candidates if _targets_full_row(card, view)]
             candidates = sorted({*candidates, fallback_card})
+        if len(candidates) == 1:
+            self.last_evaluation = "only_candidate"
+            return SelectCardAction(card=candidates[0])
+        worlds = self.model.infer(self.history, view, rng)
+        self.last_evaluation = "simulation"
         samples: dict[int, list[int]] = {card: [] for card in candidates}
         for _ in range(self.options.sample_count):
             world = rng.choice(worlds)
@@ -87,6 +99,7 @@ class SimulationBot:
     def stats(self) -> dict:
         return {
             "model": self.model.diagnostics,
+            "evaluation": self.last_evaluation,
             "candidate_values": self.estimates,
             "recovery_count": self.failures,
             "last_recovery_reason": self.last_error,

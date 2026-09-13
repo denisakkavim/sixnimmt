@@ -67,6 +67,8 @@ def main() -> None:
         policies=policies,
         mode=case["mode"],
         particle_count=args.particles,
+        chain_count=args.particles,
+        draw_interval=1,
         burn_in_steps=1,
         epsilon_proposal_scale=case["scale"] if args.scale is None else args.scale,
     )

@@ -26,6 +26,8 @@ uv run sixnimmt arena --players-file examples/arena-uncertainty-players.json --g
 The example uses the exploratory settings from our
 [MCMC calibration report](../experiments/mcmc/REPORT.md): 5,000 burn-in proposals,
 64 retained worlds, 512 rollouts per candidate, and epsilon proposal scale 2.5.
+The explicit `chain_count` and `draw_interval` settings separate chain count from
+retained world count; see the [performance comparison](../experiments/performance/REPORT.md).
 These are starting settings for small-table experiments, not defaults or a
 convergence guarantee. Ten-player stress cases failed diagnostics even with much
 longer runs. Check stability before drawing conclusions about strategy strength.
@@ -38,6 +40,8 @@ The simulation player's options are:
     "policies": ["lowest_card", "highest_card", "closest_gap"],
     "mode": "learned_mixture",
     "particle_count": 64,
+    "chain_count": 64,
+    "draw_interval": 1,
     "burn_in_steps": 5000,
     "epsilon_proposal_scale": 2.5
   },
@@ -51,7 +55,9 @@ The simulation player's options are:
 }
 ```
 
-All fields above are required. `fallback_options` is optional and empty when
+All fields above are required. Older configurations must add `chain_count` and
+`draw_interval`; setting them to `particle_count` and `1` respectively preserves
+the old number of chains and retained draws. `fallback_options` is optional and empty when
 omitted; it supplies options for the explicitly named fallback. Unsupported
 policies, unknown keys, and invalid or missing parameters are rejected. Nested
 fallback settings are validated before arena workers start.
@@ -62,8 +68,10 @@ fallback settings are validated before arena workers start.
 | --- | --- |
 | `policies` | Nonempty list of distinct supported policies |
 | `mode` | `single_policy`, `fixed_mixture`, or `learned_mixture` |
-| `particle_count` | Positive number of independently initialised chains; retain one world per chain |
-| `burn_in_steps` | Positive number of discarded warm-up proposals per chain before one retained draw |
+| `particle_count` | Total retained worlds; must be a positive multiple of `chain_count` |
+| `chain_count` | Positive number of separately evolving MH chains |
+| `draw_interval` | Positive MH steps between retained draws, including the first draw after burn-in |
+| `burn_in_steps` | Positive discarded warm-up proposals per chain, on every inference with behavioural evidence |
 | `epsilon_proposal_scale` | Positive finite standard deviation of epsilon-logit proposals |
 
 The supported catalogue is `random`, `lowest_card`, `highest_card`,
@@ -105,17 +113,38 @@ accepts legal-deal proposals directly and provides a private sampler RNG, fittin
 concurrent arena execution without a global RNG lock. See also [PyMC compound sampling](https://www.pymc.io/projects/examples/en/latest/samplers/sampling_compound_step.html)
 and [particles SMC samplers](https://particles-sequential-monte-carlo-in-python.readthedocs.io/en/latest/notebooks/SMC_samplers_tutorial.html).
 
-This is bounded MCMC, not the weighted sequential filter outlined as another option
-in the model document. Each decision starts fresh chains and evaluates the entire
-history against the original priors. It does not treat the preceding finite sample
-as an exact prior or forget earlier hands. All burn-in states are discarded. One additional Metropolis–Hastings step supplies
-the retained draw per chain; each retained sample has equal rollout weight. Fixed-mixture mode deliberately retains fixed assignment weights.
+The likelihood is batched across chains and opponents. For each supported
+card-ranking policy, inference caches which alternative cards would outrank an
+observed selection on its original board. Completed-hand evidence is compressed
+into agreement counts by policy and hand size, so each proposal's likelihood work
+does not grow with the number of completed hands. `hand_flexibility` depends on the
+whole hand; it uses the original exact policy kernel with a per-inference hand cache.
+Only changed opponent components are reevaluated. The scalar target remains as a
+reference for correctness tests and diagnostic experiments.
+
+With no behavioural observations, the legal-deal prior is the posterior and worlds
+are drawn directly, without MCMC. Otherwise, the model reuses previous chain endpoints
+as warm starts. Within a hand, newly revealed cards are swapped into their observed
+owners' hands and removed; a new hand draws fresh legal cards while retaining
+behavioural parameters. This repair is **not** an exact posterior update. Every
+inference still runs the full configured burn-in against the full accumulated
+likelihood and original priors. Earlier evidence is neither lost nor counted twice.
+No stale hand is used as a rollout world.
+
+After warm-up each chain contributes `particle_count / chain_count` equally weighted
+worlds, separated by `draw_interval` MH steps. Fixed-mixture mode preserves each
+chain's policy assignment and equal weight. More draws from fewer chains can reduce
+work, but the draws are correlated; `particle_count` is not effective sample size,
+and spacing draws does not guarantee independence. Use `chain_count = particle_count`
+and `draw_interval = 1` to retain one world from each chain.
 
 An explicit burn-in phase does not establish convergence. Small budgets can leave
-substantial initialisation bias. More particles do not
-substitute for sufficient movement of each chain. The implementation does not claim
-convergence or compute MCMC effective sample size from these terminal samples.
-Epsilon intervals are empirical posterior approximations.
+substantial initialisation bias; warm starts also need mixing after a surprising
+reveal. The bot does not compute MCMC effective sample size from retained worlds.
+Epsilon intervals are empirical posterior approximations. The
+[calibration report](../experiments/mcmc/REPORT.md) describes remaining slow-mixing
+cases; the [performance report](../experiments/performance/REPORT.md) distinguishes
+speed improvements from sampling-quality changes.
 
 ## Evaluation and continuation
 
@@ -158,13 +187,18 @@ All objectives use accumulated penalties over the horizon, excluding prior point
 settings remain explicit, including the unused continuation policy. If its fallback
 returns a batch or anything other than one legal card proposal, it passes that
 proposal through and records recovery. It never drops batch memory/messages or
-calls the fallback twice to obtain the same proposal.
+calls the fallback twice to obtain the same proposal. When the fallback is the only
+candidate, bait returns it without inference or rollouts. Both bots also return a
+sole legal card immediately. Public history is still accumulated on these turns.
 
 ## Diagnostics and limits
 
 Bot statistics include inference method and budgets, observed-play count, empirical
 policy weights per opponent, epsilon means and central 90% intervals, latest candidate
-values, and recovery counts/reasons. The normal bot-statistics trace mechanism
+values, and recovery counts/reasons. Chain count, draw interval, and whether a warm
+start was used are reported. `evaluation` identifies simulation, a sole card or
+candidate, or fallback recovery. Model diagnostics describe the last inference;
+skipped decisions clear candidate values but retain those earlier model diagnostics. The normal bot-statistics trace mechanism
 records these values.
 
 Missing or inconsistent history triggers the configured fallback and a diagnostic.

@@ -22,11 +22,16 @@ class OpponentModelOptions(BotOptions):
     policies: list[PolicyName] = Field(min_length=1)
     mode: Literal["single_policy", "fixed_mixture", "learned_mixture"]
     particle_count: int = Field(gt=0)
+    chain_count: int = Field(gt=0)
+    draw_interval: int = Field(gt=0)
     burn_in_steps: int = Field(gt=0)
     epsilon_proposal_scale: float = Field(gt=0, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_catalogue(self) -> Self:
+        if self.particle_count % self.chain_count != 0:
+            msg = "particle_count must be a multiple of chain_count"
+            raise ValueError(msg)
         if len(set(self.policies)) != len(self.policies):
             msg = "opponent policies must be distinct"
             raise ValueError(msg)
