@@ -288,3 +288,9 @@ below the requested number of games.
 | `sixnimmt.persistence.sink` | Log readers and sinks |
 | `sixnimmt.engine.replay.replay_events` | Rebuild recorded state |
 | `sixnimmt.analytics.summary.summarise` | Derive per-match metrics |
+
+Event payloads are Pydantic-validated dictionaries with event-specific `TypedDict`
+types. For example, constructing a `CardPlacedEvent` requires `card`, `row`, and
+`row_cards` in `data`; an empty payload raises a validation error immediately.
+Check an event's `type` before accessing specific payload fields. Serialized event
+structure is unchanged; see [event contracts](traces.md#event-payload-contracts).

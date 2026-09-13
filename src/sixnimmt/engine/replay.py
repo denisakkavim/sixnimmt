@@ -20,7 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from sixnimmt.engine.cards import full_deck
-from sixnimmt.engine.events import Event
+from sixnimmt.engine.events import Event, MatchCreatedEvent
 from sixnimmt.engine.state import (
     MatchState,
     Phase,
@@ -100,7 +100,7 @@ def _seat(replay: _Replay, player_id: str) -> _Seat:
     return replay.seats[player_id]
 
 
-def _apply_match_created(replay: _Replay, event: Event) -> None:
+def _apply_match_created(replay: _Replay, event: MatchCreatedEvent) -> None:
     """Seat the players; the admin copy is the one that carries their metadata.
 
     Both copies name the same seats in the same order, so either establishes
@@ -182,56 +182,74 @@ def _end_hand(replay: _Replay, totals: dict[str, int]) -> None:
 
 
 def _apply(replay: _Replay, event: Event) -> None:  # noqa: C901
-    data = event.data
     match event.type:
         case "match_created":
+            data = event.data
             replay.match_id = event.match_id
             _apply_match_created(replay, event)
         case "match_seed_assigned":
+            data = event.data
             replay.match_seed = data["match_seed"]
         case "hand_started":
+            data = event.data
             _start_hand(replay, data["hand_number"])
         case "cards_dealt":
+            data = event.data
             seat = _seat(replay, data["player_id"])
             seat.hand = list(data["hand"])
             replay.dealt_this_hand.extend(data["hand"])
         case "rows_initialised":
+            data = event.data
             _initialise_rows(replay, data["rows"])
         case "play_started":
+            data = event.data
             _start_play(replay, data["play"])
         case "selection_made":
+            data = event.data
             seat = _seat(replay, data["player_id"])
             seat.selection = data["card"]
             if not replay.explicit_counts:
                 seat.actions_taken_this_play += 1
         case "action_counted":
+            data = event.data
             _seat(replay, data["player_id"]).actions_taken_this_play = data["actions_taken_this_play"]
         case "selection_cleared":
+            data = event.data
             _seat(replay, data["player_id"]).selection = None
         case "player_committed":
+            data = event.data
             _seat(replay, data["player_id"]).committed = True
         case "player_uncommitted":
+            data = event.data
             _seat(replay, data["player_id"]).committed = False
         case "cards_revealed":
+            data = event.data
             _reveal(replay, data["selections"])
         case "card_placed":
+            data = event.data
             _place_card(replay, data["row"], data["row_cards"])
         case "row_taken":
+            data = event.data
             _take_row(replay, data["player_id"], data["captured"], data["heads"])
         case "row_choice_required":
+            data = event.data
             replay.phase = Phase.AWAITING_ROW_CHOICE
             if replay.resolution is not None:
                 replay.resolution = replay.resolution.model_copy(update={"awaiting_player": data["player_id"]})
         case "row_choice_made":
+            data = event.data
             replay.phase = Phase.RESOLVING
             if replay.resolution is not None:
                 replay.resolution = replay.resolution.model_copy(update={"awaiting_player": None})
         case "hand_ended":
+            data = event.data
             _end_hand(replay, data["totals"])
         case "match_ended":
+            data = event.data
             replay.phase = Phase.FINISHED
             replay.winners = list(data["winners"])
         case "match_abandoned":
+            data = event.data
             # An application lifecycle event, not a game one: it ends the match
             # without moving it through a phase the engine would recognise.
             replay.abandoned = True

@@ -32,7 +32,11 @@ def test_revealed_players_and_placement_progress_are_available_to_every_viewer(v
     cards = before.play_history[-1].cards
     assert [(card.player_id, card.card, card.row_index) for card in cards] == [("b", 1, None), ("a", 80, None)]
     folder.apply([
-        RowTakenEvent(match_id="history", audience="public", data={"player_id": "b", "captured": [11, 22]}),
+        RowTakenEvent(
+            match_id="history",
+            audience="public",
+            data={"player_id": "b", "captured": [11, 22], "row": 2, "heads": 10, "reason": "too_low"},
+        ),
         CardPlacedEvent(match_id="history", audience="public", data={"card": 1, "row": 2, "row_cards": [1]}),
     ])
     cards = folder.view().play_history[-1].cards
@@ -104,7 +108,7 @@ def test_message_history_retains_only_authorized_information_across_plays(existe
     folder = ViewFolder(viewer)
     folder.apply(events)
     folder.apply(messages)
-    folder.apply([PlayStartedEvent(match_id="history", audience="public", data={"play": 2})])
+    folder.apply([PlayStartedEvent(match_id="history", audience="public", data={"hand": 1, "play": 2})])
     view = folder.view()
     assert view.messages == ()
     assert view.private_messages_observed == ()
@@ -135,7 +139,9 @@ def test_message_history_is_bounded_across_play_resets() -> None:
         state, messages = transition(
             state, "b", SendMessageAction(visibility="table", body=str(index)), protocol, GameRules()
         )
-        folder.apply([PlayStartedEvent(match_id="history", audience="public", data={"play": 1 + index % 10})])
+        folder.apply([
+            PlayStartedEvent(match_id="history", audience="public", data={"hand": 1, "play": 1 + index % 10})
+        ])
         folder.apply(messages)
     history = folder.view().message_history
     assert len(history) == MAX_VIEW_MESSAGES

@@ -19,7 +19,7 @@ from sixnimmt.arena.runner import derive_seed, run_match
 from sixnimmt.engine.actions import Action, SelectCardAction, SendMessageAction
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.cards import bull_heads
-from sixnimmt.engine.events import Event
+from sixnimmt.engine.events import CardPlacedEvent, CardsRevealedEvent, Event, HandEndedEvent, RowTakenEvent
 from sixnimmt.engine.fold import ViewFolder
 from sixnimmt.engine.replay import replay_events
 from sixnimmt.engine.rules import MatchProtocol
@@ -70,7 +70,7 @@ class MatchLedger:
             assert 1 <= len(row) <= 5
             assert all(left < right for left, right in pairwise(row))
 
-    def _take_row(self, event: Event) -> None:
+    def _take_row(self, event: RowTakenEvent) -> None:
         data = event.data
         row = data["row"]
         captured = data["captured"]
@@ -94,7 +94,7 @@ class MatchLedger:
         # row_taken precedes card_placed; the replacement is still pending here.
         self._check_cards()
 
-    def _place_card(self, event: Event) -> None:
+    def _place_card(self, event: CardPlacedEvent) -> None:
         data = event.data
         card, row = data["card"], data["row"]
         assert card == self.pending[0]
@@ -118,7 +118,7 @@ class MatchLedger:
         self._check_rows()
         self._check_cards()
 
-    def _end_hand(self, event: Event) -> None:
+    def _end_hand(self, event: HandEndedEvent) -> None:
         assert self.completed_plays == 10
         assert all(hand == [] for hand in self.hands.values())
         assert self.pending == []
@@ -132,9 +132,9 @@ class MatchLedger:
         self.completed_hands += 1
 
     def _deal(self, event: Event) -> None:
-        data = event.data
         match event.type:
             case "hand_started":
+                data = event.data
                 assert all(score < 66 for score in self.totals.values())
                 assert event.hand == self.completed_hands + 1
                 self.hands = {}
@@ -142,10 +142,12 @@ class MatchLedger:
                 self.pending = []
                 self.completed_plays = 0
             case "cards_dealt":
+                data = event.data
                 assert event.audience == f"player:{data['player_id']}"
                 self.hands[data["player_id"]] = list(data["hand"])
                 assert len(data["hand"]) == 10
             case "rows_initialised":
+                data = event.data
                 self.rows = [list(row) for row in data["rows"]]
                 used = {card for cards in self.hands.values() for card in cards}
                 used.update(card for row in self.rows for card in row)
@@ -154,7 +156,7 @@ class MatchLedger:
                 self._check_rows()
                 self._check_cards()
 
-    def _reveal(self, event: Event) -> None:
+    def _reveal(self, event: CardsRevealedEvent) -> None:
         assert self.pending == []
         selections = event.data["selections"]
         assert set(selections) == set(self.ids)
@@ -166,19 +168,22 @@ class MatchLedger:
         self._check_cards()
 
     def _fold(self, event: Event) -> None:
-        data = event.data
         match event.type:
             case "hand_started" | "cards_dealt" | "rows_initialised":
                 self._deal(event)
             case "play_started":
+                data = event.data
                 assert event.play == self.completed_plays + 1
                 self.choices_this_play = 0
                 self.play_scores = {player: sum(bull_heads(card) for card in self.piles[player]) for player in self.ids}
             case "cards_revealed":
+                data = event.data
                 self._reveal(event)
             case "row_taken":
+                data = event.data
                 self._take_row(event)
             case "row_choice_required":
+                data = event.data
                 assert event.audience == "public"
                 assert data["card"] == self.pending[0]
                 # Only the lowest card of a play can be too low for every row:
@@ -189,8 +194,10 @@ class MatchLedger:
                 assert self.choices_this_play == 1
                 self.row_choices += 1
             case "card_placed":
+                data = event.data
                 self._place_card(event)
             case "play_ended":
+                data = event.data
                 assert self.pending == []
                 penalties = {
                     player: sum(bull_heads(card) for card in self.piles[player]) - self.play_scores[player]
@@ -201,8 +208,10 @@ class MatchLedger:
                 self.completed_plays += 1
                 assert all(len(hand) == 10 - self.completed_plays for hand in self.hands.values())
             case "hand_ended":
+                data = event.data
                 self._end_hand(event)
             case "match_ended":
+                data = event.data
                 assert max(self.totals.values()) >= 66
                 assert data["totals"] == self.totals
                 self.winners = tuple(

@@ -82,7 +82,11 @@ class _Match:
     def finish(self, outcome: MatchOutcome, ended_by: str | None = None, reason: str | None = None) -> MatchResult:
         winners: tuple[str, ...] = ()
         if outcome == MatchOutcome.FINISHED:
-            winners = tuple(self.events[-1].data["winners"])
+            final_event = self.events[-1]
+            if final_event.type != "match_ended":
+                msg = "finished match requires a match_ended event"
+                raise ArenaError(msg)
+            winners = tuple(final_event.data["winners"])
         else:
             self.append([
                 # Exception details may contain private observations. Keep them

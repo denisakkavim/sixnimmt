@@ -12,8 +12,16 @@ from dataclasses import dataclass, field
 
 from sixnimmt.engine.audience import Viewer, addressed_player, visible_events
 from sixnimmt.engine.cards import bull_heads
-from sixnimmt.engine.events import Event
-from sixnimmt.engine.rules import MatchProtocol
+from sixnimmt.engine.events import (
+    CardPlacedData,
+    CardsRevealedData,
+    Event,
+    MatchCreatedData,
+    MessageSentEvent,
+    PrivateMessageOccurredEvent,
+    RowTakenData,
+)
+from sixnimmt.engine.rules import GameRules, MatchProtocol
 from sixnimmt.engine.state import Phase
 from sixnimmt.engine.views import (
     MatchView,
@@ -87,14 +95,14 @@ def _seat(state: _Fold, player_id: str) -> _Seat:
     return state.seats[player_id]
 
 
-def _apply_match_created(state: _Fold, data: dict) -> None:
+def _apply_match_created(state: _Fold, data: MatchCreatedData) -> None:
     rules = data.get("rules", {})
     protocol = data.get("protocol", {})
     state.protocol = MatchProtocol.model_validate(protocol)
-    state.target_score = rules.get("target_score", state.target_score)
-    state.communication_enabled = protocol.get("communication_enabled", False)
-    state.anonymise_display_names = protocol.get("anonymise_display_names", False)
-    state.max_actions_per_play = protocol.get("max_actions_per_play")
+    state.target_score = GameRules.model_validate(rules, extra="ignore").target_score
+    state.communication_enabled = state.protocol.communication_enabled
+    state.anonymise_display_names = state.protocol.anonymise_display_names
+    state.max_actions_per_play = state.protocol.max_actions_per_play
     for entry in data.get("players", []):
         seat = _seat(state, entry["player_id"])
         seat.display_name = entry.get("display_name") or entry["player_id"]
@@ -146,7 +154,7 @@ def _bank_hand(state: _Fold, totals: dict[str, int]) -> None:
         seat.committed = False
 
 
-def _apply_reveal(state: _Fold, data: dict) -> None:
+def _apply_reveal(state: _Fold, data: CardsRevealedData) -> None:
     selections = data["selections"]
     state.phase = Phase.RESOLVING
     state.revealed_this_hand.append(tuple(sorted(selections.values())))
@@ -170,7 +178,7 @@ def _apply_reveal(state: _Fold, data: dict) -> None:
     state.own_selection = None
 
 
-def _record_placement(state: _Fold, data: dict) -> None:
+def _record_placement(state: _Fold, data: CardPlacedData) -> None:
     if not state.play_history:
         return
     play = state.play_history[-1]
@@ -180,7 +188,7 @@ def _record_placement(state: _Fold, data: dict) -> None:
     state.play_history[-1] = play.model_copy(update={"cards": cards})
 
 
-def _record_capture(state: _Fold, data: dict) -> None:
+def _record_capture(state: _Fold, data: RowTakenData) -> None:
     if not state.play_history:
         return
     play = state.play_history[-1]
@@ -191,11 +199,11 @@ def _record_capture(state: _Fold, data: dict) -> None:
     state.play_history[-1] = play.model_copy(update={"cards": cards})
 
 
-def _apply_message(state: _Fold, event: Event, viewer: Viewer) -> None:
-    data = event.data
+def _apply_message(state: _Fold, event: MessageSentEvent | PrivateMessageOccurredEvent, viewer: Viewer) -> None:
     omniscient = viewer.role in (ViewRole.ADMIN, ViewRole.OMNISCIENT_OBSERVER)
     entry: MessageView | PrivateMessageView
     if event.type == "message_sent":
+        data = event.data
         if data["visibility"] == "direct":
             # Self-DMs are rejected by the engine so only one copy matches.
             recipient = data["from"] if omniscient else viewer.player_id
@@ -205,6 +213,7 @@ def _apply_message(state: _Fold, event: Event, viewer: Viewer) -> None:
             from_player=data["from"], to_player=data.get("to"), visibility=data["visibility"], body=data["body"]
         )
     else:
+        data = event.data
         if omniscient or (viewer.role == ViewRole.PLAYER and viewer.player_id in (data["from"], data["to"])):
             return
         entry = PrivateMessageView(from_player=data["from"], to_player=data["to"])
@@ -216,67 +225,86 @@ def _apply_message(state: _Fold, event: Event, viewer: Viewer) -> None:
 
 
 def _apply(state: _Fold, event: Event, viewer: Viewer) -> None:  # noqa: C901
-    data = event.data
     match event.type:
         case "match_created":
+            data = event.data
             state.match_id = event.match_id
             _apply_match_created(state, data)
         case "match_started":
+            data = event.data
             state.status = "in_progress"
         case "hand_started":
+            data = event.data
             _start_hand(state, data["hand_number"])
         case "cards_dealt":
+            data = event.data
             state.own_hand = list(data["hand"])
             _seat(state, data["player_id"]).cards_in_hand = len(data["hand"])
         case "rows_initialised":
+            data = event.data
             state.rows = [list(row) for row in data["rows"]]
         case "play_started":
+            data = event.data
             _start_play(state, data["play"])
         case "selection_made":
+            data = event.data
             state.own_selection = data["card"]
             if not state.explicit_counts:
                 state.own_actions += 1
         case "action_counted":
+            data = event.data
             if data["player_id"] == viewer.player_id:
                 state.own_actions = data["actions_taken_this_play"]
                 state.own_remaining = data["actions_remaining_this_play"]
         case "message_sent" | "private_message_occurred":
             _apply_message(state, event, viewer)
         case "selection_registered":
+            data = event.data
             _seat(state, data["player_id"]).has_selection = True
         case "selection_cleared":
+            data = event.data
             _seat(state, data["player_id"]).has_selection = False
             # A replacement re-sets this from the selection_made that follows;
             # an uncommit does not, and must not leave a stale card behind.
             if data["player_id"] == viewer.player_id:
                 state.own_selection = None
         case "player_committed":
+            data = event.data
             _seat(state, data["player_id"]).committed = True
         case "player_uncommitted":
+            data = event.data
             _seat(state, data["player_id"]).committed = False
         case "cards_revealed":
+            data = event.data
             _apply_reveal(state, data)
         case "card_placed":
+            data = event.data
             state.rows[data["row"]] = list(data["row_cards"])
             _record_placement(state, data)
         case "row_taken":
+            data = event.data
             _seat(state, data["player_id"]).penalty_cards.extend(data["captured"])
             _record_capture(state, data)
         case "row_choice_required":
+            data = event.data
             state.phase = Phase.AWAITING_ROW_CHOICE
             state.awaiting = data["player_id"]
             state.awaiting_card = data["card"]
         case "row_choice_made":
+            data = event.data
             state.phase = Phase.RESOLVING
             state.awaiting = None
             state.awaiting_card = None
         case "hand_ended":
+            data = event.data
             _bank_hand(state, data["totals"])
         case "match_ended":
+            data = event.data
             state.status = "finished"
             state.phase = Phase.FINISHED
             state.winners = list(data["winners"])
         case "match_abandoned":
+            data = event.data
             state.status = "abandoned"
             state.phase = Phase.FINISHED
         case _:

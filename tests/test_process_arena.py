@@ -345,7 +345,9 @@ def test_process_volume_matches_thread_results_and_replays(tmp_path: Path, commu
         replay = replay_events(events)
         assert replay.state.phase == Phase.FINISHED
         assert replay.state.hand_number == 3
-        assert tuple(events[-1].data["winners"]) == tuple(entry["winners"])
+        final_event = events[-1]
+        assert final_event.type == "match_ended"
+        assert tuple(final_event.data["winners"]) == tuple(entry["winners"])
         for index, player in enumerate(replay.state.players):
             replay_scores[index] += player.total_score
     assert replay_scores == [player.total_score for player in parallel.players]

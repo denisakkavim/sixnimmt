@@ -25,7 +25,7 @@ ADMIN = Viewer(role=ViewRole.ADMIN)
 
 
 def _event(audience: str) -> Event:
-    return PlayStartedEvent(match_id="m_01", audience=audience, data={})
+    return PlayStartedEvent(match_id="m_01", audience=audience, data={"hand": 1, "play": 1})
 
 
 def _full_match_events(player_ids: list[str], match_seed: int = 12345) -> list[Event]:

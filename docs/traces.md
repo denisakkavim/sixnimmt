@@ -139,3 +139,19 @@ at least one earlier record is valid. A valid final record needs no newline.
 Complete schema errors (including unknown event types), ambiguous syntax errors,
 and invalid middle records raise `LogRecordError` with the path and physical line
 number. An entirely unreadable file also raises.
+
+## Event payload contracts
+
+Each event's `data` has a concrete `TypedDict` schema validated by Pydantic when
+an event is constructed or read. Required fields and their types are checked
+before replay or view folding. Payloads remain dictionaries, and the serialized
+envelope and `data` nesting are unchanged. Narrow on `event.type` before accessing
+its event-specific keys. Payload keys outside the declared schema are rejected;
+opaque agent metadata uses JSON values.
+
+Public match creation rejects agent metadata, and public abandonment contains no
+diagnostics. Privileged abandonment requires its outcome, actor, and reason fields.
+Top-level annotations such as `player_display_names` remain readable and are not
+part of authoritative payloads. Existing unversioned fixtures remain supported;
+older logs without action-count events retain their documented counting behavior.
+Synthetic events in Python must now provide their complete payloads.

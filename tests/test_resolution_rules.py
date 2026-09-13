@@ -72,6 +72,7 @@ def test_sixth_card_captures_the_full_row() -> None:
     assert alice.score_this_hand == sum(bull_heads(card) for card in (23, 25, 30, 41, 44)) == 12
     assert [event.type for event in events] == ["row_taken", "card_placed"]
     taken = events[0]
+    assert taken.type == "row_taken"
     assert taken.data["reason"] == "sixth_card"
     assert taken.data["heads"] == 12
 
@@ -105,7 +106,9 @@ def test_choice_captures_any_length_row_and_resumes() -> None:
     assert new_state.phase == Phase.RESOLVING
     assert new_state.resolution is not None and new_state.resolution.awaiting_player is None
     assert [event.type for event in events] == ["row_choice_made", "row_taken", "card_placed"]
-    assert events[1].data["reason"] == "too_low"
+    taken = events[1]
+    assert taken.type == "row_taken"
+    assert taken.data["reason"] == "too_low"
 
 
 @pytest.mark.parametrize("chosen_row", [0, 1, 2, 3])

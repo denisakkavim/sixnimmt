@@ -194,7 +194,9 @@ def test_cap_combines_content_and_occurrences_and_resets_next_play() -> None:
         assert [message.body for message in view.messages] == [str(index) for index in range(6, 105, 2)]
         assert len(view.private_messages_observed) == 50
         assert view.messages_omitted == 5
-        reset = build_view([*log, PlayStartedEvent(match_id="m", audience="public", data={"play": 2})], viewer)
+        reset = build_view(
+            [*log, PlayStartedEvent(match_id="m", audience="public", data={"hand": 1, "play": 2})], viewer
+        )
         assert reset.messages == reset.private_messages_observed == ()
         assert reset.messages_omitted == 0
 
@@ -297,7 +299,9 @@ def test_message_length_counts_unicode_code_points(body: str, accepted: bool) ->
     action = SendMessageAction(visibility="table", body=body)
     if accepted:
         _, events = transition(state, "alice", action, protocol, RULES)
-        assert events[-1].data["body"] == body
+        message = events[-1]
+        assert message.type == "message_sent"
+        assert message.data["body"] == body
     else:
         with pytest.raises(EngineRejection) as rejected:
             transition(state, "alice", action, protocol, RULES)
