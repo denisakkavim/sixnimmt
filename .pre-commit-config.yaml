@@ -29,6 +29,6 @@ repos:
         # locked dev environment rather than an isolated pre-commit one.
         entry: uv run ty check
         language: system
-        types_or: [python, pyi]
+        files: '\.(py|pyi)$|(^|/)(pyproject\.toml|uv\.lock)$'
         pass_filenames: false
         require_serial: true

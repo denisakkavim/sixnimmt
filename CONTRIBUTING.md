@@ -93,3 +93,10 @@ The pull request should explain the problem, resulting behavior, and validation
 performed, including whether volume tests ran. Mention compatibility changes and
 any remaining limitations. Code, tests, comments, and commit messages should be
 understandable without historical planning documents.
+
+Ruff and `ty` are the project's lint/type-checking stack. The locked `ty` version
+reports `redundant-condition` as an error, so provably constant conditions such as
+an uncalled function block pre-commit and CI checks. Tuple conditions/assertions
+and unsupported boolean conversions are also checked. Ordinary collection/string
+truthiness is still valid to these tools and requires review against `AGENTS.md`.
+Do not enable rules such as Ruff `PLC1901` that encourage implicit truthiness.
