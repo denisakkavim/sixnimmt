@@ -2,7 +2,7 @@
 
 import json
 import os
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -278,31 +278,41 @@ def action_log_path(directory: Path, match_id: str) -> Path:
     return directory / f"{match_id}.actions.jsonl"
 
 
-def _lines(path: Path) -> Iterator[str]:
-    for line in committed_text(path).splitlines():
-        if line.strip():
-            yield line
+class LogRecordError(ValueError):
+    """A corrupt record, identified by file and physical line."""
+
+
+def _incomplete_json(error: json.JSONDecodeError, line: str) -> bool:
+    # Only recover EOF inside a token/container. Other syntax errors are corruption,
+    # even on the last line. A newline is evidence the writer completed the record.
+    if line.endswith(("\n", "\r")):
+        return False
+    return error.msg.startswith("Unterminated string") or error.pos >= len(line.rstrip())
 
 
 def _parse_log(path: Path, parse: Callable[[str], Any]) -> list[Any]:
-    """Every record in a log, discarding a final line a crash left half-written.
+    """Read committed records; recover only an incomplete final JSON write.
 
-    A batch is written and forced to disk in one call, so the only line that can
-    be incomplete is the last, left by a crash mid-write. Dropping that one is
-    recovery. An unreadable line anywhere earlier is real corruption, and a file
-    whose every line is unreadable is not a match log at all; both still raise,
-    because a reader that silently returns nothing is worse than one that stops.
+    Schema errors always fail. An entirely unreadable file also fails, preserving
+    the distinction between an empty log and a file that is not a log at all.
     """
-    lines = list(_lines(path))
+    lines = committed_text(path).splitlines(keepends=True)
     records: list[Any] = []
     for index, line in enumerate(lines):
+        if line.strip() == "":
+            continue
+        try:
+            json.loads(line)
+        except json.JSONDecodeError as error:
+            if index == len(lines) - 1 and len(records) > 0 and _incomplete_json(error, line):
+                break
+            msg = f"{path}:{index + 1}: invalid JSON: {error}"
+            raise LogRecordError(msg) from error
         try:
             records.append(parse(line))
-        except ValidationError:
-            is_final_line = index == len(lines) - 1
-            if is_final_line and records:
-                break
-            raise
+        except ValidationError as error:
+            msg = f"{path}:{index + 1}: invalid record: {error}"
+            raise LogRecordError(msg) from error
     return records
 
 
