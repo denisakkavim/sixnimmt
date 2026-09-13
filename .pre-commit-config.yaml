@@ -23,6 +23,13 @@ repos:
 
   - repo: local
     hooks:
+      - id: explicit-truthiness
+        name: explicit Python truthiness
+        entry: uv run python scripts/precommit_truthiness_check.py
+        language: system
+        files: '\.(py|pyi)$'
+        pass_filenames: false
+        require_serial: true
       - id: ty
         name: ty
         # ty resolves imports against the project venv, so it runs from the

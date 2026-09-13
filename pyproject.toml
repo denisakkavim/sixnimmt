@@ -60,6 +60,7 @@ python-version = "3.13"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-m 'not arena_slow'"
 markers = ["arena_slow: high-volume arena validation (run explicitly with -m arena_slow)"]
 

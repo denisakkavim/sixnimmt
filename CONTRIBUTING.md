@@ -32,10 +32,45 @@ deliberately changes that compatibility.
 Ruff and `ty` are the project's lint/type-checking stack. The locked `ty` version
 reports `redundant-condition` as an error, so provably constant conditions such as
 an uncalled function block pre-commit and CI checks. Tuple conditions/assertions
-and unsupported boolean conversions are also checked. Ordinary collection/string
-truthiness is still valid to these tools and requires review against `AGENTS.md`.
+and unsupported boolean conversions are also checked.
 Do not enable rules such as Ruff `PLC1901` that encourage implicit truthiness.
 
+The local `explicit-truthiness` hook additionally rejects typed non-boolean values
+in conditions, assertions, comprehension filters, match guards, `not`, and
+`and`/`or` expressions (including fallbacks). Boolean variables, predicates,
+comparisons, and NumPy boolean scalars are allowed.
+
+```python
+if options.enabled:
+    ...  # Allowed: enabled is bool.
+if len(options.names) > 0:
+    ...  # Allowed: explicit collection check.
+if options.names:
+    ...  # Rejected: names is list[str].
+names = options.names or []  # Rejected: implicit fallback.
+```
+
+Run `uv run pre-commit run explicit-truthiness` after staging changes to try it.
+The hook checks conditions whose expression spans overlap added or modified lines
+in the staged Python diff. Unchanged conditions, deleted lines, and pure renames
+are skipped. A multiline expression can be reported at its start even when only
+a later line changed. Changing an annotation alone does not recheck unchanged uses.
+
+It reads the Git index, so unstaged edits and untracked files cannot affect the
+result. Complete staged files and imports provide type context, but only changed
+conditions receive boolean-parameter probes. The locked `ty` executable checks
+temporary copies; the hook never executes those copies or edits source files.
+
+For an optional full working-tree audit, run
+`uv run python scripts/precommit_truthiness_check.py --all-files` (or pass specific paths).
+Pre-commit's own `--all-files` flag does not expand this hook beyond the staged diff.
+
+This is a prototype with limits: `Any` and unresolved types can pass, as can
+unreachable code that `ty` does not inspect. Explicit `bool(...)` conversions and
+truth testing inside `any(...)`/`all(...)` are outside its scope. Existing type
+suppression comments also apply. The regular `ty` hook still checks the original
+files for type errors. The adapter depends on `ty`'s diagnostic format and should
+be tested when upgrading `ty`.
 
 Run the relevant tests while iterating, then the default suite and quality checks:
 
