@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from sixnimmt.arena.players import ResolvedPlayer
 
 
-class SimulationBot:
+class SimulationBot(Bot):
     def __init__(self, seed: int, options: SimulationOptions | ModelBasedBaitOptions) -> None:
         self.seed = seed
         self.options = options

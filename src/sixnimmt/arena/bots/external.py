@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import Field
 
-from sixnimmt.arena.bots.base import ActionBatch, BotOptions, Rejection
+from sixnimmt.arena.bots.base import ActionBatch, Bot, BotOptions, Rejection
 from sixnimmt.arena.bots.external_harnesses.broker import SeatSession
 from sixnimmt.arena.bots.external_harnesses.managed import ManagedSeatWorker
 from sixnimmt.arena.bots.lifecycle import BotContext, BotMatchEnd, DecisionContext, DecisionOutcome
@@ -30,7 +30,7 @@ class HeadlessOptions(BotOptions):
     max_output_bytes: int = Field(default=1_048_576, ge=1)
 
 
-class HarnessBot:
+class HarnessBot(Bot):
     def __init__(self, session: SeatSession) -> None:
         self.session = session
 

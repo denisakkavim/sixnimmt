@@ -22,7 +22,7 @@ class ControlledBurnOptions(BotOptions):
     fallback_options: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-class ControlledBurnBot:
+class ControlledBurnBot(Bot):
     def __init__(self, K: int, fallback: Bot) -> None:
         if type(K) is not int or K < 0:
             msg = "K must be a non-negative integer"
@@ -67,7 +67,7 @@ class _Candidate:
     pickup_cost: int
 
 
-class CountThresholdBaitBot:
+class CountThresholdBaitBot(Bot):
     def __init__(self, intervening_card_threshold: int, candidate_ranking: CandidateRanking, fallback: Bot) -> None:
         if type(intervening_card_threshold) is not int or intervening_card_threshold < 1:
             msg = "intervening_card_threshold must be a positive integer"
@@ -125,7 +125,7 @@ class HandAwareRowChoiceOptions(BotOptions):
     card_options: dict[str, JsonValue] = Field(default_factory=dict)
 
 
-class HandAwareRowChoiceBot:
+class HandAwareRowChoiceBot(Bot):
     def __init__(self, max_extra_penalty: int, card_bot: Bot) -> None:
         if type(max_extra_penalty) is not int or max_extra_penalty < 0:
             msg = "max_extra_penalty must be a non-negative integer"
