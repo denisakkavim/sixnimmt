@@ -45,13 +45,18 @@ def analyse_diagnostics(run: ArenaRun, rows: list[Observation]) -> Diagnostics:
         responsible_configurations=dict(responsible),
         actions_accepted=sum(record.actions_accepted for record in results),
         actions_rejected=sum(record.actions_rejected for record in results),
-        measured_decision_calls=len(samples),
+        measured_decision_calls=sum(
+            sum(record.seat_decision_calls)
+            if len(record.seat_decision_calls) > 0
+            else sum(len(values) for values in record.seat_decision_samples)
+            for record in results
+        ),
         decision_seconds_total=sum(totals) if len(totals) > 0 else None,
         decision_seconds_median=quantile(samples, 0.5) if len(samples) > 0 else None,
         decision_seconds_p95=quantile(samples, 0.95) if len(samples) > 0 else None,
         match_seconds_total=sum(durations) if len(durations) > 0 else None,
         resource_notes=(
-            "Decision quantiles pool recorded call samples; atomic batches count once per call. Unavailable measurements stay missing.",
+            "Decision counts and total time are always retained; individual call samples and quantiles require tracing. Atomic batches count once per call. Unavailable measurements stay missing.",
             "Token, cost and memory use are not inferred from timing; provider-specific measurements remain in compact seat_stats.",
         ),
     )

@@ -205,6 +205,25 @@ def test_legacy_duplicate_files_remain_readable(short_plan: ArenaPlan, tmp_path:
     assert load_run(directory) == run
 
 
+@pytest.mark.parametrize("backend", ["thread", "process"])
+def test_untraced_run_keeps_timing_totals_without_individual_samples(
+    short_plan: ArenaPlan, tmp_path: Path, backend: str
+) -> None:
+    run = run_plan(short_plan, output_dir=tmp_path / "run", config=RunConfig(backend=backend))
+    assert run.artifact_dir is not None
+    assert all(record.seat_decision_samples == () for record in run.results)
+    assert "seat_decision_samples" not in (run.artifact_dir / "results.jsonl").read_text()
+    loaded = load_run(run.artifact_dir)
+    assert loaded == run
+    measured = analyse_run(loaded).diagnostics
+    assert measured.measured_decision_calls == sum(sum(record.seat_decision_calls) for record in run.results)
+    assert measured.measured_decision_calls > 0
+    assert measured.decision_seconds_total is not None
+    assert measured.decision_seconds_total > 0
+    assert measured.decision_seconds_median is None
+    assert measured.decision_seconds_p95 is None
+
+
 def test_mismatched_legacy_jobs_are_rejected(short_plan: ArenaPlan, tmp_path: Path) -> None:
     run = run_plan(short_plan, output_dir=tmp_path / "run")
     assert run.artifact_dir is not None
@@ -324,7 +343,10 @@ def test_saved_traced_plan_can_run_in_another_output_directory(short_plan: Arena
     assert not (replayed.artifact_dir / "traces").exists()
 
 
-def test_call_is_measured_when_batch_exceeds_action_limit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("trace", [False, True])
+def test_call_is_measured_when_batch_exceeds_action_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, trace: bool
+) -> None:
     monkeypatch.setitem(REGISTRY, "batch", BotSpec("batch", OversizedBatchBot, True, {}))
     plan = build_arena_plan(
         LineupConfig(
@@ -334,12 +356,15 @@ def test_call_is_measured_when_batch_exceeds_action_limit(monkeypatch: pytest.Mo
             rotations=False,
         )
     )
-    run = run_plan(plan, output_dir=tmp_path / "run", config=RunConfig(match_action_limit=1))
+    run = run_plan(plan, output_dir=tmp_path / "run", config=RunConfig(match_action_limit=1), trace=trace)
     record = run.results[0]
     assert record.reason == "match_action_limit"
     assert record.actions_accepted == record.actions_rejected == 0
     assert record.seat_decision_calls == (1, 0, 0, 0)
-    assert len(record.seat_decision_samples[0]) == 1
+    if trace:
+        assert len(record.seat_decision_samples[0]) == 1
+    else:
+        assert record.seat_decision_samples == ()
     assert record.seat_decision_seconds[0] is not None
 
 

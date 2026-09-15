@@ -31,6 +31,7 @@ class MatchRecord(BaseModel):
     duration_seconds: float | None = Field(default=None, ge=0)
     seat_decision_seconds: tuple[float | None, ...] = ()
     seat_decision_calls: tuple[int, ...] = ()
+    # Detailed timings are retained only for traced runs; totals and counts are always collected.
     seat_decision_samples: tuple[tuple[float, ...], ...] = ()
     seat_stats: tuple[dict[str, Any] | None, ...] = ()
     stats_errors: dict[str, str] = Field(default_factory=dict)

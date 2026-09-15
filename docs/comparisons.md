@@ -217,6 +217,10 @@ Without `--output-dir`, the CLI prints results and writes none of these files.
 
 Compact outcomes retain final scores, winners, completed-hand scores, action and
 rejection counts, available timings and resources, and failure context.
+Decision counts and total time are retained by default. Individual call timings
+are collected only with `--trace`, which also enables median and 95th-percentile
+decision timings. Reanalysis of an untraced run preserves aggregate timings and
+all competitive results; it reports decision quantiles as unavailable.
 Unfinished games have no competitive scores. Planned games remain visible even
 if execution stops before they start. A supplied output directory must not already exist.
 

@@ -42,6 +42,12 @@ With `--output-dir` and without `--trace`, the output contains only `plan.json`,
 after execution. The comparison guide includes a [Python example for reading
 the compressed analysis](comparisons.md#python-execution-and-reanalysis).
 
+Untraced runs retain per-seat decision counts and total decision time, plus total
+game time. Individual decision durations are retained only with `--trace`; the
+median and 95th-percentile decision time are unavailable without those samples.
+Scores, completed hands, seeds, failures, and reanalysis remain available without
+tracing. Older runs with individual timing samples remain readable.
+
 The trace manifest's version-1 entries include `game_index`, `match_id`, `seed`, `outcome`,
 `winners`, `ended_by`, `reason`, `log`, `actions`, `seat_stats`, and `stats_errors`.
 The root manifest and plan hold the comparison's rules, configuration, and

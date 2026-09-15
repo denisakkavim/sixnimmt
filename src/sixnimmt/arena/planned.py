@@ -39,9 +39,12 @@ class PlannedArenaError(ArenaError):
 
 
 class _MeasuredSink:
-    def __init__(self, sink: EventSink, seats: Sequence[PlayerSeat]) -> None:
+    def __init__(self, sink: EventSink, seats: Sequence[PlayerSeat], *, retain_samples: bool) -> None:
         self.sink = sink
+        self.retain_samples = retain_samples
         self.samples: dict[str, list[float]] = {seat.player_id: [] for seat in seats}
+        self.seconds: dict[str, float] = {seat.player_id: 0.0 for seat in seats}
+        self.calls: dict[str, int] = {seat.player_id: 0 for seat in seats}
 
     def append(self, events: Sequence[Event]) -> None:
         self.sink.append(events)
@@ -51,7 +54,11 @@ class _MeasuredSink:
 
     def record_call(self, player_id: str, duration_ms: float) -> None:
         # Calls count even when a batch exceeds an action limit before submission.
-        self.samples[player_id].append(duration_ms / 1000)
+        seconds = duration_ms / 1000
+        self.seconds[player_id] += seconds
+        self.calls[player_id] += 1
+        if self.retain_samples:
+            self.samples[player_id].append(seconds)
 
     def record_model(self, payload: dict[str, Any], *, player_id: str, display_name: str) -> None:
         if isinstance(self.sink, JsonlEventSink):
@@ -98,7 +105,7 @@ def _play_job(
         if settings.config.trace_dir is not None
         else NullEventSink()
     )
-    sink = _MeasuredSink(raw_sink, seats)
+    sink = _MeasuredSink(raw_sink, seats, retain_samples=settings.config.trace_dir is not None)
     bots: list[Bot] = []
     started = monotonic()
     try:
@@ -150,7 +157,10 @@ def _record_result(
     scores = tuple(player.total_score for player in result.final_state.players) if finished else None
     partial_scores = None if finished else tuple(player.score_this_hand for player in result.final_state.players)
     stats, errors = collect_stats(bots, result.ended_by if result.reason == "decision_timeout" else None)
-    samples = tuple(tuple(sink.samples[player_id]) for player_id in player_ids)
+    samples = tuple(tuple(sink.samples[player_id]) for player_id in player_ids) if sink.retain_samples else ()
+    if sink.retain_samples:
+        for player_id in player_ids:
+            sink.seconds[player_id] = sum(sink.samples[player_id])
     trace_dir = settings.config.trace_dir
     event_trace = None
     action_trace = None
@@ -172,8 +182,10 @@ def _record_result(
         actions_rejected=result.actions_rejected,
         seat_actions=result.seat_actions,
         duration_seconds=duration,
-        seat_decision_seconds=tuple(sum(values) if len(values) > 0 else None for values in samples),
-        seat_decision_calls=tuple(len(values) for values in samples),
+        seat_decision_seconds=tuple(
+            sink.seconds[player_id] if sink.calls[player_id] > 0 else None for player_id in player_ids
+        ),
+        seat_decision_calls=tuple(sink.calls[player_id] for player_id in player_ids),
         seat_decision_samples=samples,
         seat_stats=tuple(stats.get(player_id) for player_id in player_ids),
         stats_errors=errors,
