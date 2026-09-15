@@ -243,7 +243,7 @@ def select_and_commit(card: int) -> ActionBatch:
     return ActionBatch(actions=(SelectCardAction(card=card), CommitAction()))
 ```
 
-The optional memory field is used by the memory-capable LLM adapter. `None`
+The optional memory field is used by the memory-capable LLM and harness adapters. `None`
 preserves memory; an empty string clears it. A memory update counts as one arena
 attempt but is not an engine action. See [LLM players](llm-players.md).
 
@@ -266,6 +266,35 @@ fixed-hand matches before starting large runs.
 Source: [bot contracts](../src/sixnimmt/arena/bots/base.py) and
 [transaction validation](../src/sixnimmt/arena/transactions.py).
 
+## Optional lifecycle hooks
+
+Bots owning an external session can implement these short, local hooks. Types
+are defined in [lifecycle.py](../src/sixnimmt/arena/bots/lifecycle.py).
+
+| Hook | When the arena calls it |
+| --- | --- |
+| `start(BotContext)` | Once inside the match, with match/seat identity, rules, and protocol |
+| `set_decision_context(DecisionContext)` | Before the outer `act`, with its UTC deadline or `None`; hook time consumes the decision budget |
+| `settle_decision(DecisionOutcome)` | After publication accepts, rejects, or fails the proposal, including the final move |
+| `cancel(reason)` | On timeout, operator stop, or match failure; release waits and stop managed work promptly |
+| `close(BotMatchEnd \| None)` | On all exits after startup, including partial startup failure; complete cleanup before final statistics |
+| `lifecycle_identity()` | Return a stable shared resource object when different adapters can wrap the same session |
+
+`BotMatchEnd` contains public outcome/scores and only this seat's final filtered
+view. `None` means no normal match result could be built. Close must be idempotent.
+Lifecycle hooks must not wait for the next game decision: `HarnessBot.act` returns
+as soon as a proposal is delivered; an independent MCP request can keep waiting.
+An acceptance notification follows game/action/event publication. A publication
+failure does not promise rollback of already written storage or private memory.
+
+The arena always invokes the outer bot's `act`, preserving composed strategies.
+Composed bots forward optional hooks with their existing delegation mechanism.
+The arena rejects reused lifecycle owners or shared resource identities across
+seats. Cleanup errors preserve an established outcome and are retained in
+`MatchResult.lifecycle_errors` and manifest `stats_errors`, as privileged
+diagnostics. Live harness sessions belong to a local table and cannot be passed
+as live objects into process-backed comparisons.
+
 ## Probabilistic bots
 
 The registered `simulation` and `model_based_bait` bots share learned opponent
@@ -281,7 +310,9 @@ from `sixnimmt.arena.bots.registry`. Import implementations from these modules:
 | --- | --- |
 | `heuristics` | Random, lowest/highest card, lowest/highest fitting card, closest gap, coldest row, hand flexibility, and board helpers |
 | `composed` | Controlled burn, count-threshold bait, and hand-aware row choice with their options |
-| `llm` | Both LLM bots, options, prompt text, observation formatting, and tool schemas |
+| `llm` | Both LLM bots, options, and provider tool-call handling |
+| `agent_contract` | Shared game instructions, observation formatting, and action schemas |
+| `external` | `HarnessBot` and `ManagedHarnessBot`; see [External harness players](harness-players.md) |
 | `simulation` | Simulation and model-based bait bots |
 | `uncertainty.rollouts` | Engine-backed rollout and penalty evaluation |
 
@@ -289,6 +320,12 @@ The former individual bot modules and package-level implementation re-exports
 have been removed. Update Python imports using this table; registered strategy
 names and strategy options are unchanged. Importing bot contracts no longer
 initializes the LLM client or numerical strategy catalogue.
+
+Import `HarnessBot` and `ManagedHarnessBot` from `sixnimmt.arena.bots.external`.
+These bot implementations sit alongside `simulation.py` and `llm.py`. Their
+supporting protocol, broker, transport, MCP bridge, connection bundles, and managed
+execution live in `external_harnesses/`, just as simulation support lives in `uncertainty/`.
+Mixed-table coordination lives in `sixnimmt.arena.table`.
 
 A `BotSpec` may provide a `resolve(options, resolve_strategy)` hook returning
 `StrategyConstruction`. The hook owns delegate selection and returns an importable,

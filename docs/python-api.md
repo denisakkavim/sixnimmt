@@ -79,6 +79,16 @@ short experiments.
 `winners`, accepted/rejected action counts, and optional failure context. Lower
 scores win. `events` and `final_state` contain privileged information, including
 other players' hands and seeds; do not pass them to a bot as its observation.
+`lifecycle_errors` retains privileged cleanup/notification diagnostics separately
+from an established match outcome; trace manifests also include these in `stats_errors`.
+
+For an operator-controlled local match, pass `stop_event=threading.Event()` to
+`run_match` and set the event from another thread to stop play. This interrupts
+arena waiting, invokes any bot cancellation hook, and records `abandoned` with
+reason `operator_stop`. A finished match stays finished if completion won the
+race. Optional [bot lifecycle hooks](bots.md#optional-lifecycle-hooks) let external
+adapters release resources; arbitrary trusted Python code cannot be forcibly
+terminated by a thread event.
 
 To name seats, supply `seats=[PlayerSeat(player_id="alice", display_name="Alice"),
 ...]`, importing `PlayerSeat` from `sixnimmt.engine.state`. Seat order must match

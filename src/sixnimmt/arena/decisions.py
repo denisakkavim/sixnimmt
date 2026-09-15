@@ -2,7 +2,7 @@
 
 import threading
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from multiprocessing import get_context
 from multiprocessing.sharedctypes import Synchronized
 from multiprocessing.synchronize import Event as ProcessEvent
@@ -11,6 +11,12 @@ from queue import Empty, Queue
 from time import monotonic
 
 from sixnimmt.arena.bots.base import ActionBatch, Bot, Rejection, memory_bot
+from sixnimmt.arena.bots.lifecycle import (
+    ControllerStopped,
+    DecisionContext,
+    DecisionDeadlineExceeded,
+    set_decision_context,
+)
 from sixnimmt.engine.actions import (
     Action,
     ChooseRowAction,
@@ -97,17 +103,25 @@ class Decision:
 
 
 def decide(
-    bot: Bot, view: MatchView, rejection: Rejection | None, timeout: float | None, abandoned: AbandonedDecisions
+    bot: Bot,
+    view: MatchView,
+    rejection: Rejection | None,
+    timeout: float | None,
+    abandoned: AbandonedDecisions,
+    stop_event: threading.Event | None = None,
 ) -> Decision:
     started_at = datetime.now(UTC)
     started = monotonic()
     action = None
     error = None
     timed_out = False
+    context = DecisionContext(None if timeout is None else started_at + timedelta(seconds=timeout))
 
-    if timeout is None:
+    if stop_event is not None and stop_event.is_set():
+        error = ControllerStopped()
+    elif timeout is None and stop_event is None:
         try:
-            action = _call_bot(bot, view, rejection)
+            action = _call_bot(bot, view, rejection, context)
         except Exception as caught:
             error = caught
     else:
@@ -116,23 +130,50 @@ def decide(
         # Python cannot interrupt a blocking call. This backstop frees the match
         # worker; providers must still impose their own client-side timeouts.
         thread = threading.Thread(
-            target=_queue_decision, args=(bot, view, rejection, replies), daemon=True, name="arena-decision"
+            target=_queue_decision, args=(bot, view, rejection, context, replies), daemon=True, name="arena-decision"
         )
         thread.start()
         try:
-            reply = replies.get(timeout=timeout)
+            reply = _wait_for_reply(replies, timeout, stop_event)
         except Empty:
             timed_out = True
+            abandoned.add(thread)
+        except ControllerStopped as stopped:
+            error = stopped
             abandoned.add(thread)
         else:
             if isinstance(reply, BaseException):
                 error = reply
             else:
                 action = reply
+    if isinstance(error, DecisionDeadlineExceeded):
+        timed_out = True
+        error = None
     return Decision(action, error, timed_out, started_at, datetime.now(UTC), (monotonic() - started) * 1000)
 
 
-def _call_bot(bot: Bot, view: MatchView, rejection: Rejection | None) -> Action | ActionBatch:
+def _wait_for_reply(
+    replies: Queue[Action | ActionBatch | BaseException], timeout: float | None, stop_event: threading.Event | None
+) -> Action | ActionBatch | BaseException:
+    deadline = None if timeout is None else monotonic() + timeout
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            raise ControllerStopped
+        remaining = None if deadline is None else deadline - monotonic()
+        if remaining is not None and remaining <= 0:
+            raise Empty
+        interval = remaining
+        if stop_event is not None:
+            interval = 0.05 if remaining is None else min(remaining, 0.05)
+        try:
+            return replies.get(timeout=interval)
+        except Empty:
+            if stop_event is None:
+                raise
+
+
+def _call_bot(bot: Bot, view: MatchView, rejection: Rejection | None, context: DecisionContext) -> Action | ActionBatch:
+    set_decision_context(bot, context)
     result = bot.act(view, rejection)
     if isinstance(result, ActionBatch):
         if not isinstance(result.actions, tuple):
@@ -161,9 +202,13 @@ def _validate_action(result: object) -> None:
 
 
 def _queue_decision(
-    bot: Bot, view: MatchView, rejection: Rejection | None, replies: Queue[Action | ActionBatch | BaseException]
+    bot: Bot,
+    view: MatchView,
+    rejection: Rejection | None,
+    context: DecisionContext,
+    replies: Queue[Action | ActionBatch | BaseException],
 ) -> None:
     try:
-        replies.put(_call_bot(bot, view, rejection))
+        replies.put(_call_bot(bot, view, rejection, context))
     except BaseException as error:
         replies.put(error)

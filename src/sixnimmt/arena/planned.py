@@ -156,7 +156,11 @@ def _record_result(
     finished = result.outcome == MatchOutcome.FINISHED
     scores = tuple(player.total_score for player in result.final_state.players) if finished else None
     partial_scores = None if finished else tuple(player.score_this_hand for player in result.final_state.players)
-    stats, errors = collect_stats(bots, result.ended_by if result.reason == "decision_timeout" else None)
+    stats, errors = collect_stats(
+        bots,
+        result.ended_by if result.reason in ("decision_timeout", "operator_stop") else None,
+        lifecycle_errors=result.lifecycle_errors,
+    )
     samples = tuple(tuple(sink.samples[player_id]) for player_id in player_ids) if sink.retain_samples else ()
     if sink.retain_samples:
         for player_id in player_ids:

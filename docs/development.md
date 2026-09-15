@@ -14,15 +14,30 @@
 | `arena/catalogue.py`, `planning.py` | Frozen strategy identities, populations, concrete assignments, seeds, and dependency blocks |
 | `arena/planned.py`, `records.py`, `artifacts.py`, `persistence/arena.py` | Variable-lineup execution, compact outcomes, durable plans/results, and saved-run loading |
 | `arena/players.py`, `bots/` | Per-seat configuration, registry, strategies, LLM adapters |
+| `arena/bots/agent_contract.py` | Shared game instructions, observations, and action schemas for LLM and harness bots |
+| `arena/bots/external.py` | `HarnessBot` and `ManagedHarnessBot` implementations |
+| `arena/bots/external_harnesses/` | Supporting sessions, proposal protocol, MCP connections, and managed harness processes |
+| `arena/table.py` | Mixed-table assembly, readiness, match execution, and shutdown |
 | `arena/tracing.py`, `persistence/` | Experiment provenance and durable JSONL/manifest output |
 | `analytics/` | Shared outcome metrics, trace summaries, population/comparison estimates, uncertainty, and report rendering |
 | `common/text.py` | Shared text validation |
-| `cli.py`, `arena_cli.py` | `arena`, `replay`, and `summarise` commands and comparison orchestration |
+| `cli.py` | Application commands, argument parsing, and CLI-specific comparison orchestration |
+| `terminal.py` | Terminal rendering, including the public table display |
 
 The engine owns rules and hidden state. It does not call bots, write files, or
 invoke model providers. The arena drives the engine and owns experiment
 scheduling and failure policy. Persistence depends on engine models; it does not
 choose moves. Analytics derives metrics from recorded history.
+
+Bot implementations live directly under `arena/bots/`: `external.py` contains
+the harness bots, alongside `simulation.py` and `llm.py`. Their supporting
+connections and execution live in `external_harnesses/`, just as probabilistic strategy
+support lives in `uncertainty/`. Shared LLM/harness presentation belongs in
+`bots/agent_contract.py`.
+The mixed-table runtime belongs in `arena/table.py` because it coordinates
+harness, LLM, and baseline seats. It accepts reporting, confirmation, and observer
+callbacks without depending on Typer or Rich. `cli.py` is the single application
+CLI; it supplies terminal interaction through `terminal.py`.
 
 Arena runs select a thread pool or a spawned process pool through `RunConfig`.
 Both use bounded submission and the same aggregation and failure policy. Process

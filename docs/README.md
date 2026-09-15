@@ -2,7 +2,7 @@
 
 This project runs deterministic 6 nimmt! games and experiments with trusted,
 in-process bots. The distribution and Python import package are named `sixnimmt`.
-The available CLI commands are `arena`, `replay`, and `summarise`.
+The CLI includes `arena`, `table`, `replay`, `summarise`, and the `harness-mcp` bridge.
 
 Start with [Getting started](getting-started.md) to run a match and inspect its
 trace. Then use the following guides:
@@ -19,6 +19,7 @@ trace. Then use the following guides:
 | [Probabilistic gameplay model](uncertainty-model.md) | Uniform-deal priors, learned opponent policies and random-choice probabilities, posterior inference, and candidate evaluation |
 | [Probabilistic bots](uncertainty-bots.md) | Learned opponent models, continuous mistake probabilities, risk objectives, and multi-turn rollouts |
 | [LLM players](llm-players.md) | Endpoint configuration, prompts, tools, private memory, and deadlines |
+| [External harness players](harness-players.md) | Visible Codex/Claude terminals, headless commands, mixed tables, MCP, recovery, and timing |
 | [Traces and replay](traces.md) | Event/action/model logs, manifests, determinism, recovery, and analytics |
 | [Architecture and development](development.md) | Module responsibilities, engine APIs, tests, and contribution workflow |
 

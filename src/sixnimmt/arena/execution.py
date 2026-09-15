@@ -88,7 +88,11 @@ def _play_game(
                 sink=sink,
                 _abandoned=abandoned,
             )
-        stats, errors = collect_stats(bots, result.ended_by if result.reason == "decision_timeout" else None)
+        stats, errors = collect_stats(
+            bots,
+            result.ended_by if result.reason in ("decision_timeout", "operator_stop") else None,
+            lifecycle_errors=result.lifecycle_errors,
+        )
         for seat in seats:
             stats.setdefault(seat.player_id, None)
         entry = ManifestMatch(

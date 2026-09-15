@@ -26,6 +26,8 @@ class MatchResult:
     ended_by: str | None = None
     reason: str | None = None
     seat_actions: tuple[tuple[int, int], ...] = ()
+    # Privileged diagnostics: (player ID, lifecycle stage, exception detail).
+    lifecycle_errors: tuple[tuple[str, str, str], ...] = ()
 
     @property
     def actions(self) -> int:

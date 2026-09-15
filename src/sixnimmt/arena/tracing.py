@@ -16,7 +16,11 @@ from sixnimmt.persistence.manifest import ManifestMatch, write_manifest
 
 
 def collect_stats(
-    bots: Sequence[Bot], timed_out_seat: str | None, player_ids: Sequence[str] | None = None
+    bots: Sequence[Bot],
+    timed_out_seat: str | None,
+    player_ids: Sequence[str] | None = None,
+    *,
+    lifecycle_errors: Sequence[tuple[str, str, str]] = (),
 ) -> tuple[dict[str, Any], dict[str, str]]:
     stats: dict[str, Any] = {}
     errors: dict[str, str] = {}
@@ -25,7 +29,7 @@ def collect_stats(
         stats[player_id] = None
         if player_id == timed_out_seat:
             # The abandoned call may still mutate the bot or hold its locks.
-            errors[player_id] = "statistics unavailable while a timed-out decision may still be running"
+            errors[player_id] = "statistics unavailable while an interrupted decision may still be running"
             continue
         reporter = statistics_bot(bot)
         if reporter is None:
@@ -36,6 +40,10 @@ def collect_stats(
             stats[player_id] = deepcopy(value)
         except Exception as error:
             errors[player_id] = repr(error)
+    for player_id, stage, detail in lifecycle_errors:
+        message = f"{stage}: {detail}"
+        previous = errors.get(player_id)
+        errors[player_id] = message if previous is None else f"{previous}; {message}"
     return stats, errors
 
 
@@ -51,7 +59,10 @@ def write_standalone_manifest(
     if config.trace_dir is None:
         return
     stats, errors = collect_stats(
-        bots, result.ended_by if result.reason == "decision_timeout" else None, [seat.player_id for seat in seats]
+        bots,
+        result.ended_by if result.reason in ("decision_timeout", "operator_stop") else None,
+        [seat.player_id for seat in seats],
+        lifecycle_errors=result.lifecycle_errors,
     )
     match_id = result.final_state.match_id
     entry = ManifestMatch(

@@ -1,6 +1,6 @@
 """Terminal progress and entertainment while the arena runs."""
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -15,7 +15,12 @@ from rich.table import Table
 from rich.text import Text
 
 from sixnimmt.arena.players import PlayerConfig
+from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.cards import bull_heads
+from sixnimmt.engine.events import Event
+from sixnimmt.engine.fold import ViewFolder
+from sixnimmt.engine.state import MatchState
+from sixnimmt.engine.views import ViewRole
 
 _TIPS = (
     "55 carries seven bull heads. A tiny card with a big attitude.",
@@ -275,3 +280,25 @@ def analysis_animation(
     animation = _AnalysisAnimation(console, games, strategies, seed)
     with Live(console=console, get_renderable=animation.render, refresh_per_second=4, transient=True):
         yield animation
+
+
+class PublicTableDisplay:
+    """Render only a spectator's folded events, never authoritative hands or seeds."""
+
+    def __init__(self, quiet: bool = False, report: Callable[[str], None] = print) -> None:
+        self.folder = ViewFolder(Viewer(ViewRole.PUBLIC_SPECTATOR))
+        self.previous = ""
+        self.quiet = quiet
+        self.report = report
+
+    def observe(self, state: MatchState, events: tuple[Event, ...]) -> None:
+        self.folder.apply(events)
+        if self.quiet:
+            return
+        view = self.folder.view()
+        rows = " | ".join(f"{row.index}: " + ",".join(map(str, row.cards)) for row in view.rows)
+        scores = ", ".join(f"{player.display_name}={player.total_score}" for player in view.players)
+        message = f"Hand {view.hand_number}, play {view.play_number}, {view.phase.value}\nRows {rows}\nScores {scores}"
+        if message != self.previous:
+            self.report(message)
+            self.previous = message

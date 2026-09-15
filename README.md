@@ -7,7 +7,8 @@ the recorded games and compare their results.
 The arena supports classic play and communication with table/direct messages,
 explicit commitment, and revised selections. Bots receive filtered player views;
 the engine validates their actions. Built-in strategies include eight [baseline heuristics](docs/bots.md#built-in-baselines-and-board-and-hand-heuristics),
-plus `llm` and `llm_memory`.
+plus `llm` and `llm_memory`. [External harness tables](docs/harness-players.md)
+also support visible Codex/Claude terminals and supervised headless commands.
 
 Use `--backend process --concurrency 4` to run arena matches across multiple CPU
 cores. The default thread backend also supports concurrent matches.
@@ -33,7 +34,8 @@ Add `--communication` to enable messaging and explicit commitment. Add
 `--trace` with `--output-dir` to also save detailed game logs in its `traces/` folder.
 Interactive terminals show animations while games run and reports are prepared;
 use `--no-animation` to disable them.
-Use `uv run sixnimmt --help` to see the `arena`, `replay`, and `summarise` commands.
+Use `uv run sixnimmt --help` for the available commands, including `table` for
+an explicit lineup of native harnesses, headless agents, and built-in bots.
 
 ## Python usage
 
@@ -66,6 +68,7 @@ Start with the [documentation index](docs/README.md) or jump to:
 - [Strategy comparisons and saved reports](docs/comparisons.md)
 - [Writing bots](docs/bots.md)
 - [LLM players and private memory](docs/llm-players.md)
+- [External harness players and watched tables](docs/harness-players.md)
 - [Traces, replay, and analytics](docs/traces.md)
 - [Architecture and development](docs/development.md)
 

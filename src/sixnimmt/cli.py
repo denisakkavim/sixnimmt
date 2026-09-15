@@ -1,19 +1,33 @@
-"""Command-line interface for strategy comparisons and match inspection."""
+"""Command-line interface for comparisons, watched tables and match inspection."""
 
+import gzip
 import json
+import math
+import uuid
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from pydantic import ValidationError
+from rich.console import Console
 
+from sixnimmt.analytics.evaluation import analyse_run
+from sixnimmt.analytics.reporting import report_markdown
 from sixnimmt.analytics.summary import summarise as summarise_match
-from sixnimmt.arena.config import RunConfig
+from sixnimmt.analytics.terminal import terminal_report
+from sixnimmt.arena.bots.external_harnesses.mcp import run_stdio
+from sixnimmt.arena.config import RunConfig, resolve
 from sixnimmt.arena.match import ArenaError
-from sixnimmt.arena_cli import ComparisonOptions, run_comparison
+from sixnimmt.arena.planned import run_plan
+from sixnimmt.arena.planning import LineupConfig, build_arena_plan
+from sixnimmt.arena.results import MatchOutcome
+from sixnimmt.arena.table import SetupTimeout, run_table
 from sixnimmt.engine.replay import ReplayedMatch, replay_events
+from sixnimmt.engine.rules import EndCondition, GameRules, MatchProtocol
 from sixnimmt.persistence.manifest import ManifestMatch
 from sixnimmt.persistence.sink import read_action_log, read_event_log
+from sixnimmt.terminal import PublicTableDisplay, analysis_animation, arena_animation
 
 app = typer.Typer(help="Run deterministic 6 nimmt! tools.", no_args_is_help=True)
 
@@ -170,3 +184,242 @@ def _manifest_entry(path: Path, log_name: str) -> ManifestMatch:
         msg = "manifest must contain exactly one entry for this log"
         raise ValueError(msg)
     return ManifestMatch.model_validate(entries[0])
+
+
+@dataclass(frozen=True)
+class ComparisonOptions:
+    config_file: Path | None = None
+    player_counts: tuple[int, ...] | None = None
+    games: int | None = None
+    controlled_games: int | None = None
+    output_dir: Path | None = None
+    trace: bool = False
+    json_output: bool = False
+    animation: bool = True
+
+
+def _provided(ctx: typer.Context, option: str) -> bool:
+    source = ctx.get_parameter_source(option)
+    return source is not None and source.name == "COMMANDLINE"
+
+
+def _execution_settings(ctx: typer.Context, saved: RunConfig, supplied: RunConfig) -> RunConfig:
+    names = {
+        "scheduler": "scheduler",
+        "concurrency": "concurrency",
+        "backend": "backend",
+        "decision_timeout": "decision_timeout_seconds",
+        "play_action_limit": "play_action_limit",
+        "decision_rejection_limit": "decision_rejection_limit",
+        "max_abandoned_decisions": "max_abandoned_decisions",
+        "stop_on_failure": "stop_on_failure",
+        "match_action_limit": "match_action_limit",
+    }
+    overrides: dict[str, Any] = {}
+    for option, field in names.items():
+        if _provided(ctx, option):
+            overrides[field] = getattr(supplied, field)
+    return replace(saved, **overrides)
+
+
+def _lineup_settings(
+    ctx: typer.Context, options: ComparisonOptions, config: RunConfig, seed: int, communication: bool
+) -> LineupConfig:
+    settings = (
+        LineupConfig()
+        if options.config_file is None
+        else LineupConfig.model_validate_json(options.config_file.read_text(encoding="utf-8"))
+    )
+    values = settings.model_dump()
+    for field in ("player_counts", "games", "controlled_games"):
+        value = getattr(options, field)
+        if value is not None:
+            values[field] = value
+    if _provided(ctx, "seed"):
+        values["seed"] = seed
+    if _provided(ctx, "communication"):
+        values["protocol"] = settings.protocol.model_copy(update={"communication_enabled": communication})
+    values["execution"] = _execution_settings(ctx, settings.execution, config)
+    return LineupConfig.model_validate(values)
+
+
+def run_comparison(
+    ctx: typer.Context,
+    options: ComparisonOptions,
+    config: RunConfig,
+    *,
+    seed: int,
+    communication: bool,
+) -> None:
+    if options.trace and options.output_dir is None:
+        msg = "--trace requires --output-dir"
+        raise ValueError(msg)
+    settings = _lineup_settings(ctx, options, config, seed, communication)
+    plan = build_arena_plan(settings)
+    output_dir = options.output_dir
+    message = f"Playing {len(plan.jobs)} games."
+    if output_dir is not None:
+        message += f" Saving results to {output_dir.resolve()}"
+    try:
+        typer.echo(message, err=True)
+        catalogue = {entry.config_id: entry for entry in plan.catalogue}
+        players = [catalogue[seat.config_id].player_config() for seat in plan.jobs[0].seats]
+        with arena_animation(
+            len(plan.jobs), plan.seed, players, enabled=options.animation and not options.json_output
+        ) as display:
+            run = run_plan(
+                plan,
+                output_dir=output_dir,
+                trace=options.trace,
+                on_progress=display.update if display is not None else None,
+            )
+        with analysis_animation(
+            len(run.results), len(plan.catalogue), plan.seed, enabled=options.animation and not options.json_output
+        ):
+            report = analyse_run(run)
+            if output_dir is not None:
+                (output_dir / "analysis.json.gz").write_bytes(
+                    gzip.compress(report.model_dump_json().encode("utf-8"), mtime=0)
+                )
+                (output_dir / "report.md").write_text(report_markdown(report), encoding="utf-8")
+    except Exception as error:
+        msg = f"comparison workflow failed: {error}"
+        if output_dir is not None:
+            msg += f". Completed data, if any: {output_dir.resolve()}"
+        raise ArenaError(msg) from error
+    if options.json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "report": report.model_dump(mode="json"),
+                    "artifacts": None
+                    if output_dir is None
+                    else {
+                        "directory": str(output_dir.resolve()),
+                        "analysis": str((output_dir / "analysis.json.gz").resolve()),
+                        "report": str((output_dir / "report.md").resolve()),
+                    },
+                },
+                indent=2,
+            )
+        )
+    else:
+        Console(highlight=False).print(terminal_report(report))
+    if run.status.state != "completed":
+        typer.echo(f"Execution {run.status.state}; the report includes incomplete coverage.", err=True)
+        raise typer.Exit(code=1)
+
+
+def _validate_duration(name: str, value: float, *, allow_zero: bool = False) -> None:
+    if not math.isfinite(value) or value < 0 or (value == 0 and not allow_zero):
+        msg = f"{name} must be finite and {'nonnegative' if allow_zero else 'positive'}"
+        raise ValueError(msg)
+
+
+def _confirm_table_start() -> bool:
+    return typer.confirm("All seats ready. Start the match?", default=True)
+
+
+@app.command()
+def table(
+    seat: Annotated[
+        list[str],
+        typer.Option(
+            "--seat",
+            help="Exact seat: codex, claude, a registered bot, codex-headless, claude-headless, or command:PROFILE.json.",
+        ),
+    ],
+    output_dir: Annotated[
+        Path | None, typer.Option("--output-dir", help="New directory for private seat bundles and replay traces.")
+    ] = None,
+    seed: Annotated[int, typer.Option("--seed")] = 66,
+    hands: Annotated[
+        int | None,
+        typer.Option("--hands", min=1, help="End after this many hands instead of reaching the target score."),
+    ] = None,
+    communication: Annotated[bool, typer.Option("--communication")] = False,
+    auto_start: Annotated[
+        bool, typer.Option("--auto-start", help="Start as soon as all external seats call play().")
+    ] = False,
+    setup_timeout: Annotated[
+        float, typer.Option("--setup-timeout", help="Seconds allowed for agents to enter the waiting room.")
+    ] = 600,
+    decision_timeout: Annotated[
+        float | None, typer.Option("--decision-timeout", help="Optional per-decision limit; setup is excluded.")
+    ] = None,
+    managed_timeout: Annotated[
+        float, typer.Option("--managed-timeout", help="Finite per-invocation timeout for managed clients.")
+    ] = 120,
+    memory: Annotated[
+        bool, typer.Option("--memory", help="Enable an arena-accepted notebook for external seats.")
+    ] = False,
+    memory_max_chars: Annotated[int, typer.Option("--memory-max-chars", min=1, max=16_000)] = 4000,
+    wait_timeout: Annotated[
+        float, typer.Option("--wait-timeout", help="Maximum pending MCP play call, below the generated client timeout.")
+    ] = 600,
+    retain_seconds: Annotated[
+        float, typer.Option("--retain-seconds", help="Keep completed seat results available for reconnects.")
+    ] = 30,
+    match_action_limit: Annotated[int, typer.Option("--match-action-limit", min=1)] = 10_000,
+    quiet: Annotated[bool, typer.Option("--quiet", help="Omit board updates; keep setup and result messages.")] = False,
+) -> None:
+    """Watch one game with fixed seats in their native terminals or supervised processes."""
+    try:
+        _validate_duration("setup_timeout", setup_timeout)
+        _validate_duration("managed_timeout", managed_timeout)
+        _validate_duration("wait_timeout", wait_timeout)
+        _validate_duration("retain_seconds", retain_seconds, allow_zero=True)
+        directory = output_dir if output_dir is not None else Path.cwd() / f"sixnimmt-table-{uuid.uuid4().hex[:8]}"
+        directory = directory.resolve()
+        rules = GameRules()
+        protocol = MatchProtocol(
+            communication_enabled=communication,
+            hands=hands,
+            end_condition=EndCondition.TARGET_SCORE if hands is None else EndCondition.FIXED_HANDS,
+        )
+        config = resolve(
+            RunConfig(
+                decision_timeout_seconds=decision_timeout,
+                match_action_limit=match_action_limit,
+                trace_dir=directory / "traces",
+            ),
+            protocol,
+        )
+        display = PublicTableDisplay(quiet=quiet, report=typer.echo)
+        result = run_table(
+            seat,
+            directory,
+            seed,
+            rules,
+            protocol,
+            config,
+            setup_timeout=setup_timeout,
+            auto_start=auto_start,
+            retain_seconds=retain_seconds,
+            wait_timeout_seconds=wait_timeout,
+            managed_timeout_seconds=managed_timeout,
+            memory_enabled=memory,
+            memory_max_chars=memory_max_chars,
+            report=typer.echo,
+            confirm_start=_confirm_table_start,
+            observer=display.observe,
+        )
+        if result.reason == "operator_stop":
+            raise typer.Exit(code=130)
+        if result.outcome == MatchOutcome.FAILED:
+            raise typer.Exit(code=1)
+    except (ValueError, SetupTimeout) as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=2) from error
+    except (ArenaError, OSError) as error:
+        typer.echo(f"Error: {error}", err=True)
+        raise typer.Exit(code=1) from error
+    except KeyboardInterrupt as error:
+        typer.echo("Table stopped before match start.")
+        raise typer.Exit(code=130) from error
+
+
+@app.command(name="harness-mcp")
+def harness_mcp() -> None:
+    """Serve the two seat-scoped game tools over stateless MCP stdio."""
+    run_stdio()
