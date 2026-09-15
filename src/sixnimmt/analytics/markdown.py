@@ -4,16 +4,16 @@ import json
 import re
 from collections import Counter, defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
 
 from sixnimmt.analytics.models import Estimate, EvaluationReport, OutcomeProfile
-
-
-@dataclass(frozen=True)
-class _ResultRow:
-    context: Estimate
-    win: Estimate | None
-    acceptable: Estimate | None
+from sixnimmt.analytics.projection import (
+    ResultRow,
+    average_score,
+    comparison_groups,
+    configuration_label,
+    population_groups,
+    result_rows,
+)
 
 
 def _escape(value: object) -> str:
@@ -32,19 +32,12 @@ def _human(value: str) -> str:
     return words[:1].upper() + words[1:]
 
 
-def _name(report: EvaluationReport, config_id: str) -> str:
-    label = report.catalogue.get(config_id, config_id)
-    if sum(other == label for other in report.catalogue.values()) > 1:
-        return f"{_human(label)} ({config_id[-6:]})"
-    return _human(label)
-
-
 def _composition(report: EvaluationReport, opponents: tuple[str, ...]) -> str:
     counts = Counter(opponents)
     parts = []
-    for config_id in sorted(counts, key=lambda item: _name(report, item)):
+    for config_id in sorted(counts, key=lambda item: configuration_label(report, item)):
         count = counts[config_id]
-        label = _name(report, config_id)
+        label = configuration_label(report, config_id)
         parts.append(f"{label} x{count}" if count > 1 else label)
     return ", ".join(parts)
 
@@ -61,33 +54,6 @@ def _condition(value: str, aliases: dict[str, str]) -> str:
     for identity, label in aliases.items():
         value = value.replace(identity, label)
     return _human(value)
-
-
-def _pairs(estimates: Sequence[Estimate]) -> list[_ResultRow]:
-    groups: dict[tuple, list[Estimate]] = defaultdict(list)
-    for item in estimates:
-        key = (
-            item.configuration_id,
-            item.player_count,
-            item.population_id,
-            item.condition_id,
-            item.view,
-            item.opponents,
-            item.copy_count,
-            item.seat,
-            item.permutation,
-            item.comparison_id,
-            item.reference_id,
-        )
-        groups[key].append(item)
-    return [
-        _ResultRow(
-            items[0],
-            next((item for item in items if item.objective == "win_credit"), None),
-            next((item for item in items if item.objective == "acceptable_credit"), None),
-        )
-        for items in groups.values()
-    ]
 
 
 def _percent(value: float | None) -> str:
@@ -135,39 +101,20 @@ def _result_table(
     if len(estimates) == 0:
         return []
     cutoff = report.analysis_spec.cutoff(estimates[0].player_count)
-    rows = _pairs(estimates)
+    rows = result_rows(estimates)
     total = len(rows)
     if limit is not None and total > limit:
         rows = sorted(rows, key=_coverage_order, reverse=True)[:limit]
     contexts = [_row_context(row.context, report, aliases) for row in rows]
     with_context = any(value != "" for value in contexts)
     with_interpretation = any(row.context.interpretation is not None for row in rows)
-    scores = {
-        (
-            profile.configuration_id,
-            profile.player_count,
-            profile.view,
-            profile.population_id,
-            profile.opponents,
-        ): profile.mean_penalty
-        for profile in report.outcome_profiles
-    }
-    row_scores = [
-        scores.get((
-            row.context.configuration_id,
-            row.context.player_count,
-            row.context.view,
-            row.context.population_id,
-            row.context.opponents,
-        ))
-        for row in rows
-    ]
+    row_scores = [average_score(report, row.context) for row in rows]
     with_score = any(score is not None for score in row_scores)
     headings = ["Strategy"] + (["Opponents / setting"] if with_context else []) + ["Win", f"Top {cutoff}"]
     headings.extend(["Avg score"] if with_score else [])
     headings.extend(["Appearances", "Samples"])
     headings.extend(["Interpretation"] if with_interpretation else [])
-    lines = ["| " + " | ".join(headings) + " |", "| " + " | ".join("---" for _ in headings) + " |"]
+    lines: list[str] = ["| " + " | ".join(headings) + " |", "| " + " | ".join("---" for _ in headings) + " |"]
     for row, context, score in zip(rows, contexts, row_scores, strict=True):
         lines.append(_table_row(row, context, score, report, with_context, with_score, with_interpretation))
     if total > len(rows):
@@ -178,12 +125,12 @@ def _result_table(
     return lines
 
 
-def _coverage_order(row: _ResultRow) -> tuple[int, int]:
+def _coverage_order(row: ResultRow) -> tuple[int, int]:
     return row.context.coverage.complete_blocks, row.context.coverage.finished_appearances
 
 
 def _table_row(
-    row: _ResultRow,
+    row: ResultRow,
     context: str,
     score: float | None,
     report: EvaluationReport,
@@ -192,9 +139,9 @@ def _table_row(
     with_interpretation: bool,
 ) -> str:
     item = row.context
-    label = _name(report, item.configuration_id)
+    label = configuration_label(report, item.configuration_id)
     if item.reference_id is not None:
-        label += " vs " + _name(report, item.reference_id)
+        label += " vs " + configuration_label(report, item.reference_id)
     values = [_escape(label)]
     if with_context:
         values.append(_escape(context))
@@ -233,9 +180,7 @@ def _group_title(key: tuple[int, str | None, str]) -> str:
 
 
 def _population_sections(report: EvaluationReport, aliases: dict[str, str]) -> list[str]:
-    groups: dict[tuple[int, str | None, str], list[Estimate]] = defaultdict(list)
-    for estimate in report.population_estimates:
-        groups[(estimate.player_count, estimate.population_id, estimate.view)].append(estimate)
+    groups = population_groups(report.population_estimates)
     lines = ["## Results", ""]
     unavailable: list[str] = []
     for key, estimates in groups.items():
@@ -257,16 +202,15 @@ def _population_sections(report: EvaluationReport, aliases: dict[str, str]) -> l
 def _comparison_sections(report: EvaluationReport, aliases: dict[str, str]) -> list[str]:
     if len(report.comparisons) == 0:
         return []
-    groups: dict[tuple[str | None, int, str | None], list[Estimate]] = defaultdict(list)
-    for item in report.comparisons:
-        groups[(item.comparison_id, item.player_count, item.population_id)].append(item)
+    groups = comparison_groups(report.comparisons)
     lines = [
         "## Replacement comparisons",
         "",
         f"Effects are percentage-point changes from the reference. The declared useful-change threshold is **{report.analysis_spec.practical_effect_threshold * 100:.1f} pp**.",
         "",
     ]
-    for (comparison, count, population), estimates in groups.items():
+    for key, estimates in groups.items():
+        comparison, count, population = key.comparison_id, key.player_count, key.population_id
         title = f"{_human(comparison) if comparison is not None else 'Comparison'} · {count} players"
         if population is not None:
             title += " · " + _human(population)
@@ -313,7 +257,7 @@ def _coverage_sections(report: EvaluationReport, aliases: dict[str, str]) -> lis
                 cell.weight for cell in item.cells if cell.finished_blocks == 0
             )
             table.append(
-                f"| {_escape(_name(report, item.configuration_id))} | {covered:,} / {total:,} | {missing_weight:.1%} |"
+                f"| {_escape(configuration_label(report, item.configuration_id))} | {covered:,} / {total:,} | {missing_weight:.1%} |"
             )
         matching = [
             item
@@ -340,7 +284,7 @@ def _coverage_sections(report: EvaluationReport, aliases: dict[str, str]) -> lis
 def _bound_table(estimates: Sequence[Estimate], report: EvaluationReport, aliases: dict[str, str]) -> list[str]:
     rows = [
         row
-        for row in _pairs(estimates)
+        for row in result_rows(estimates)
         if any(
             item is not None
             and item.missing_outcome_bounds is not None
@@ -352,7 +296,7 @@ def _bound_table(estimates: Sequence[Estimate], report: EvaluationReport, aliase
         return ["No missing-outcome uncertainty in this view."]
     lines = ["| Strategy / setting | Win bounds | Qualifying-finish bounds |", "| --- | --- | --- |"]
     for row in rows:
-        label = _name(report, row.context.configuration_id)
+        label = configuration_label(report, row.context.configuration_id)
         context = _row_context(row.context, report, aliases)
         if context != "":
             label += ": " + context
@@ -442,7 +386,7 @@ def _profiles(report: EvaluationReport) -> list[str]:
                 if profile.finishing_distribution is not None
                 else "—"
             )
-            label = _name(report, profile.configuration_id) + ": " + _profile_context(profile, report)
+            label = configuration_label(report, profile.configuration_id) + ": " + _profile_context(profile, report)
             values = [
                 _escape(label),
                 distribution,
@@ -505,7 +449,7 @@ def _diagnostics(report: EvaluationReport) -> list[str]:
         if len(measured.responsible_configurations) > 0:
             failures.extend(["", "| Responsible strategy | Games |", "| --- | --- |"])
             failures.extend(
-                f"| {_escape(_name(report, config_id))} | {count:,} |"
+                f"| {_escape(configuration_label(report, config_id))} | {count:,} |"
                 for config_id, count in measured.responsible_configurations.items()
             )
         lines.extend(_details("Failure details", failures))
@@ -514,11 +458,11 @@ def _diagnostics(report: EvaluationReport) -> list[str]:
 
 
 def _rules(report: EvaluationReport) -> str:
-    protocol = report.context["protocol"]
-    mode = "Communication" if protocol["communication_enabled"] else "Classic"
-    if protocol["end_condition"] == "fixed_hands":
-        return f"{mode} · {protocol['hands']} completed hands"
-    return f"{mode} · {report.context['rules']['target_score']} points, checked after each completed hand"
+    protocol = report.context.protocol
+    mode = "Communication" if protocol.communication_enabled else "Classic"
+    if protocol.end_condition == "fixed_hands":
+        return f"{mode} · {protocol.hands} completed hands"
+    return f"{mode} · {report.context.rules.target_score} points, checked after each completed hand"
 
 
 def _settings(report: EvaluationReport, aliases: dict[str, str]) -> list[str]:
@@ -556,7 +500,9 @@ def _settings(report: EvaluationReport, aliases: dict[str, str]) -> list[str]:
         "| Strategy | Configuration ID |",
         "| --- | --- |",
     ]
-    metadata.extend(f"| {_escape(_name(report, config_id))} | `{config_id}` |" for config_id in report.catalogue)
+    metadata.extend(
+        f"| {_escape(configuration_label(report, config_id))} | `{config_id}` |" for config_id in report.catalogue
+    )
     if len(aliases) > 0:
         metadata.extend(["", "| Lineup label | Condition ID |", "| --- | --- |"])
         metadata.extend(f"| {label} | `{identity}` |" for identity, label in aliases.items())
@@ -576,7 +522,7 @@ def report_markdown(report: EvaluationReport) -> str:
     """Lead with comparable results; keep detailed evidence available without overwhelming the page."""
     measured = report.diagnostics
     aliases = _conditions(report)
-    counts = ", ".join(str(count) for count in report.context["player_counts"])
+    counts = ", ".join(str(count) for count in report.context.player_counts)
     lines = [
         "# Arena results",
         "",

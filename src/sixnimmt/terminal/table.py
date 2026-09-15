@@ -1,6 +1,5 @@
 """Live public gameplay with a separate, explicitly privileged operator pane."""
 
-import json
 from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -286,59 +285,11 @@ def _record_text(record: dict[str, Any]) -> str:
     return ""
 
 
-def _llm_response_message(record: dict[str, Any]) -> dict[str, Any]:
-    body = record.get("body")
-    if not isinstance(body, str) or len(body) > 1_048_576:
-        return {}
-    try:
-        payload = json.loads(body)
-    except (ValueError, RecursionError):
-        return {}
-    if not isinstance(payload, dict):
-        return {}
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or len(choices) == 0 or not isinstance(choices[0], dict):
-        return {}
-    message = choices[0].get("message")
-    return message if isinstance(message, dict) else {}
-
-
 def _activity_records(record: dict[str, Any]) -> list[dict[str, Any]]:
     kind = record.get("type")
     if isinstance(kind, str) and kind in _ACTIVITY_TYPES:
         return [record]
-    if record.get("kind") != "response":
-        return []
-    message = _llm_response_message(record)
-    records = []
-    for field, kind in (
-        ("content", "model_text"),
-        ("reasoning_content", "reasoning_summary"),
-        ("reasoning", "reasoning_summary"),
-    ):
-        text = message.get(field)
-        if isinstance(text, str) and text != "":
-            records.append({
-                **record,
-                "type": kind,
-                "text": text,
-                "complete": True,
-                "item_id": record.get("timestamp", "response"),
-            })
-    calls = message.get("tool_calls", [])
-    if isinstance(calls, list):
-        for call in calls:
-            function = call.get("function") if isinstance(call, dict) else None
-            if isinstance(function, dict) and isinstance(function.get("name"), str):
-                records.append({
-                    **record,
-                    "type": "tool_activity",
-                    "text": function["name"],
-                    "tool_name": function["name"],
-                    "status": "requested",
-                    "item_id": call.get("id", function["name"]),
-                })
-    return records
+    return []
 
 
 class PublicTableDisplay:
@@ -376,6 +327,13 @@ class PublicTableDisplay:
         output: list[str] = []
         with self._lock:
             for event in public:
+                if event.type == "match_created":
+                    self.folder = ViewFolder(Viewer(ViewRole.PUBLIC_SPECTATOR))
+                    self._pending.clear()
+                    self._activities.clear()
+                    self._commentary = CommentaryBook()
+                    self._plain_activity.clear()
+                    self._terminal = ""
                 self.folder.apply((event,))
                 if event.type not in _FRAME_EVENTS:
                     continue
@@ -405,8 +363,6 @@ class PublicTableDisplay:
 
     def activity(self, record: dict[str, Any]) -> None:
         if self.quiet:
-            return
-        if not self.commentary and record.get("kind") == "response":
             return
         for normalized in _activity_records(record):
             self._activity(normalized)

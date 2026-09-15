@@ -2,16 +2,18 @@
 
 This project runs deterministic 6 nimmt! games and experiments with trusted,
 in-process bots. The distribution and Python import package are named `sixnimmt`.
-The CLI includes `arena`, `table`, `replay`, `summarise`, and the `harness-mcp` bridge.
+The CLI uses `play` for fixed lineups, sampled experiments, and watched games.
+`replay`, `summarise`, and the `harness-mcp` bridge support recorded and external play.
+Python callers use `application.run(RunSettings(...))` for the same workflow.
 
 Start with [Getting started](getting-started.md) to run a match and inspect its
 trace. Then use the following guides:
 
 | Guide | What it covers |
 | --- | --- |
-| [Using the Python package](python-api.md) | Installation in another project, runners, results, configuration, and direct engine control |
+| [Using the Python package](python-api.md) | Installation, the shared application API, results, configuration, and direct engine control |
 | [Game rules and information](game-rules.md) | Cards, placement, scoring, communication, and what each player can see |
-| [Running arenas](arena.md) | Arena configuration, Python API, CLI options, scheduling, limits, and outcomes |
+| [Running games](arena.md) | Shared run configuration, fixed and sampled lineups, watching, CLI options, scheduling, limits, and outcomes |
 | [Comparing strategies](comparisons.md) | One-file configuration, exact game counts, compact evidence, population estimates, matched comparisons, and reanalysis |
 | [Evaluating bots](bot-evaluation.md) | Five experiments answering the agreed questions, with setups, metrics, result interpretation, and arena requirements |
 | [Writing bots](bots.md) | Bot contract, registration, rejection feedback, and atomic action batches |

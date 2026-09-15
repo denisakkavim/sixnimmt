@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from pydantic import Field, JsonValue, TypeAdapter, field_serializer, field_validator, model_validator
+from pydantic import ConfigDict, Field, JsonValue, TypeAdapter, field_serializer, field_validator, model_validator
 
 from sixnimmt.arena.catalogue import (
     CandidateConfig,
@@ -19,32 +19,36 @@ from sixnimmt.arena.catalogue import (
     resolve_catalogue,
     stable_id,
 )
-from sixnimmt.arena.config import RunConfig, resolve
-from sixnimmt.common.evaluation import AnalysisSpec
+from sixnimmt.arena.config import DisplayOptions, RecordingOptions, RunConfig, SessionOptions, resolve
+from sixnimmt.arena.players import PlayerConfig
+from sixnimmt.arena.sessions import EXTERNAL_SEATS
+from sixnimmt.common.evaluation import AnalysisSpec, NonNegativeCount, PlayerCount, PositiveCount, RunStream, VersionOne
 from sixnimmt.engine.rules import GameRules, MatchProtocol
 
 PLAN_VERSION = 1
 SEED_SCHEME_VERSION = "arena-plan-v1"
 
-PlayerCount = Annotated[int, Field(strict=True, ge=2, le=10)]
+_DESIGN_OBJECT: TypeAdapter[dict[str, JsonValue]] = TypeAdapter(
+    dict[str, JsonValue], config=ConfigDict(allow_inf_nan=False)
+)
 
 
 class PopulationConfig(FrozenModel):
     population_id: str = Field(min_length=1)
     weighting: Literal["uniform", "family_balanced", "explicit"] = "uniform"
     members: tuple[str, ...] = ()
-    weights: dict[str, float] = Field(default_factory=dict)
+    weights: dict[str, Annotated[float, Field(strict=True, allow_inf_nan=False)]] = Field(default_factory=dict)
 
 
 class PopulationWeight(FrozenModel):
     config_id: str
-    weight: float = Field(gt=0, le=1, allow_inf_nan=False)
+    weight: float = Field(strict=True, gt=0, le=1, allow_inf_nan=False)
 
 
 class CompositionWeight(FrozenModel):
     player_count: PlayerCount
     opponents: tuple[str, ...]
-    weight: float = Field(gt=0, le=1, allow_inf_nan=False)
+    weight: float = Field(strict=True, gt=0, le=1, allow_inf_nan=False)
 
 
 class Population(FrozenModel):
@@ -99,8 +103,8 @@ class ReplacementComparison(FrozenModel):
     backgrounds: tuple[tuple[str, ...], ...] = ()
     group_roster: tuple[str, ...] = ()
     background_population: str | None = None
-    background_draws: int = Field(default=0, ge=0)
-    games: int = Field(default=1, ge=1)
+    background_draws: NonNegativeCount = 0
+    games: PositiveCount = 1
 
     @model_validator(mode="after")
     def check_background(self) -> "ReplacementComparison":
@@ -125,59 +129,143 @@ class ResolvedComparison(FrozenModel):
     population_id: str
 
 
-class LineupConfig(FrozenModel):
+class RunSettings(FrozenModel):
+    """One run configuration for fixed seats and experimental opponent schedules."""
+
     catalogue: tuple[CandidateConfig, ...] = Field(default_factory=reference_catalogue)
     catalogue_version: str = "reference-v1"
+    lineup: tuple[str, ...] = ()
     player_counts: tuple[PlayerCount, ...] = (4,)
-    games: int = Field(default=100, ge=0)
-    controlled_games: int = Field(default=0, ge=0)
-    seed: int = 66
+    games: NonNegativeCount = 100
+    controlled_games: NonNegativeCount = 0
+    seed: int = Field(default=66, strict=True)
     population_id: str = "uniform"
     populations: tuple[PopulationConfig, ...] = ()
     controlled_coverage: Literal["pairs", "exhaustive", "explicit"] = "pairs"
     compositions: tuple[tuple[str, ...], ...] = ()
     comparisons: tuple[ReplacementComparison, ...] = ()
-    rotations: bool = True
-    reverse_order: bool = False
-    additional_permutations: int = Field(default=0, ge=0)
-    share_controlled_deals: bool = False
+    rotations: bool = Field(default=True, strict=True)
+    reverse_order: bool = Field(default=False, strict=True)
+    additional_permutations: NonNegativeCount = 0
+    share_controlled_deals: bool = Field(default=False, strict=True)
     rules: GameRules = Field(default_factory=GameRules)
-    protocol: MatchProtocol = Field(default_factory=lambda: MatchProtocol(anonymise_display_names=True))
+    protocol: MatchProtocol = Field(default_factory=MatchProtocol)
     execution: RunConfig = Field(default_factory=RunConfig)
     analysis: AnalysisSpec = Field(default_factory=AnalysisSpec)
+    session: SessionOptions = Field(default_factory=SessionOptions)
+    display: DisplayOptions = Field(default_factory=DisplayOptions)
+    recording: RecordingOptions = Field(default_factory=RecordingOptions)
 
-    @field_validator("protocol", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def anonymous_protocol(cls, value: object) -> object:
-        if isinstance(value, MatchProtocol):
-            return value.model_copy(update={"anonymise_display_names": True})
-        if isinstance(value, dict):
-            return {**value, "anonymise_display_names": True}
-        return value
+    def fixed_defaults(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        lineup = value.get("lineup")
+        if not isinstance(lineup, (tuple, list)) or len(lineup) == 0:
+            return value
+        return {"games": 1, "player_counts": (len(lineup),), "rotations": False, **value}
+
+    @property
+    def is_fixed(self) -> bool:
+        return len(self.lineup) > 0
 
     @model_validator(mode="after")
-    def check_design(self) -> "LineupConfig":
+    def check_design(self) -> "RunSettings":
+        keys = tuple(candidate.bot if candidate.key is None else candidate.key for candidate in self.catalogue)
+        if len(set(keys)) != len(keys):
+            msg = "duplicate catalogue key"
+            raise ValueError(msg)
         if len(self.player_counts) == 0 or len(set(self.player_counts)) != len(self.player_counts):
             msg = "player_counts must contain distinct supported counts"
-            raise ValueError(msg)
-        if not self.protocol.anonymise_display_names:
-            msg = "planned comparisons require anonymise_display_names=true"
             raise ValueError(msg)
         for count in self.player_counts:
             if not self.rules.min_players <= count <= self.rules.max_players:
                 msg = "player_counts fall outside the game rules"
                 raise ValueError(msg)
         if self.games == 0 and self.controlled_games == 0 and len(self.comparisons) == 0:
-            msg = "lineup settings must request at least one game"
+            msg = "run settings must request at least one game"
+            raise ValueError(msg)
+        if self.is_fixed:
+            self._check_fixed_lineup(keys)
+        elif not self.protocol.anonymise_display_names:
+            object.__setattr__(self, "protocol", self.protocol.model_copy(update={"anonymise_display_names": True}))
+        resolve(self.execution, self.protocol)
+        self._check_capabilities()
+        if self.execution.trace_dir is not None:
+            msg = "execution.trace_dir is not supported; use recording.output_dir and recording.trace"
+            raise ValueError(msg)
+        if self.recording.trace and self.recording.output_dir is None:
+            msg = "recording.trace requires recording.output_dir"
             raise ValueError(msg)
         return self
 
+    def _check_capabilities(self) -> None:
+        candidates = self.catalogue
+        if self.is_fixed:
+            candidates = tuple(
+                candidate
+                for candidate in self.catalogue
+                if (candidate.bot if candidate.key is None else candidate.key) in self.lineup
+            )
+        external = tuple(EXTERNAL_SEATS[candidate.bot] for candidate in candidates if candidate.bot in EXTERNAL_SEATS)
+        if len(external) > 0 and not self.is_fixed:
+            msg = "external seats require an explicit fixed lineup"
+            raise ValueError(msg)
+        if len(external) > 0 and self.execution.backend != "thread":
+            msg = "external sessions require the thread backend"
+            raise ValueError(msg)
+        attached = any(descriptor.ownership == "attached" for descriptor in external)
+        if (self.display.watch or attached) and (self.execution.backend != "thread" or self.execution.concurrency != 1):
+            msg = "watched runs and attached sessions require the thread backend with concurrency=1"
+            raise ValueError(msg)
+
+    def _check_fixed_lineup(self, keys: tuple[str, ...]) -> None:
+        if self.player_counts != (len(self.lineup),):
+            msg = "player_counts must equal the explicit lineup length"
+            raise ValueError(msg)
+        for key in self.lineup:
+            if key not in keys:
+                msg = f"unknown catalogue key in lineup: {key}"
+                raise ValueError(msg)
+        if (
+            self.controlled_games != 0
+            or len(self.comparisons) > 0
+            or len(self.compositions) > 0
+            or len(self.populations) > 0
+            or self.population_id != "uniform"
+            or self.controlled_coverage != "pairs"
+            or self.rotations
+            or self.reverse_order
+            or self.additional_permutations != 0
+            or self.share_controlled_deals
+        ):
+            msg = "a fixed lineup cannot combine opponent sampling or seat-order settings"
+            raise ValueError(msg)
+
+    def players(self) -> tuple[PlayerConfig, ...]:
+        """Return fixed construction inputs without creating bots or sessions."""
+        if not self.is_fixed:
+            msg = "players requires an explicit lineup"
+            raise ValueError(msg)
+        catalogue = {
+            candidate.bot if candidate.key is None else candidate.key: candidate for candidate in self.catalogue
+        }
+        return tuple(
+            PlayerConfig(
+                bot=catalogue[key].bot,
+                options=catalogue[key].options,
+                display_name=key if catalogue[key].label is None else catalogue[key].label,
+            )
+            for key in self.lineup
+        )
+
 
 class SeatAssignment(FrozenModel):
-    seat: int = Field(ge=0)
+    seat: NonNegativeCount
     config_id: str
     instance_id: str
-    bot_seed: int
+    bot_seed: int = Field(strict=True)
 
 
 class PlannedMatch(FrozenModel):
@@ -185,20 +273,20 @@ class PlannedMatch(FrozenModel):
     match_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
     player_count: PlayerCount
     seats: tuple[SeatAssignment, ...]
-    match_seed: int
+    match_seed: int = Field(strict=True)
     condition_id: str
-    stream: Literal["iid", "controlled", "matched", "fixed"]
+    stream: RunStream
     block_id: str
     shared_deal_id: str
     lineup_draw_id: str | None = None
     population_id: str | None = None
     comparison_id: str | None = None
     arm_id: str | None = None
-    focal_seat: int | None = None
-    rotation: int = Field(default=0, ge=0)
-    permutation: int = Field(default=0, ge=0)
-    selection_probability: float | None = Field(default=None, gt=0, le=1, allow_inf_nan=False)
-    planned_quota: int | None = Field(default=None, ge=1)
+    focal_seat: NonNegativeCount | None = None
+    rotation: NonNegativeCount = 0
+    permutation: NonNegativeCount = 0
+    selection_probability: float | None = Field(default=None, strict=True, gt=0, le=1, allow_inf_nan=False)
+    planned_quota: PositiveCount | None = None
 
     @property
     def lineup(self) -> tuple[str, ...]:
@@ -224,11 +312,11 @@ class PlannedMatch(FrozenModel):
 
 
 class ArenaPlan(FrozenModel):
-    version: Literal[1] = PLAN_VERSION
+    version: VersionOne = PLAN_VERSION
     plan_id: str
     catalogue_version: str
     seed_scheme_version: Literal["arena-plan-v1"] = SEED_SCHEME_VERSION
-    seed: int
+    seed: int = Field(strict=True)
     catalogue: tuple[CatalogueEntry, ...]
     player_counts: tuple[PlayerCount, ...]
     populations: tuple[Population, ...]
@@ -243,15 +331,19 @@ class ArenaPlan(FrozenModel):
     @field_validator("design_json", mode="before")
     @classmethod
     def freeze_design(cls, value: object) -> str:
-        return canonical_json(json.loads(value) if isinstance(value, str) else value)
+        parsed = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(parsed, dict):
+            msg = "plan design must be a JSON object"
+            raise ValueError(msg)  # noqa: TRY004 - invalid JSON input must be a validation error
+        return canonical_json(parsed)
 
     @field_serializer("design_json")
     def serialize_design(self, value: str) -> dict[str, JsonValue]:
-        return json.loads(value)
+        return _DESIGN_OBJECT.validate_json(value)
 
     @property
     def design(self) -> dict[str, JsonValue]:
-        return json.loads(self.design_json)
+        return _DESIGN_OBJECT.validate_json(self.design_json)
 
     @model_validator(mode="after")
     def check_contract(self) -> "ArenaPlan":
@@ -263,7 +355,7 @@ class ArenaPlan(FrozenModel):
 class _Block:
     lineup: tuple[str, ...]
     condition_id: str
-    stream: Literal["iid", "controlled", "matched"]
+    stream: RunStream
     block_id: str
     shared_deal_id: str
     game_index: int = 0
@@ -330,7 +422,7 @@ def _population_weights(config: PopulationConfig, members: tuple[CatalogueEntry,
     return {entry.config_id: 1.0 for entry in members}
 
 
-def _populations(config: LineupConfig, catalogue: tuple[CatalogueEntry, ...]) -> list[Population]:
+def _populations(config: RunSettings, catalogue: tuple[CatalogueEntry, ...]) -> list[Population]:
     definitions = [
         PopulationConfig(population_id="uniform"),
         PopulationConfig(population_id="family_balanced", weighting="family_balanced"),
@@ -364,7 +456,7 @@ def _draw(population: Population, count: int, seed: int) -> tuple[tuple[str, ...
     return lineup, math.prod(probabilities[key] for key in lineup)
 
 
-def _random_games(config: LineupConfig, count: int, population: Population) -> list[_Block]:
+def _random_games(config: RunSettings, count: int, population: Population) -> list[_Block]:
     blocks: list[_Block] = []
     for draw in range(config.games):
         draw_id = stable_id("draw", ["iid", count, population.population_id, draw])
@@ -387,7 +479,7 @@ def _random_games(config: LineupConfig, count: int, population: Population) -> l
 
 
 def _controlled_compositions(
-    config: LineupConfig, count: int, catalogue: tuple[CatalogueEntry, ...]
+    config: RunSettings, count: int, catalogue: tuple[CatalogueEntry, ...]
 ) -> list[tuple[str, ...]]:
     entries = tuple(entry.config_id for entry in catalogue)
     compositions = set()
@@ -408,7 +500,7 @@ def _controlled_compositions(
     return sorted(compositions)
 
 
-def _controlled_games(config: LineupConfig, count: int, catalogue: tuple[CatalogueEntry, ...]) -> list[_Block]:
+def _controlled_games(config: RunSettings, count: int, catalogue: tuple[CatalogueEntry, ...]) -> list[_Block]:
     if config.controlled_games == 0:
         return []
     blocks = []
@@ -454,7 +546,7 @@ def _fixed_backgrounds(
 
 def _comparison_population(
     comparison: ReplacementComparison,
-    config: LineupConfig,
+    config: RunSettings,
     catalogue: tuple[CatalogueEntry, ...],
     populations: list[Population],
 ) -> Population:
@@ -477,7 +569,7 @@ def _comparison_population(
 
 
 def _comparison_backgrounds(
-    config: LineupConfig, comparison: ReplacementComparison, count: int, population: Population
+    config: RunSettings, comparison: ReplacementComparison, count: int, population: Population
 ) -> list[tuple[tuple[str, ...], str | None, float | None]]:
     if population.kind == "subsets":
         return [(cell.opponents, None, None) for cell in population.composition_weights if cell.player_count == count]
@@ -490,7 +582,7 @@ def _comparison_backgrounds(
 
 
 def _matched_blocks(
-    config: LineupConfig,
+    config: RunSettings,
     comparison: ReplacementComparison,
     resolved: ResolvedComparison,
     count: int,
@@ -537,7 +629,7 @@ def _order_key(block: _Block) -> tuple[str, str, str | None, str | None]:
     return block.stream, block.condition_id, block.comparison_id, block.lineup_draw_id
 
 
-def _seat_orders(config: LineupConfig, block: _Block) -> list[tuple[int, ...]]:
+def _seat_orders(config: RunSettings, block: _Block) -> list[tuple[int, ...]]:
     count = len(block.lineup)
     indices = list(range(count))
     rng = random.Random(_seed(config.seed, *_order_key(block), "order"))  # noqa: S311
@@ -559,7 +651,7 @@ def _seat_orders(config: LineupConfig, block: _Block) -> list[tuple[int, ...]]:
     return orders
 
 
-def _job(config: LineupConfig, block: _Block, order: tuple[int, ...], permutation: int, rotation: int) -> PlannedMatch:
+def _job(config: RunSettings, block: _Block, order: tuple[int, ...], permutation: int, rotation: int) -> PlannedMatch:
     rotated = order[rotation:] + order[:rotation]
     identity = [block.stream, block.shared_deal_id, block.condition_id, block.arm_id, permutation, rotation]
     job_id = stable_id("job", identity)
@@ -594,12 +686,12 @@ def _job(config: LineupConfig, block: _Block, order: tuple[int, ...], permutatio
     )
 
 
-def _planned_jobs(config: LineupConfig, blocks: list[_Block]) -> list[PlannedMatch]:
+def _planned_jobs(config: RunSettings, blocks: list[_Block]) -> list[PlannedMatch]:
     jobs = []
     orders_by_condition: dict[tuple[str, str, str | None, str | None], list[tuple[int, ...]]] = {}
     for block in blocks:
         count = len(block.lineup)
-        if block.stream == "iid":
+        if block.stream in ("iid", "fixed"):
             jobs.append(_job(config, block, tuple(range(count)), 0, 0))
             continue
         key = _order_key(block)
@@ -613,7 +705,7 @@ def _planned_jobs(config: LineupConfig, blocks: list[_Block]) -> list[PlannedMat
     return jobs
 
 
-def _validate_references(config: LineupConfig, catalogue: tuple[CatalogueEntry, ...]) -> None:
+def _validate_references(config: RunSettings, catalogue: tuple[CatalogueEntry, ...]) -> None:
     for composition in config.compositions:
         if len(composition) not in config.player_counts:
             msg = "explicit composition length must match a selected player count"
@@ -628,7 +720,7 @@ def _validate_references(config: LineupConfig, catalogue: tuple[CatalogueEntry, 
 
 
 def _resolve_comparisons(
-    config: LineupConfig, catalogue: tuple[CatalogueEntry, ...], populations: list[Population]
+    config: RunSettings, catalogue: tuple[CatalogueEntry, ...], populations: list[Population]
 ) -> tuple[ResolvedComparison, ...]:
     resolved = []
     seen: set[str] = set()
@@ -654,25 +746,69 @@ def _resolve_comparisons(
     return tuple(resolved)
 
 
-def build_arena_plan(config: LineupConfig) -> ArenaPlan:
+def _fixed_games(config: RunSettings, catalogue: tuple[CatalogueEntry, ...]) -> list[_Block]:
+    lineup = tuple(_resolve_key(key, catalogue) for key in config.lineup)
+    condition = stable_id("condition", ["fixed", lineup])
+    blocks: list[_Block] = []
+    for game_index in range(config.games):
+        deal = stable_id("deal", ["fixed", condition, game_index])
+        blocks.append(
+            _Block(
+                lineup=lineup,
+                condition_id=condition,
+                stream="fixed",
+                block_id=deal,
+                shared_deal_id=deal,
+                game_index=game_index,
+                planned_quota=config.games,
+            )
+        )
+    return blocks
+
+
+def build_arena_plan(config: RunSettings) -> ArenaPlan:
     """Resolve the complete schedule before any bot is constructed or outcome observed."""
-    catalogue = resolve_catalogue(config.catalogue)
-    _validate_references(config, catalogue)
-    populations = _populations(config, catalogue)
-    selected_population = _get_population(config.population_id, populations)
-    comparisons = _resolve_comparisons(config, catalogue, populations)
-    blocks = []
-    for count in config.player_counts:
-        blocks.extend(_random_games(config, count, selected_population))
-        blocks.extend(_controlled_games(config, count, catalogue))
-        for definition, comparison in zip(config.comparisons, comparisons, strict=True):
-            population = _get_population(comparison.population_id, populations)
-            blocks.extend(_matched_blocks(config, definition, comparison, count, population))
+    definitions = config.catalogue
+    if config.is_fixed:
+        definitions = tuple(
+            candidate
+            for candidate in definitions
+            if (candidate.bot if candidate.key is None else candidate.key) in config.lineup
+        )
+    catalogue = resolve_catalogue(definitions, allow_external=config.is_fixed)
+    if config.is_fixed:
+        populations: list[Population] = []
+        comparisons: tuple[ResolvedComparison, ...] = ()
+        blocks = _fixed_games(config, catalogue)
+    else:
+        _validate_references(config, catalogue)
+        populations = _populations(config, catalogue)
+        selected_population = _get_population(config.population_id, populations)
+        comparisons = _resolve_comparisons(config, catalogue, populations)
+        blocks = []
+        for count in config.player_counts:
+            blocks.extend(_random_games(config, count, selected_population))
+            blocks.extend(_controlled_games(config, count, catalogue))
+            for definition, comparison in zip(config.comparisons, comparisons, strict=True):
+                population = _get_population(comparison.population_id, populations)
+                blocks.extend(_matched_blocks(config, definition, comparison, count, population))
     jobs = _planned_jobs(config, blocks)
-    rng = random.Random(_seed(config.seed, "execution_order"))  # noqa: S311
-    rng.shuffle(jobs)
+    if not config.is_fixed:
+        rng = random.Random(_seed(config.seed, "execution_order"))  # noqa: S311
+        rng.shuffle(jobs)
     execution = resolve(config.execution, config.protocol)
-    design = config.model_dump(mode="json")
+    design = config.model_dump(mode="json", exclude={"session", "display", "recording"})
+    if config.is_fixed:
+        resolved_by_key = {entry.key: entry for entry in catalogue}
+        design["catalogue"] = [
+            {
+                **candidate.model_dump(mode="json"),
+                "options": resolved_by_key[candidate.bot if candidate.key is None else candidate.key].options
+                if candidate.bot in EXTERNAL_SEATS
+                else candidate.options,
+            }
+            for candidate in definitions
+        ]
     design["execution"] = TypeAdapter(RunConfig).dump_python(execution, mode="json")
     return ArenaPlan(
         plan_id=stable_id(
@@ -777,8 +913,8 @@ def _validate_plan_contract(plan: ArenaPlan) -> None:
     if any(not plan.rules.min_players <= count <= plan.rules.max_players for count in plan.player_counts):
         msg = "plan player counts fall outside the game rules"
         raise ValueError(msg)
-    if not plan.protocol.anonymise_display_names:
-        msg = "planned matches require anonymous display names"
+    if not plan.protocol.anonymise_display_names and any(job.stream != "fixed" for job in plan.jobs):
+        msg = "experimental matches require anonymous display names"
         raise ValueError(msg)
     for comparison in plan.comparisons:
         if (

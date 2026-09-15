@@ -1,18 +1,19 @@
 """Candidate ranking and information limits for count-threshold bait."""
 
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from sixnimmt.arena.bots.composed import CandidateRanking, CountThresholdBaitBot, CountThresholdBaitOptions
 from sixnimmt.arena.bots.heuristics import HighestCardBot
+from sixnimmt.arena.config import RunConfig
 from sixnimmt.arena.players import PlayerConfig, resolve_players
-from sixnimmt.arena.runner import RunConfig, run_arena
 from sixnimmt.engine.actions import ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.fold import build_view
 from sixnimmt.engine.rules import MatchProtocol
 from sixnimmt.engine.setup import create_match
 from sixnimmt.engine.views import MatchView, PlayHistoryView, RevealedCardView, RowView, ViewRole
+from tests.run_helpers import match_facts, run_fixed
 
 
 @pytest.fixture
@@ -126,7 +127,7 @@ def test_configuration_has_no_default_policy(field: str) -> None:
         {"fallback_options": {"typo": 1}},
     ],
 )
-def test_invalid_options_are_rejected_before_running(changes: dict) -> None:
+def test_invalid_options_are_rejected_before_running(changes: dict[str, JsonValue]) -> None:
     options = {
         "intervening_card_threshold": 3,
         "candidate_ranking": "most_intervening",
@@ -152,8 +153,11 @@ def test_bait_with_nested_fallback_is_reproducible_across_backends(communication
         PlayerConfig(bot="closest_gap"),
     ]
     protocol = MatchProtocol(communication_enabled=communication, end_condition="fixed_hands", hands=2)
-    sequential = run_arena(players, 4, 123, protocol=protocol)
-    parallel = run_arena(players, 4, 123, protocol=protocol, config=RunConfig(backend="process", concurrency=2))
-    assert sequential == parallel
-    assert parallel.finished == 4
-    assert parallel.reproducible
+    sequential = run_fixed(players, 4, 123, protocol=protocol)
+    parallel = run_fixed(players, 4, 123, protocol=protocol, config=RunConfig(backend="process", concurrency=2))
+    assert [match_facts(record) for record in sequential.results] == [
+        match_facts(record) for record in parallel.results
+    ]
+    assert len(parallel.results) == 4
+    assert all(record.outcome == "finished" for record in parallel.results)
+    assert all(entry.deterministic for entry in parallel.plan.catalogue)

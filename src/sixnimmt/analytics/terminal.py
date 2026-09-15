@@ -1,6 +1,5 @@
 """Readable terminal tables for arena results and strategy comparisons."""
 
-from collections import defaultdict
 from io import StringIO
 from pathlib import Path
 
@@ -10,11 +9,14 @@ from rich.table import Table
 from rich.text import Text
 
 from sixnimmt.analytics.models import Estimate, EvaluationReport
-
-
-def _label(report: EvaluationReport, config_id: str) -> str:
-    label = report.catalogue.get(config_id, config_id)
-    return label.replace("_", " ") if label.islower() else label
+from sixnimmt.analytics.projection import (
+    ReportArtifacts,
+    average_score,
+    comparison_groups,
+    configuration_label,
+    population_groups,
+    result_rows,
+)
 
 
 def _metric(estimate: Estimate, *, difference: bool = False) -> Text:
@@ -30,19 +32,6 @@ def _metric(estimate: Estimate, *, difference: bool = False) -> Text:
     else:
         result.append(f"\n{interval.low:.1%}-{interval.high:.1%}", style="dim")
     return result
-
-
-def _average_score(report: EvaluationReport, estimate: Estimate) -> str:
-    for profile in report.outcome_profiles:
-        if (
-            profile.configuration_id == estimate.configuration_id
-            and profile.player_count == estimate.player_count
-            and profile.population_id == estimate.population_id
-            and profile.view == estimate.view
-            and profile.mean_penalty is not None
-        ):
-            return f"{profile.mean_penalty:.1f}"
-    return "—"
 
 
 def _summary(report: EvaluationReport) -> list[RenderableType]:
@@ -67,12 +56,12 @@ def _summary(report: EvaluationReport) -> list[RenderableType]:
         outcomes.add_column(label, justify="right", header_style="bold", style=style if count > 0 else "dim")
     outcomes.add_row(*(f"{count:,}" for _, count, _ in counts))
     items.append(outcomes)
-    protocol = report.context["protocol"]
-    mode = "Communication enabled" if protocol["communication_enabled"] else "Classic rules"
+    protocol = report.context.protocol
+    mode = "Communication enabled" if protocol.communication_enabled else "Classic rules"
     ending = (
-        f"{protocol['hands']} completed hands"
-        if protocol["end_condition"] == "fixed_hands"
-        else f"first completed hand reaching {report.context['rules']['target_score']} points"
+        f"{protocol.hands} completed hands"
+        if protocol.end_condition == "fixed_hands"
+        else f"first completed hand reaching {report.context.rules.target_score} points"
     )
     items.append(Text(f"{mode} · {ending}", style="dim"))
     items.append(
@@ -92,21 +81,19 @@ def _result_table(report: EvaluationReport, estimates: list[Estimate]) -> Table:
     table.add_column("Win share", justify="right")
     table.add_column(f"Top {cutoff}", justify="right")
     table.add_column("Avg score", justify="right")
-    rows: dict[tuple[str, int | None], dict[str, Estimate]] = defaultdict(dict)
-    for estimate in estimates:
-        rows[(estimate.configuration_id, estimate.seat)][estimate.objective] = estimate
-    for (config_id, seat), values in rows.items():
-        win = values["win_credit"]
-        label = _label(report, config_id)
-        if seat is not None:
-            label += f" (seat {seat + 1})"
-        coverage = win.coverage
+    for row in result_rows(estimates):
+        item = row.context
+        label = configuration_label(report, item.configuration_id)
+        if item.seat is not None:
+            label += f" (seat {item.seat + 1})"
+        coverage = item.coverage
+        score = average_score(report, item)
         table.add_row(
             Text(label, style="bold"),
             f"{coverage.finished_appearances:,}/{coverage.planned_appearances:,}",
-            _metric(win),
-            _metric(values["acceptable_credit"]),
-            _average_score(report, win),
+            _metric(row.win) if row.win is not None else Text("—", style="dim"),
+            _metric(row.acceptable) if row.acceptable is not None else Text("—", style="dim"),
+            f"{score:.1f}" if score is not None else "—",
         )
     return table
 
@@ -115,9 +102,7 @@ def _population_tables(report: EvaluationReport) -> list[RenderableType]:
     primary = [estimate for estimate in report.population_estimates if estimate.view in ("iid", "fixed")]
     if len(primary) == 0:
         primary = [estimate for estimate in report.population_estimates if estimate.view == "weighted"]
-    groups: dict[tuple[int, str | None, str], list[Estimate]] = defaultdict(list)
-    for estimate in primary:
-        groups[(estimate.player_count, estimate.population_id, estimate.view)].append(estimate)
+    groups = population_groups(primary)
     items: list[RenderableType] = []
     for (count, population, stream), estimates in groups.items():
         sample = {"iid": "random lineups", "fixed": "fixed lineup", "weighted": "weighted opponents"}[stream]
@@ -126,7 +111,7 @@ def _population_tables(report: EvaluationReport) -> list[RenderableType]:
             title += f" · {population.replace('_', ' ')}"
         items.extend([Text(title, style="bold"), _result_table(report, estimates)])
         absent = [
-            _label(report, estimate.configuration_id)
+            configuration_label(report, estimate.configuration_id)
             for estimate in estimates
             if estimate.objective == "win_credit" and estimate.coverage.planned_appearances == 0
         ]
@@ -136,15 +121,13 @@ def _population_tables(report: EvaluationReport) -> list[RenderableType]:
 
 
 def _comparison_tables(report: EvaluationReport) -> list[RenderableType]:
-    groups: dict[tuple[str | None, int, str | None], list[Estimate]] = defaultdict(list)
-    for estimate in report.comparisons:
-        if estimate.condition_id is None:
-            groups[(estimate.comparison_id, estimate.player_count, estimate.population_id)].append(estimate)
+    groups = comparison_groups([item for item in report.comparisons if item.condition_id is None])
     items: list[RenderableType] = []
-    for (name, count, population), estimates in groups.items():
+    for key, estimates in groups.items():
+        name, count, population = key.comparison_id, key.player_count, key.population_id
         first = estimates[0]
-        reference = _label(report, first.reference_id) if first.reference_id is not None else "reference"
-        title = f"\n{_label(report, first.configuration_id)} vs {reference} · {count} players"
+        reference = configuration_label(report, first.reference_id) if first.reference_id is not None else "reference"
+        title = f"\n{configuration_label(report, first.configuration_id)} vs {reference} · {count} players"
         items.append(Text(title, style="bold"))
         context = f"{name} · {population}" if population is not None else str(name)
         items.append(Text(context, style="dim"))
@@ -170,7 +153,7 @@ def _comparison_tables(report: EvaluationReport) -> list[RenderableType]:
     return items
 
 
-def terminal_report(report: EvaluationReport) -> Group:
+def terminal_report(report: EvaluationReport, *, artifacts: ReportArtifacts | None = None) -> Group:
     """Build tables that adapt to the console width and keep user labels literal."""
     items = _summary(report)
     items.extend(_population_tables(report))
@@ -190,23 +173,26 @@ def terminal_report(report: EvaluationReport) -> Group:
     )
     if any(estimate.status == "unsupported" for estimate in report.population_estimates):
         message = "Some weighted comparisons need more opponent coverage."
-        if report.artifact_dir is not None:
+        if artifacts is not None:
             message += " See the saved report."
         items.append(Text(message, style="yellow"))
     if report.analysis_spec.evidence_label != "unspecified":
         items.append(Text(f"Evidence: {report.analysis_spec.evidence_label}.", style="dim"))
-    if report.artifact_dir is not None:
-        directory = Path(report.artifact_dir)
-        if directory.is_relative_to(Path.cwd()):
-            directory = directory.relative_to(Path.cwd())
-        items.append(Text(f"\nFull report  {directory}/report.md", style="cyan"))
-        items.append(Text(f"Saved data   {directory}/analysis.json.gz", style="dim"))
+    if artifacts is not None:
+        report_path = artifacts.report
+        analysis_path = artifacts.analysis
+        if report_path.is_relative_to(Path.cwd()):
+            report_path = report_path.relative_to(Path.cwd())
+        if analysis_path.is_relative_to(Path.cwd()):
+            analysis_path = analysis_path.relative_to(Path.cwd())
+        items.append(Text(f"\nFull report  {report_path}", style="cyan"))
+        items.append(Text(f"Saved data   {analysis_path}", style="dim"))
     return Group(*items)
 
 
-def report_terminal(report: EvaluationReport, *, width: int = 100) -> str:
+def report_terminal(report: EvaluationReport, *, width: int = 100, artifacts: ReportArtifacts | None = None) -> str:
     """Return an aligned, color-free summary for callers saving terminal text."""
     output = StringIO()
     console = Console(file=output, width=width, color_system=None, highlight=False)
-    console.print(terminal_report(report))
+    console.print(terminal_report(report, artifacts=artifacts))
     return output.getvalue().rstrip()

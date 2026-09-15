@@ -6,7 +6,8 @@ import pytest
 
 from sixnimmt.arena.bots.base import ActionBatch, Rejection
 from sixnimmt.arena.bots.heuristics import LowestFittingCardBot
-from sixnimmt.arena.runner import RunConfig, run_match
+from sixnimmt.arena.config import RunConfig
+from sixnimmt.arena.match import run_match
 from sixnimmt.engine.actions import Action, CommitAction, SelectCardAction, SendMessageAction
 from sixnimmt.engine.rules import MatchProtocol
 from sixnimmt.engine.views import MatchView

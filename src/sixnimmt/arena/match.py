@@ -4,33 +4,48 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import partial
-from threading import Event as ThreadEvent
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, runtime_checkable
 
-from sixnimmt.arena.bots.base import ActionBatch, Bot, Rejection, memory_bot, statistics_bot, traced_bot
+from pydantic import JsonValue
+from typing_extensions import TypedDict
+
+from sixnimmt.arena.bots.base import ActionBatch, Bot, Rejection, memory_bot, traced_bot
+from sixnimmt.arena.bots.diagnostics import decision_evaluation
 from sixnimmt.arena.bots.lifecycle import (
     BotContext,
     BotMatchEnd,
     ControllerStopped,
     DecisionOutcome,
     cancel_bot,
+    close_bot,
     lifecycle_owners,
     settle_decision,
+    start_bot,
 )
-from sixnimmt.arena.config import RunConfig, resolve, resolved_abandoned_limit
-from sixnimmt.arena.decisions import AbandonedDecisions, Decision, decide
+from sixnimmt.arena.config import RunConfig, resolve, resolve_settings, resolved_abandoned_limit
+from sixnimmt.arena.decisions import (
+    AbandonedDecisions,
+    Decision,
+    DecisionMetrics,
+    RoundRobinScheduler,
+    Scheduler,
+    SequentialScheduler,
+    StopSignal,
+    decide,
+    prepare_batch,
+)
 from sixnimmt.arena.results import MatchOutcome, MatchResult
-from sixnimmt.arena.scheduling import RoundRobinScheduler, Scheduler, SequentialScheduler
+from sixnimmt.arena.results import public_reason as _safe_reason
 from sixnimmt.arena.tracing import write_standalone_manifest
-from sixnimmt.arena.transactions import prepare_batch
 from sixnimmt.engine.actions import Action, SelectCardAction
 from sixnimmt.engine.audience import Viewer
-from sixnimmt.engine.errors import EngineRejection, ErrorCode
+from sixnimmt.engine.errors import EngineRejection
 from sixnimmt.engine.events import (
     ActionRejectedEvent,
     Event,
     MatchAbandonedEvent,
+    MatchEndedEvent,
     assign_sequence,
     audience_for_player,
 )
@@ -44,7 +59,21 @@ from sixnimmt.persistence.sink import ActionRecord, EventSink, JsonlEventSink, N
 
 ActionOutcome = Literal["accepted", "rejected", "timeout", "error"]
 Observer = Callable[[MatchState, tuple[Event, ...]], None]
-ActivityObserver = Callable[[dict[str, Any]], None]
+ActivityObserver = Callable[[dict[str, JsonValue | tuple[str, ...]]], None]
+
+
+class DecisionActivityContext(TypedDict, closed=True):
+    decision_number: int
+    view_id: str
+    hand_number: int
+    play_number: int
+    phase: str
+    cards_remaining: int
+
+
+@runtime_checkable
+class ModelTraceSink(Protocol):
+    def record_model(self, payload: dict[str, Any], *, player_id: str, display_name: str) -> None: ...
 
 
 def _decision_actions(decision: Decision) -> tuple[Action, ...]:
@@ -57,16 +86,6 @@ def _decision_actions(decision: Decision) -> tuple[Action, ...]:
 
 class ArenaError(RuntimeError):
     """A run cannot proceed because its harness or recording failed."""
-
-
-def _safe_reason(reason: str | None) -> str | None:
-    if reason is None:
-        return None
-    if reason in ("operator_stop", "decision_timeout", "match_action_limit", "play_action_limit"):
-        return reason
-    if reason in ErrorCode:
-        return reason
-    return "match_failed"
 
 
 class _BotLifecycle:
@@ -83,9 +102,7 @@ class _BotLifecycle:
         self.owners.update(owners)
         # Close even a partially initialized hook; close must be idempotent.
         self.started.append((bot, seat))
-        hook = getattr(bot, "start", None)
-        if callable(hook):
-            hook(context)
+        start_bot(bot, context)
 
     def cancel(self, bot: Bot, player_id: str, reason: str) -> None:
         try:
@@ -103,12 +120,22 @@ class _BotLifecycle:
                     result.outcome, result.winners, scores, _safe_reason(result.reason), match.folders[seat].view()
                 )
             try:
-                hook = getattr(bot, "close", None)
-                if callable(hook):
-                    hook(end)
+                close_bot(bot, end)
             except Exception as error:
                 self.errors.append((player_id, "close", repr(error)))
         self.started.clear()
+
+    def close_unstarted(self, bots: Sequence[Bot], seats: Sequence[PlayerSeat]) -> None:
+        """The job owns constructed resources until start transfers them here."""
+        for bot, seat in reversed(tuple(zip(bots, seats, strict=False))):
+            owners = lifecycle_owners(bot)
+            if len(owners & self.owners) > 0:
+                continue
+            self.owners.update(owners)
+            try:
+                close_bot(bot, None)
+            except Exception as error:
+                self.errors.append((seat.player_id, "close", repr(error)))
 
 
 def _validate_player_count(count: int) -> None:
@@ -129,14 +156,17 @@ class _Match:
         sink: EventSink,
         observer: Observer | None,
         on_activity: ActivityObserver | None = None,
+        metrics: DecisionMetrics | None = None,
+        lifecycle: _BotLifecycle | None = None,
     ) -> None:
         self.seed = seed
         self.rules = rules
         self.protocol = protocol
-        self.config = config
+        self.config = resolve_settings(config, protocol).match
         self.sink = sink
         self.observer = observer
         self.on_activity = on_activity
+        self.metrics = metrics
         self.state, initial = create_match(match_id, seats, seed, rules=rules, protocol=protocol)
         self.events: list[Event] = []
         self.folders = [ViewFolder(Viewer(ViewRole.PLAYER, seat.player_id)) for seat in seats]
@@ -145,7 +175,7 @@ class _Match:
         self.decision_numbers = [0] * len(seats)
         self.action_seq = 0
         self.play_attempts = 0
-        self.lifecycle = _BotLifecycle()
+        self.lifecycle = _BotLifecycle() if lifecycle is None else lifecycle
         self.append(initial)
 
     def append(self, events: Sequence[Event]) -> None:
@@ -161,7 +191,7 @@ class _Match:
         winners: tuple[str, ...] = ()
         if outcome == MatchOutcome.FINISHED:
             final_event = self.events[-1]
-            if final_event.type != "match_ended":
+            if not isinstance(final_event, MatchEndedEvent):
                 msg = "finished match requires a match_ended event"
                 raise ArenaError(msg)
             winners = tuple(final_event.data["winners"])
@@ -211,7 +241,7 @@ class _Match:
         raise ArenaError(msg)
 
     def offer(
-        self, bot: Bot, seat: int, abandoned: AbandonedDecisions, stop_event: ThreadEvent | None = None
+        self, bot: Bot, seat: int, abandoned: AbandonedDecisions, stop_event: StopSignal | None = None
     ) -> MatchResult | None:
         rejection = None
         rejections = 0
@@ -219,7 +249,7 @@ class _Match:
         while True:
             view = self.folders[seat].view()
             self.decision_numbers[seat] += 1
-            context = {
+            context: DecisionActivityContext = {
                 "decision_number": self.decision_numbers[seat],
                 "view_id": view.view_id,
                 "hand_number": view.hand_number,
@@ -248,7 +278,7 @@ class _Match:
                 return terminal
             rejection = replace(rejection, legal_actions=self.folders[seat].view().legal_actions)
 
-    def activity(self, seat: int, kind: str, **data: Any) -> None:
+    def activity(self, seat: int, kind: str, **data: JsonValue) -> None:
         if self.on_activity is None:
             return
         player = self.state.players[seat]
@@ -267,7 +297,7 @@ class _Match:
         outcome: DecisionOutcome,
         result: MatchResult | None,
         rejection: Rejection | None,
-        context: dict[str, Any],
+        context: DecisionActivityContext,
     ) -> None:
         if self.on_activity is None:
             return
@@ -289,7 +319,7 @@ class _Match:
             attempted_actions=[] if accepted else actions,
         )
 
-    def report_evaluation(self, bot: Bot, seat: int, decision: Decision, context: dict[str, Any]) -> None:
+    def report_evaluation(self, bot: Bot, seat: int, decision: Decision, context: DecisionActivityContext) -> None:
         if self.on_activity is None:
             return
         chosen_card = next(
@@ -298,32 +328,13 @@ class _Match:
         )
         if chosen_card is None:
             return
-        statistics = statistics_bot(bot)
-        if statistics is None:
-            return
         try:
-            stats = statistics.stats()
+            evaluation = decision_evaluation(bot, context["cards_remaining"])
         except Exception:
-            # Optional presentation statistics cannot invalidate a published move.
+            # Diagnostics cannot invalidate an already published move.
             return
-        candidates = stats.get("candidate_values")
-        if isinstance(candidates, dict) and len(candidates) > 0:
-            horizon = stats.get("horizon")
-            horizon_plays = None
-            if type(horizon) is int:
-                horizon_plays = min(horizon, context["cards_remaining"])
-            elif horizon == "remaining_hand":
-                horizon_plays = context["cards_remaining"]
-            self.activity(
-                seat,
-                "simulation_evaluation",
-                **context,
-                chosen_card=chosen_card,
-                objective=stats.get("objective"),
-                horizon_plays=horizon_plays,
-                sample_count=stats.get("sample_count"),
-                candidate_values=dict(candidates),
-            )
+        if evaluation is not None:
+            self.activity(seat, "simulation_evaluation", **context, chosen_card=chosen_card, **evaluation.as_activity())
 
     def publish_decision(
         self, bot: Bot, seat: int, decision: Decision
@@ -331,9 +342,8 @@ class _Match:
         accepted_before = self.accepted[seat]
         player_id = self.state.players[seat].player_id
         try:
-            record_call = getattr(self.sink, "record_call", None)
-            if record_call is not None:
-                record_call(player_id, decision.duration_ms)
+            if self.metrics is not None:
+                self.metrics.record_call(player_id, decision.duration_ms)
             if isinstance(decision.action, ActionBatch):
                 result, rejection = self.apply_batch(bot, seat, decision, decision.action)
             else:
@@ -545,13 +555,13 @@ def decision_reason(decision: Decision, refused: Rejection | None) -> str | None
 def _record_bot_trace(
     payload: dict[str, Any],
     *,
-    record_model: Callable[..., None] | None,
+    model_sink: ModelTraceSink | None,
     on_activity: ActivityObserver | None,
     player_id: str,
     display_name: str,
 ) -> None:
-    if record_model is not None:
-        record_model(payload, player_id=player_id, display_name=display_name)
+    if model_sink is not None:
+        model_sink.record_model(payload, player_id=player_id, display_name=display_name)
     if on_activity is not None:
         on_activity({**payload, "player_id": player_id, "display_name": display_name})
 
@@ -559,16 +569,16 @@ def _record_bot_trace(
 def _attach_bot_traces(
     bots: Sequence[Bot], seats: Sequence[PlayerSeat], sink: EventSink, on_activity: ActivityObserver | None = None
 ) -> None:
-    record_model = getattr(sink, "record_model", None)
+    model_sink = sink if isinstance(sink, ModelTraceSink) else None
     for bot, player in zip(bots, seats, strict=True):
         traced = traced_bot(bot)
         if traced is None:
             continue
         callback = None
-        if record_model is not None or on_activity is not None:
+        if model_sink is not None or on_activity is not None:
             callback = partial(
                 _record_bot_trace,
-                record_model=record_model,
+                model_sink=model_sink,
                 on_activity=on_activity,
                 player_id=player.player_id,
                 display_name=player.name_or_id,
@@ -581,7 +591,7 @@ def _run_bots(
     bots: Sequence[Bot],
     scheduler: Scheduler,
     abandoned: AbandonedDecisions,
-    stop_event: ThreadEvent | None,
+    stop_event: StopSignal | None,
 ) -> MatchResult:
     for seat, bot in enumerate(bots):
         player_id = match.state.players[seat].player_id
@@ -615,8 +625,10 @@ def _run_match(
     on_activity: ActivityObserver | None = None,
     max_actions: int | None = None,
     sink: EventSink | None = None,
-    stop_event: ThreadEvent | None = None,
+    stop_event: StopSignal | None = None,
     _abandoned: AbandonedDecisions | None = None,
+    _metrics: DecisionMetrics | None = None,
+    _lifecycle: _BotLifecycle | None = None,
 ) -> MatchResult:
     """Run trusted bots on folded views. Observer is privileged and must be thread-safe.
 
@@ -634,16 +646,17 @@ def _run_match(
     if len(seats) != len(bots):
         msg = "seats and bots must have the same length"
         raise ValueError(msg)
+    lifecycle = _BotLifecycle() if _lifecycle is None else _lifecycle
     owned = sink is None
     if sink is None:
         sink = NullEventSink()
-        if config.trace_dir is not None:
+    try:
+        if owned and config.trace_dir is not None:
             config.trace_dir.mkdir(parents=True, exist_ok=False)
             sink = JsonlEventSink(config.trace_dir, match_id)
-    abandoned = AbandonedDecisions(resolved_abandoned_limit(config)) if _abandoned is None else _abandoned
-    scheduler = RoundRobinScheduler() if config.scheduler == "round_robin" else SequentialScheduler()
-    try:
-        match = _Match(seed, match_id, seats, rules, protocol, config, sink, observer, on_activity)
+        abandoned = AbandonedDecisions(resolved_abandoned_limit(config)) if _abandoned is None else _abandoned
+        scheduler = RoundRobinScheduler() if config.scheduler == "round_robin" else SequentialScheduler()
+        match = _Match(seed, match_id, seats, rules, protocol, config, sink, observer, on_activity, _metrics, lifecycle)
         result = None
         try:
             _attach_bot_traces(bots, seats, sink, on_activity)
@@ -653,6 +666,7 @@ def _run_match(
                 for bot, seat in match.lifecycle.started:
                     match.lifecycle.cancel(bot, seats[seat].player_id, "match_failed")
             match.lifecycle.close(match, result)
+            lifecycle.close_unstarted(bots, seats)
         result = replace(result, lifecycle_errors=tuple(match.lifecycle.errors))
         if on_activity is not None:
             on_activity({
@@ -666,6 +680,7 @@ def _run_match(
             write_standalone_manifest(result, bots, seats, rules, protocol, config, abandoned.total)
         return result
     finally:
+        lifecycle.close_unstarted(bots, seats)
         if owned:
             sink.close()
 
@@ -683,7 +698,7 @@ def run_match(
     on_activity: ActivityObserver | None = None,
     max_actions: int | None = None,
     sink: EventSink | None = None,
-    stop_event: ThreadEvent | None = None,
+    stop_event: StopSignal | None = None,
 ) -> MatchResult:
     """Run one match. A supplied sink remains owned by the caller.
 

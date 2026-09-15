@@ -15,7 +15,8 @@ from sixnimmt.arena.bots.composed import (
 from sixnimmt.arena.bots.heuristics import RandomBot
 from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.bots.simulation import SimulationBot
-from sixnimmt.arena.runner import derive_seed, run_match
+from sixnimmt.arena.execution import derive_seed
+from sixnimmt.arena.match import run_match
 from sixnimmt.engine.actions import Action, SelectCardAction, SendMessageAction
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.cards import bull_heads

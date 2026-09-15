@@ -1,20 +1,21 @@
 """Controlled pickups and configurable fallback integration."""
 
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from sixnimmt.arena.bots.base import BotOptions, BotSpec
 from sixnimmt.arena.bots.composed import ControlledBurnBot, ControlledBurnOptions
 from sixnimmt.arena.bots.heuristics import HighestCardBot
 from sixnimmt.arena.bots.registry import REGISTRY
+from sixnimmt.arena.config import RunConfig
 from sixnimmt.arena.players import PlayerConfig, resolve_players
-from sixnimmt.arena.runner import RunConfig, run_arena
 from sixnimmt.engine.actions import ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.fold import build_view
 from sixnimmt.engine.rules import MatchProtocol
 from sixnimmt.engine.setup import create_match
 from sixnimmt.engine.views import MatchView, RowView, ViewRole
+from tests.run_helpers import match_facts, run_fixed
 
 
 @pytest.fixture
@@ -66,13 +67,13 @@ def test_burn_commits_its_selected_card(observation: MatchView) -> None:
         {"K": True, "fallback_strategy": "random"},
     ],
 )
-def test_burn_rejects_missing_or_invalid_required_settings(options: dict) -> None:
+def test_burn_rejects_missing_or_invalid_required_settings(options: dict[str, JsonValue]) -> None:
     with pytest.raises(ValidationError):
         ControlledBurnOptions.model_validate(options)
 
 
 @pytest.mark.parametrize("fallback, options", [("missing", {}), ("closest_gap", {"typo": 1})])
-def test_burn_validates_fallback_before_running(fallback: str, options: dict) -> None:
+def test_burn_validates_fallback_before_running(fallback: str, options: dict[str, JsonValue]) -> None:
     with pytest.raises(ValueError):
         resolve_players([
             PlayerConfig(
@@ -127,7 +128,9 @@ def test_burn_preserves_fallback_options_and_provenance(
     assert resolved.build(123).act(observation) == SelectCardAction(card=5)
     assert resolved.deterministic is deterministic
     assert resolved.recorded_options["fallback_options"] == {"prefer_high": False}
-    assert resolved.metadata["fallback_metadata"]["version"] == "test"
+    fallback_metadata = resolved.metadata["fallback_metadata"]
+    assert isinstance(fallback_metadata, dict)
+    assert fallback_metadata["version"] == "test"
 
 
 @pytest.mark.parametrize("communication", [False, True])
@@ -137,11 +140,14 @@ def test_burn_is_reproducible_across_backends(communication: bool) -> None:
         PlayerConfig(bot="closest_gap"),
     ]
     protocol = MatchProtocol(communication_enabled=communication, end_condition="fixed_hands", hands=2)
-    sequential = run_arena(players, 4, 123, protocol=protocol)
-    parallel = run_arena(players, 4, 123, protocol=protocol, config=RunConfig(backend="process", concurrency=2))
-    assert sequential == parallel
-    assert parallel.finished == 4
-    assert parallel.reproducible
+    sequential = run_fixed(players, 4, 123, protocol=protocol)
+    parallel = run_fixed(players, 4, 123, protocol=protocol, config=RunConfig(backend="process", concurrency=2))
+    assert [match_facts(record) for record in sequential.results] == [
+        match_facts(record) for record in parallel.results
+    ]
+    assert len(parallel.results) == 4
+    assert all(record.outcome == "finished" for record in parallel.results)
+    assert all(entry.deterministic for entry in parallel.plan.catalogue)
 
 
 def test_burn_sends_custom_fallback_factory_to_process_workers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -161,5 +167,6 @@ def test_burn_sends_custom_fallback_factory_to_process_workers(monkeypatch: pyte
         PlayerConfig(bot="random"),
     ]
     protocol = MatchProtocol(end_condition="fixed_hands", hands=1)
-    result = run_arena(players, 2, 123, protocol=protocol, config=RunConfig(backend="process"))
-    assert result.finished == 2
+    result = run_fixed(players, 2, 123, protocol=protocol, config=RunConfig(backend="process"))
+    assert len(result.results) == 2
+    assert all(record.outcome == "finished" for record in result.results)

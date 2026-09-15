@@ -2,18 +2,26 @@
 
 from dataclasses import dataclass
 from functools import partial
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field, JsonValue
 
-from sixnimmt.arena.bots.base import ActionBatch, Bot, BotOptions, Rejection, ResolveStrategy, StrategyConstruction
+from sixnimmt.arena.bots.base import (
+    ActionBatch,
+    Bot,
+    BotOptions,
+    Rejection,
+    ResolveStrategy,
+    StrategyConstruction,
+    observe_bot,
+)
 from sixnimmt.arena.bots.heuristics import applicable_row, cheapest_row, currently_fits, row_penalty
 from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt.engine.cards import bull_heads
 from sixnimmt.engine.views import MatchView, RowView
 
 if TYPE_CHECKING:
-    from sixnimmt.arena.players import ResolvedPlayer
+    from sixnimmt.arena.players import ResolvedStrategy
 
 
 class ControlledBurnOptions(BotOptions):
@@ -30,7 +38,11 @@ class ControlledBurnBot(Bot):
         self.K = K
         self.fallback = fallback
 
+    def observe(self, view: MatchView) -> None:
+        observe_bot(self.delegate_bot(), view)
+
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action | ActionBatch:
+        self.observe(view)
         if "choose_row" in view.legal_actions:
             return ChooseRowAction(row_index=cheapest_row(view.rows).index)
         if "commit" in view.legal_actions:
@@ -42,12 +54,8 @@ class ControlledBurnBot(Bot):
             return SelectCardAction(card=card)
         return self.fallback.act(view, rejection)
 
-    def __getattr__(self, name: str) -> Any:
-        # Preserve optional tracing, statistics, and transactional-memory hooks.
-        fallback = self.__dict__.get("fallback")
-        if fallback is None:
-            raise AttributeError(name)
-        return getattr(fallback, name)
+    def delegate_bot(self) -> Bot:
+        return self.fallback
 
 
 CandidateRanking = Literal["most_intervening", "cheapest_pickup", "highest_card"]
@@ -79,7 +87,11 @@ class CountThresholdBaitBot(Bot):
         self.candidate_ranking = candidate_ranking
         self.fallback = fallback
 
+    def observe(self, view: MatchView) -> None:
+        observe_bot(self.delegate_bot(), view)
+
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action | ActionBatch:
+        self.observe(view)
         if "choose_row" in view.legal_actions:
             return ChooseRowAction(row_index=cheapest_row(view.rows).index)
         if "commit" in view.legal_actions:
@@ -111,12 +123,8 @@ class CountThresholdBaitBot(Bot):
             return (candidate.pickup_cost, candidate.card)
         return (-candidate.card,)
 
-    def __getattr__(self, name: str) -> Any:
-        # Preserve optional tracing, statistics, and transactional-memory hooks.
-        fallback = self.__dict__.get("fallback")
-        if fallback is None:
-            raise AttributeError(name)
-        return getattr(fallback, name)
+    def delegate_bot(self) -> Bot:
+        return self.fallback
 
 
 class HandAwareRowChoiceOptions(BotOptions):
@@ -133,7 +141,11 @@ class HandAwareRowChoiceBot(Bot):
         self.max_extra_penalty = max_extra_penalty
         self.card_bot = card_bot
 
+    def observe(self, view: MatchView) -> None:
+        observe_bot(self.delegate_bot(), view)
+
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action | ActionBatch:
+        self.observe(view)
         if "choose_row" not in view.legal_actions:
             return self.card_bot.act(view, rejection)
         if view.awaiting_card is None:
@@ -158,12 +170,8 @@ class HandAwareRowChoiceBot(Bot):
         _, _, row_index = min(ranked_rows)
         return ChooseRowAction(row_index=row_index)
 
-    def __getattr__(self, name: str) -> Any:
-        # Preserve the delegate's optional tracing, stats, and memory hooks.
-        card_bot = self.__dict__.get("card_bot")
-        if card_bot is None:
-            raise AttributeError(name)
-        return getattr(card_bot, name)
+    def delegate_bot(self) -> Bot:
+        return self.card_bot
 
 
 def resolve_composed(options: BotOptions, resolve: ResolveStrategy) -> StrategyConstruction:
@@ -187,12 +195,12 @@ def resolve_composed(options: BotOptions, resolve: ResolveStrategy) -> StrategyC
     raise TypeError(msg)
 
 
-def _build_hand_aware(seed: int, *, options: HandAwareRowChoiceOptions, delegate: "ResolvedPlayer") -> Bot:
+def _build_hand_aware(seed: int, *, options: HandAwareRowChoiceOptions, delegate: "ResolvedStrategy") -> Bot:
     return HandAwareRowChoiceBot(options.max_extra_penalty, delegate.build(seed))
 
 
 def _build_bait(
-    seed: int, *, options: ControlledBurnOptions | CountThresholdBaitOptions, delegate: "ResolvedPlayer"
+    seed: int, *, options: ControlledBurnOptions | CountThresholdBaitOptions, delegate: "ResolvedStrategy"
 ) -> Bot:
     if isinstance(options, ControlledBurnOptions):
         return ControlledBurnBot(options.K, delegate.build(seed))

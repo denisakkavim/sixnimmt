@@ -4,7 +4,7 @@ import pytest
 
 from sixnimmt.arena.bots.heuristics import LowestFittingCardBot
 from sixnimmt.arena.bots.llm import observation_text
-from sixnimmt.arena.runner import run_match
+from sixnimmt.arena.match import run_match
 from sixnimmt.engine.actions import SelectCardAction, SendMessageAction
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.events import CardPlacedEvent, CardsRevealedEvent, PlayStartedEvent, RowTakenEvent

@@ -282,7 +282,7 @@ def test_tool_failure_remains_visible_among_completed_tools() -> None:
     ],
 )
 def test_candidates_show_objective_horizon_chosen_value_and_gap(
-    objective: dict, meaning: str, probability: bool
+    objective: dict[str, object], meaning: str, probability: bool
 ) -> None:
     book = CommentaryBook()
     _start(book)

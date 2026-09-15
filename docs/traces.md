@@ -1,25 +1,25 @@
 # Traces and replay
 
-Arena comparisons keep results and provenance in memory by default. Supply
+All runs keep results and provenance in memory by default. Supply
 `--output-dir` to save them, and add `--trace` for detailed logs in that directory's
 `traces/` subdirectory:
 
 ```bash
-uv run sixnimmt arena --games 2 --output-dir runs/first-run --trace
+uv run sixnimmt play --games 2 --output-dir runs/first-run --trace
 ```
 
 `--trace` requires `--output-dir`; the directory must not already exist.
 Without `--output-dir`, the CLI writes no files, including when `--json` prints
-the full report. Python comparisons use
-`run_plan(plan, output_dir=Path(...), trace=True)`. The lower-level `run_match`
-and fixed-lineup `run_arena` APIs retain their `RunConfig(trace_dir=Path(...))`
-option. Without tracing, `run_arena` returns fixed-seat aggregates, while
-`run_match` returns its individual result with events.
+the full report. Python callers set
+`RunSettings(recording=RecordingOptions(output_dir=Path(...), trace=True), ...)`
+and call `application.run(settings)`. Fixed lineups, sampled schedules, and watched
+games all use the same recording policy and evidence format. External seats need
+workspaces during execution; saving a run retains them under its output directory.
 
 ## Files
 
 Use result records or the trace manifest's filenames rather than guessing names.
-Saved comparison runs contain these artifacts:
+Saved runs contain these artifacts:
 
 | File | Contents |
 | --- | --- |
@@ -29,17 +29,24 @@ Saved comparison runs contain these artifacts:
 | `analysis.json.gz` | Full typed analysis in gzip-compressed JSON |
 | `report.md` | Readable strategy tables and collapsed previews of exploratory results |
 | `traces/manifest.json` | Trace filenames and returned outcomes for single-match summaries |
-| `traces/<match>.jsonl` | Complete authoritative event history, including private/admin events |
-| `traces/<match>.actions.jsonl` | Attempt records and decision measurements |
-| `traces/<match>.model.jsonl` | Optional raw model requests, responses, and parsing diagnostics |
+| `traces/<match_id>.jsonl` | Complete authoritative event history, including private/admin events |
+| `traces/<match_id>.actions.jsonl` | Attempt records and decision measurements |
+| `traces/<match_id>.model.jsonl` | Optional raw model requests, responses, and parsing diagnostics |
+| `matches/<match_id>/seats/player_N/` | Private external-seat workspace and connection files where applicable |
 
 Each JSONL line is one JSON object. Event and action writers can add
 `player_display_names` labels to aid inspection; the readers reconstruct the
 typed event/action models independently of those labels.
 
-With `--output-dir` and without `--trace`, the output contains only `plan.json`, `results.jsonl`,
-`manifest.json`, `report.md`, and `analysis.json.gz`. The CLI writes both reports
-after execution. The comparison guide includes a [Python example for reading
+With `--output-dir` and without `--trace`, evidence and reports are still saved.
+External workspaces may also be present; detailed event, action, and model logs
+require tracing. The CLI writes both reports
+after execution. Lower-level `run_plan(..., output_dir=...)` saves evidence only;
+`application.run` also publishes reports and returns their actual paths.
+`arena.artifacts.publish_analysis` supports separate publication after reanalysis.
+Each derived file is atomically replaced, but the pair is not published as one
+transaction; reports can be rebuilt from authoritative evidence.
+The comparison guide includes a [Python example for reading
 the compressed analysis](comparisons.md#python-execution-and-reanalysis).
 
 Untraced runs retain per-seat decision counts and total decision time, plus total
@@ -48,16 +55,25 @@ median and 95th-percentile decision time are unavailable without those samples.
 Scores, completed hands, seeds, failures, and reanalysis remain available without
 tracing. Older runs with individual timing samples remain readable.
 
+Explicit schema version tags require the integer `1`; booleans, floats, strings,
+and unsupported versions are rejected. Older trace entries that omit their own
+version tag retain the version-1 default. Missing historical provenance detail
+remains readable, while any supplied provenance version is validated.
+
 The trace manifest's version-1 entries include `game_index`, `match_id`, `seed`, `outcome`,
 `winners`, `ended_by`, `reason`, `log`, `actions`, `seat_stats`, and `stats_errors`.
-The root manifest and plan hold the comparison's rules, configuration, and
-identities. Manifests are published through a temporary file and rename.
-Returned outcomes refresh both compact results and trace metadata. A crashed
+The root manifest and plan hold the run's rules, configuration, and
+identities. All JSON manifests and plans share an atomic writer: it writes and
+syncs a temporary file, replaces the destination, and syncs the containing
+directory where supported. This durability policy applies to authoritative
+metadata; derived reports use atomic replacement without the per-write sync cost.
+The trace index can exist before a match starts; cancelled setup produces no
+event log. Returned outcomes refresh both compact results and trace metadata. A crashed
 worker may leave a partial trace without a returned outcome; its planned job
 remains visible in execution status.
 
-The lower-level Python runners write event files directly in their requested
-trace directory. Their version-1 manifest additionally includes `rules`,
+The standalone `run_match` primitive can write event files directly to
+`RunConfig.trace_dir`. Its version-1 manifest additionally includes `rules`,
 `protocol`, `run_config`, `seats`, `seed`, run counts, and `reproducible`.
 
 ## Ordering and privacy
@@ -103,11 +119,16 @@ Python readers:
 from pathlib import Path
 
 from sixnimmt.engine.replay import replay_events
+from sixnimmt.persistence.manifest import read_manifest_entry
 from sixnimmt.persistence.sink import read_event_log
 
 
 def replay_file(path: Path):
     return replay_events(read_event_log(path))
+
+
+def outcome_for_log(path: Path):
+    return read_manifest_entry(path.parent / "manifest.json", path.name).outcome
 ```
 
 Replay reconstructs the undealt cards but does not promise their original order.
@@ -117,24 +138,18 @@ with older selection-only action accounting; they are intentional test assets.
 
 ## Deterministic seeds
 
-Comparison plans save actual match and per-seat bot seeds in every job, along
+Every run plan saves actual match and per-seat bot seeds in every job, along
 with the versioned seed scheme. Changing concurrency or execution backend does
 not change those assignments. Matched replacements record explicit shared-deal
 relationships; equal seeds across different player counts do not mean equal
 dealt states. See [planning](../src/sixnimmt/arena/planning.py).
 
-The fixed-lineup `run_arena` API preserves its existing derivation: match and
-bot seeds use the first eight bytes of SHA-256, interpreted as
-an unsigned big-endian integer, over this UTF-8 string:
-
-```text
-sixnimmt-arena:{root_seed}:{domain}:{game_index}:{seat_index}
-```
-
-The domain is `match` or `bot`; indices are zero-based. Match seeds use the literal
-`None` for the seat index. Per-hand shuffle seeds use the same digest conversion
-over `{match_seed}:{hand_number}`, with hands numbered from one. Shuffling uses
-Python's `random.Random` and an initially ordered deck from 1 through 104.
+Fixed and sampled jobs share the `arena-plan-v1` scheme. Their actual assignments
+are authoritative; the root seed alone is not a replacement for the plan. Per-hand
+shuffle seeds use the first eight bytes of SHA-256, interpreted as an unsigned
+big-endian integer, over `{match_seed}:{hand_number}`, with hands numbered from
+one. Shuffling uses Python's `random.Random` and an initially ordered deck from
+1 through 104. Existing recorded fixtures retain their original seed provenance.
 
 Independent bot seeds keep one seat's random choices from consuming another
 seat's random stream. Reproducibility depends on the strategy, options, and
@@ -148,7 +163,9 @@ The JSONL writer stages a batch in a `.pending` sidecar containing the previous
 committed byte length. Readers ignore an unacknowledged tail; reopening the writer
 truncates it back to the committed length. Event parsing tolerates an incomplete
 final JSON line, but rejects corruption earlier in the log. Use the supplied
-readers to preserve these recovery rules.
+readers to preserve these recovery rules. `persistence.sink.read_jsonl(path, parse)`
+provides the same recovery behavior for another typed JSON record parser, and
+preserves that parser's result type.
 
 Readers apply the sidecar's committed byte boundary before parsing records. A
 final line can be discarded only when JSON decoding identifies an interrupted
@@ -158,6 +175,18 @@ Complete schema errors (including unknown event types), ambiguous syntax errors,
 and invalid middle records raise `LogRecordError` with the path and physical line
 number. An entirely unreadable file also raises.
 
+Saved-run loading and in-memory analysis use the same evidence identity validator.
+Every result must identify one planned job, with the planned match ID and exact
+seat assignments. Status lists reject unknown or duplicate job IDs and conflicting
+started/unstarted or completed/lost claims. A status cannot claim a completed job
+without its committed result.
+
+A committed result can precede the next status write. `load_run` reconciles such
+results into started/completed status and derives remaining lost/unstarted jobs;
+`analyse_run` also counts returned outcomes as started when using a stale in-memory
+snapshot. Competitive scores still come only from finished outcomes. Non-JSON or
+non-finite statistics and invalid call counts or durations are rejected as invalid
+evidence rather than entering resource summaries.
 
 A caller-supplied `EventSink` remains the caller's responsibility to close.
 When the runner creates its own sink, it closes it on completion.
@@ -175,8 +204,8 @@ arena accepted the action. Consult action/event logs for acceptance. Late model
 calls can append diagnostics after game logs close, and interrupted requests can
 remain without response records.
 
-Managed external harnesses use the same model-log file. A `sixnimmt table` run
-writes it as `traces/table.model.jsonl`, alongside the event and action logs.
+Managed external harnesses use the same model-log file. When tracing is enabled,
+each job writes `traces/<match_id>.model.jsonl`, alongside its event and action logs.
 Records carry `player_id`, `display_name`, `client`, configured `model` and
 `reasoning_effort`, `invocation`, `decision_id`, `view_id`, and a timestamp.
 Worker records additionally carry the attempt number.
@@ -213,8 +242,8 @@ actions and rejected attempts remain determined by arena settlement. Completed
 output is retained privately for diagnosis, including explanations that fail
 validation.
 
-These diagnostics survive failed games and are saved even when the operator
-uses `--quiet` or `--no-commentary`. Large output is bounded and truncation is
+When tracing is enabled, these diagnostics survive failed games and are saved
+even when the operator uses `--quiet` or `--no-commentary`. Large output is bounded and truncation is
 marked. Known credential values are redacted from managed records, but the
 files remain privileged: they include a player's observation, notebook, and
 potentially private commentary. Native terminal transcripts are not collected.

@@ -4,12 +4,12 @@ import json
 from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import asdict
-from typing import Any
+
+from pydantic import JsonValue, TypeAdapter
 
 from sixnimmt.arena.bots.base import Bot, statistics_bot
 from sixnimmt.arena.config import RunConfig
-from sixnimmt.arena.players import ResolvedPlayer
-from sixnimmt.arena.results import ArenaResult, MatchResult
+from sixnimmt.arena.results import MatchResult
 from sixnimmt.engine.rules import GameRules, MatchProtocol
 from sixnimmt.engine.state import PlayerSeat
 from sixnimmt.persistence.manifest import ManifestMatch, write_manifest
@@ -21,8 +21,8 @@ def collect_stats(
     player_ids: Sequence[str] | None = None,
     *,
     lifecycle_errors: Sequence[tuple[str, str, str]] = (),
-) -> tuple[dict[str, Any], dict[str, str]]:
-    stats: dict[str, Any] = {}
+) -> tuple[dict[str, dict[str, JsonValue] | None], dict[str, str]]:
+    stats: dict[str, dict[str, JsonValue] | None] = {}
     errors: dict[str, str] = {}
     for index, bot in enumerate(bots):
         player_id = player_ids[index] if player_ids is not None else f"player_{index + 1}"
@@ -37,7 +37,7 @@ def collect_stats(
         try:
             value = reporter.stats()
             json.dumps(value, allow_nan=False)
-            stats[player_id] = deepcopy(value)
+            stats[player_id] = TypeAdapter(dict[str, JsonValue]).validate_python(deepcopy(value))
         except Exception as error:
             errors[player_id] = repr(error)
     for player_id, stage, detail in lifecycle_errors:
@@ -105,43 +105,3 @@ def write_standalone_manifest(
         "error": None,
     }
     write_manifest(config.trace_dir, manifest)
-
-
-def write_arena_manifest(
-    result: ArenaResult,
-    specs: Sequence[ResolvedPlayer],
-    seats: Sequence[PlayerSeat],
-    rules: GameRules,
-    protocol: MatchProtocol,
-    config: RunConfig,
-    entries: Sequence[ManifestMatch],
-    fatal: BaseException | None,
-) -> None:
-    if config.trace_dir is not None:
-        manifest = {
-            "manifest_version": 1,
-            "run_id": result.run_id,
-            "seed": result.seed,
-            "games_requested": result.games_requested,
-            "games_started": result.games_started,
-            "games_completed": result.games_completed,
-            "reproducible": result.reproducible,
-            "rules": rules.model_dump(mode="json"),
-            "protocol": protocol.model_dump(mode="json"),
-            "run_config": {key: value for key, value in asdict(config).items() if key != "trace_dir"},
-            "seats": [
-                {
-                    "player_id": seat.player_id,
-                    "bot": spec.name,
-                    "display_name": seat.display_name,
-                    "options": spec.recorded_options,
-                    "deterministic": spec.deterministic,
-                    "agent_metadata": seat.agent_metadata,
-                }
-                for seat, spec in zip(seats, specs, strict=True)
-            ],
-            "matches": [entry.model_dump(mode="json") for entry in sorted(entries, key=lambda entry: entry.game_index)],
-            "decisions_abandoned": result.decisions_abandoned,
-            "error": repr(fatal) if fatal is not None else None,
-        }
-        write_manifest(config.trace_dir, manifest)

@@ -10,15 +10,16 @@ From the repository root:
 
 ```bash
 uv sync --all-groups
-uv run sixnimmt table --seat codex --seat claude --seat lowest_fitting_card \
-  --hands 1 --output-dir runs/watched-table
+uv run sixnimmt play --watch --seat codex --seat claude --seat lowest_fitting_card \
+  --hands 1 --trace --output-dir runs/watched-table
 ```
 
 The output directory must be new. The controller prints a launch script for each
-native seat. Run each script in a separate terminal, for example:
+native seat. Run the printed script in a separate terminal. Its path includes
+the planned match ID, represented here by `MATCH_ID`:
 
 ```bash
-runs/watched-table/seats/player_1/launch.sh
+runs/watched-table/matches/MATCH_ID/seats/player_1/launch.sh
 ```
 
 Each script opens the actual harness in its private game workspace, loads its MCP
@@ -29,7 +30,8 @@ asks you to start the game. Use `--auto-start` to start immediately at that poin
 
 Setup prints native launch instructions when needed. Once the seats are ready,
 the game display starts without directory, waiting-room, or per-seat readiness
-announcements. The final result includes the trace path.
+announcements. The final report identifies the saved artifacts; trace filenames are indexed in
+`traces/manifest.json`.
 
 Watch the agents' work in those terminals. The controller animates the actual
 board and scores as the game progresses. It does not launch terminal windows
@@ -47,8 +49,10 @@ native processes and conversations remain open. Events and actions are saved
 under the table directory and can be replayed without calling a model:
 
 ```bash
-uv run sixnimmt replay runs/watched-table/traces/table.jsonl
+uv run sixnimmt replay runs/watched-table/traces/MATCH_ID.jsonl
 ```
+
+Replace `MATCH_ID` with the ID from the printed launch path or trace manifest.
 
 ## Watch the live game
 
@@ -97,19 +101,19 @@ transcript.
 | `--commentary` / `--no-commentary` | Show or hide the private operator panel and detailed text (default: show) |
 | `--quiet` | Suppress board and activity output; keep native launch instructions and final results |
 
-These display options do not disable saved traces. To watch the Sonnet, Terra,
+These display options do not disable tracing when `--trace` is enabled. To watch the Sonnet, Terra,
 and Lookahead example, choose a new output directory:
 
 ```bash
-uv run sixnimmt table --config examples/table-sonnet-terra-lookahead.json \
-  --auto-start --output-dir runs/sonnet-terra-lookahead-live
+uv run sixnimmt play --watch --config examples/table-sonnet-terra-lookahead.json \
+  --auto-start --trace --output-dir runs/sonnet-terra-lookahead-live
 ```
 
 ## Configure models and a lineup
 
-Use one JSON file to configure a mixed table. It uses the same `catalogue`
-entries and `rules`, `protocol`, and `execution` sections as the
-[arena](arena.md#configuration). Set each model through its entry's
+Use the shared `RunSettings` JSON file to configure a mixed lineup, with the
+`catalogue`, `rules`, `protocol`, and `execution` sections described in
+[Running games](arena.md#configuration). Set each model through its entry's
 `options.model`, whether it uses the existing LLM adapter or a headless harness:
 
 ```json
@@ -146,34 +150,37 @@ Edit the model IDs, endpoint, and credential environment variable in
 [the complete example](../examples/table-models.json), then run:
 
 ```bash
-uv run sixnimmt table --config examples/table-models.json \
-  --auto-start --output-dir runs/model-table
+uv run sixnimmt play --watch --config examples/table-models.json \
+  --auto-start --trace --output-dir runs/model-table
 ```
 
 Each catalogue entry accepts `bot`, `key`, `label`, `family`, and `options`, just
-as arena entries do. `key` defaults to `bot`; `label` defaults to the key. Give
+as every run does. `key` defaults to `bot`; `label` defaults to the key. Give
 different configurations of the same bot distinct keys. `lineup` lists those
 keys in seat order. Repeating a key creates independent players with the same
 configuration; listing an entry in the catalogue alone does not seat it.
 
-The table uses a fixed lineup. Arena comparison settings such as game budgets,
-populations, and replacement comparisons do not belong in a table file. Its
-`execution` section accepts the arena's `RunConfig` fields, but requires
-`backend: "thread"` and `concurrency: 1`. For example,
-`"execution": {"decision_timeout_seconds": 180}` bounds each decision.
-The controller saves traces in the table's output directory under `traces/`.
-Omitted sections use `GameRules`, `MatchProtocol`, and `RunConfig` defaults;
-the default seed is 66.
+An explicit lineup defaults to one game. Set `games` or `--games` to repeat it;
+each game creates fresh seats and, for native players, prints new connection
+launchers. Fixed lineups cannot also specify opponent populations or replacement
+comparisons. External seats currently require a fixed lineup and the thread
+backend. Watching or using attached native sessions also requires concurrency one.
 
-Explicit CLI options override the corresponding saved seed, protocol, and
-execution settings; omitted options preserve them. Supplying `--seat` replaces
+Use `execution.decision_timeout_seconds` for game decisions, `session` for
+readiness, invocation, retention, and notebook policy, `display` for presentation,
+and `recording` for `output_dir` and `trace`. For example,
+`"execution": {"decision_timeout_seconds": 180}` bounds each decision. Common
+configuration validation rejects unknown fields, coercible counts, and nonfinite
+durations. Omitted sections use their documented defaults; the default seed is 66.
+
+Explicit CLI options override the corresponding saved run settings; omitted options preserve them. Supplying `--seat` replaces
 the entire configured lineup. Seat values resolve catalogue keys first, so a
 smaller table can reuse the same file:
 
 ```bash
-uv run sixnimmt table --config examples/table-models.json \
+uv run sixnimmt play --watch --config examples/table-models.json \
   --seat codex-player --seat baseline --auto-start \
-  --output-dir runs/codex-table
+  --trace --output-dir runs/codex-table
 ```
 
 ### Seat shorthand
@@ -197,8 +204,8 @@ needed when using `--config`.
 For example, this runs a mixed table:
 
 ```bash
-uv run sixnimmt table --seat codex --seat claude-headless --seat lowest_card \
-  --hands 1 --communication --memory --output-dir runs/mixed-table
+uv run sixnimmt play --watch --seat codex --seat claude-headless --seat lowest_card \
+  --hands 1 --communication --memory --trace --output-dir runs/mixed-table
 ```
 
 ### Headless options
@@ -426,7 +433,7 @@ its process group on success, failure, or cancellation.
 | Setting | Default |
 | --- | --- |
 | `--setup-timeout` | 600 seconds for external seats to enter `play`; no decision clock runs yet |
-| `--decision-timeout` | Unset for watched tables; supply seconds to bound every decision |
+| `--decision-timeout` | Unset; supply seconds to bound every decision |
 | `--managed-timeout` | 120 seconds for a managed decision, including format repair; a profile can override it |
 | `--wait-timeout` | 600 seconds per pending `play`; independent of decision time |
 | `--retain-seconds` | 30 seconds of read-only terminal recovery before closing the controller |
@@ -463,15 +470,25 @@ tool permissions; private directories do not isolate agents running as the same
 OS user. Keep their game analysis within their assigned workspace. Controller
 traces contain privileged state and are intended for the operator.
 
-The output directory contains `seats/`, `traces/`, and a public `result.json`.
-Traces record accepted game events, attempted actions, timing, seat metadata,
-and final statistics, including notebook settings and shared instruction/schema
-versions. Managed sessions also write `traces/table.model.jsonl`: filtered
-decision requests, proposal schemas, streamed output, final proposals, repair
-feedback, decision explanations, and bounded stdout/stderr diagnostics on failure. These records include
-seat, client, requested model, invocation, and decision identifiers. Known
-credential values are redacted; the trace still contains private gameplay and
-model output. It remains available with `--quiet` or `--no-commentary`.
+All runs save the same root `plan.json`, `results.jsonl`, `manifest.json`,
+`report.md`, and `analysis.json.gz` when an output directory is requested.
+External workspaces live under `matches/<match_id>/seats/player_N/`. With `--trace`,
+`traces/manifest.json` indexes each job's `<match_id>.jsonl` event log and action
+log. There is no separate watched-game `result.json`.
+
+Traces record game events, attempts, timing, safe seat metadata, and final
+statistics, including notebook settings and shared instruction/schema versions.
+Managed sessions also write `traces/<match_id>.model.jsonl`: filtered decision
+requests, proposal schemas, streamed output, final proposals, repair feedback,
+decision explanations, and bounded stdout/stderr diagnostics on failure. These
+records include seat, client, requested model, invocation, and decision identifiers.
+Known credential values are redacted; traces remain private gameplay and model
+output. Display options do not disable enabled tracing.
+
+Plans store a fingerprint of external construction options without persisting
+custom command arguments. Re-executing a saved plan that requires those arguments
+needs the original private settings. `application.run(settings)` supplies them
+within the current run; analysis and replay need no command reconstruction.
 
 The controller does not collect native transcripts. Provider-served model/version
 and complete usage provenance, connection-status diagnostics, and credential

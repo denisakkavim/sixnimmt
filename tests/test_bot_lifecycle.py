@@ -21,7 +21,9 @@ from sixnimmt.arena.bots.lifecycle import (
     DecisionDeadlineExceeded,
     DecisionOutcome,
 )
-from sixnimmt.arena.runner import MatchOutcome, RunConfig, run_match
+from sixnimmt.arena.config import RunConfig
+from sixnimmt.arena.match import run_match
+from sixnimmt.arena.results import MatchOutcome
 from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.events import Event
@@ -271,12 +273,13 @@ def test_action_storage_failure_closes_started_bots() -> None:
     assert all(bot.ends == [None] for bot in bots)
 
 
-def test_partial_start_failure_closes_started_seats_and_sanitizes_reason() -> None:
+def test_partial_start_failure_closes_all_owned_seats_and_sanitizes_reason() -> None:
     bots = [RecordingBot(1), FailingStartBot(2), RecordingBot(3)]
     result = run_match(bots, 123)
 
     assert result.outcome == MatchOutcome.FAILED
-    assert [len(bot.ends) for bot in bots] == [1, 1, 0]
+    assert [len(bot.ends) for bot in bots] == [1, 1, 1]
+    assert bots[2].ends[0] is None
     assert bots[0].ends[0] is not None
     assert bots[0].ends[0].reason == "match_failed"
     assert result.lifecycle_errors[0][:2] == ("player_2", "start")

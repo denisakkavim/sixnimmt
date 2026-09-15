@@ -3,12 +3,14 @@
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
 from sixnimmt.arena.bots.base import ActionBatch, Rejection
+from sixnimmt.arena.bots.diagnostics import CandidateEvaluation
 from sixnimmt.arena.bots.heuristics import LowestCardBot
+from sixnimmt.arena.bots.uncertainty.options import MeanPenalty
 from sixnimmt.arena.config import RunConfig
 from sixnimmt.arena.match import run_match
 from sixnimmt.arena.results import MatchOutcome
@@ -175,10 +177,16 @@ def test_memory_publication_failure_reports_failed_without_accepting_a_move() ->
 
 
 class EvaluatingPlayer(LowestCardBot):
-    def __init__(self, horizon: int | str = 2) -> None:
+    def __init__(self, horizon: int | Literal["remaining_hand"] = 2) -> None:
         self.horizon = horizon
+        self.stats_calls = 0
+
+    def decision_evaluation(self, cards_remaining: int) -> CandidateEvaluation:
+        horizon = cards_remaining if self.horizon == "remaining_hand" else min(self.horizon, cards_remaining)
+        return CandidateEvaluation(((18, 0.5), (45, 1.25)), MeanPenalty(), horizon, 16)
 
     def stats(self) -> dict[str, Any]:
+        self.stats_calls += 1
         return {
             "candidate_values": {"18": 0.5, "45": 1.25},
             "objective": {"kind": "mean"},
@@ -189,7 +197,9 @@ class EvaluatingPlayer(LowestCardBot):
 
 def test_candidate_scores_are_reported_as_separate_operator_activity() -> None:
     activity: list[dict[str, Any]] = []
-    result = run_match([EvaluatingPlayer(), LowestCardBot()], 66, max_actions=1, on_activity=activity.append)
+    player = EvaluatingPlayer()
+    result = run_match([player, LowestCardBot()], 66, max_actions=1, on_activity=activity.append)
+    assert player.stats_calls == 0
     evaluation = next(record for record in activity if record["type"] == "simulation_evaluation")
     assert evaluation["player_id"] == "player_1"
     assert evaluation["candidate_values"] == {"18": 0.5, "45": 1.25}
@@ -203,7 +213,7 @@ def test_candidate_scores_are_reported_as_separate_operator_activity() -> None:
 
 
 @pytest.mark.parametrize("horizon", [20, "remaining_hand"])
-def test_candidate_horizon_is_limited_to_cards_remaining_in_this_hand(horizon: int | str) -> None:
+def test_candidate_horizon_is_limited_to_cards_remaining_in_this_hand(horizon: int | Literal["remaining_hand"]) -> None:
     activity: list[dict[str, Any]] = []
     run_match([EvaluatingPlayer(horizon), LowestCardBot()], 66, max_actions=1, on_activity=activity.append)
     evaluation = next(record for record in activity if record["type"] == "simulation_evaluation")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 from dataclasses import dataclass
 from itertools import combinations_with_replacement
@@ -54,5 +55,5 @@ def population_weights(
 def _composition_weight(opponents: tuple[str, ...], probabilities: dict[str, float]) -> float:
     weight = float(factorial(len(opponents)))
     for config_id, copies in Counter(opponents).items():
-        weight *= probabilities[config_id] ** copies / factorial(copies)
+        weight *= math.pow(probabilities[config_id], copies) / factorial(copies)
     return weight

@@ -10,7 +10,7 @@ This minimal strategy works in classic and communication modes:
 ```python
 from sixnimmt.arena.bots.heuristics import RandomBot
 from sixnimmt.arena.bots.base import Rejection
-from sixnimmt.arena.runner import run_match
+from sixnimmt.arena.match import run_match
 from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt.engine.views import MatchView
 
@@ -178,49 +178,81 @@ For direct Python use, construct
 
 ## Register a configurable strategy
 
-The registry maps names to `BotSpec` objects. A factory receives a derived seed
-and validated option keywords. Put registration in your Python entry point
-before building a comparison plan or invoking `run_arena`; a separate CLI process will not inherit a registry
+The registry maps names to `BotSpec` objects. Prefer `BotSpec.typed()`: its factory
+receives a derived seed and a validated options model, with their types checked together. Put registration in your Python entry point
+before calling `run(settings)` or building a plan; a separate CLI process will not inherit a registry
 mutation from another process.
 
 For `RunConfig(backend="process")`, define the factory and options model at
 module scope in an importable Python module. Resolved definitions and options
 are sent to each worker; bot instances are constructed there and do not need to
 be picklable. Lambdas and local definitions are unsupported. Protect the script's
-`run_arena` call with a `__main__` guard; see [process execution](arena.md#timeouts-and-concurrency).
+`run` call with a `__main__` guard; see [process execution](arena.md#timeouts-and-concurrency).
 
 The following extends the example above:
 
 ```python
 from sixnimmt.arena.bots.registry import REGISTRY
-from sixnimmt.arena.bots.base import BotSpec
-from sixnimmt.arena.players import PlayerConfig
-from sixnimmt.arena.runner import run_arena
+from sixnimmt.arena.bots.base import BotOptions, BotSpec
+from sixnimmt.application import run
+from sixnimmt.arena.planning import CandidateConfig, RunSettings
 
 
-def build_simple(seed: int) -> SimpleBot:
+def build_simple(seed: int, options: BotOptions) -> SimpleBot:
     return SimpleBot()
 
 
-REGISTRY["simple"] = BotSpec(
+REGISTRY["simple"] = BotSpec.typed(
     name="simple",
-    build=build_simple,
+    options_model=BotOptions,
+    constructor=build_simple,
     deterministic=True,
     metadata={"strategy_id": "simple", "version": "1"},
 )
-result = run_arena([PlayerConfig(bot="simple"), PlayerConfig(bot="random")], games=2, seed=1234)
+result = run(
+    RunSettings(
+        catalogue=(CandidateConfig(bot="simple"), CandidateConfig(bot="random")),
+        lineup=("simple", "random"),
+        games=2,
+        seed=1234,
+    )
+)
 ```
 
-For configurable factories, subclass `BotOptions` with Pydantic fields and pass
-it as `BotSpec.options_model`. Defaults are resolved before construction and
+For configurable factories, subclass `BotOptions` with Pydantic fields, pass
+that class as `options_model`, and annotate the constructor with the same class.
+The existing `BotSpec(build=...)` keyword-options registration remains supported
+for compatibility. Defaults are resolved before construction and
 recorded in the manifest. Factories receive independent copies of options and
 fresh instances are built for each seat of each match. Use a private seeded RNG
 for random choices. Mark a strategy deterministic only if its supported
 configurations honor that promise; external model answers do not.
 
+`resolve_strategy(name, options)` in `arena.players` returns a `ResolvedStrategy`
+containing validated settings, provenance, and a seed factory. It has no seat
+identity. `resolve_players()` attaches each `PlayerConfig` separately, including
+its display name and caller metadata. Nested strategies use `ResolvedStrategy`.
+
 An optional `stats()` method may return JSON-compatible diagnostic data for the
 manifest. Statistics are not part of the gameplay contract, and a statistics
-exception does not change a result.
+exception does not change a result. Live evaluation uses a separate optional
+`decision_evaluation(cards_remaining)` method returning `CandidateEvaluation`
+from `bots.diagnostics`; the runtime does not interpret strategy-specific stats.
+
+## Stateful and composed bots
+
+Implement `observe(view)` to ingest each filtered observation independently of
+move selection. The arena calls it inside the decision budget before `act`.
+Observation must be idempotent: the same view can arrive again on a retry, and
+bundled stateful bots also ingest it when called directly. Keep observation local;
+it must not choose a move or call a provider.
+
+A wrapper exposes its inner bot through `delegate_bot() -> Bot`. Shared helpers
+route observation, memory, tracing, statistics, diagnostics, and lifecycle hooks
+to that delegate. A wrapper implementing a hook itself owns forwarding that hook.
+The built-in wrappers observe their delegates even when selecting their own move,
+so a nested simulation fallback retains every public reveal and hand boundary.
+Delegation does not make arbitrary inner methods part of the wrapper's API.
 
 ## Atomic proposals
 
@@ -264,7 +296,7 @@ forfeit it at the configured limit. Test custom strategies against short,
 fixed-hand matches before starting large runs.
 
 Source: [bot contracts](../src/sixnimmt/arena/bots/base.py) and
-[transaction validation](../src/sixnimmt/arena/transactions.py).
+[transaction validation](../src/sixnimmt/arena/match.py).
 
 ## Optional lifecycle hooks
 
@@ -288,7 +320,7 @@ An acceptance notification follows game/action/event publication. A publication
 failure does not promise rollback of already written storage or private memory.
 
 The arena always invokes the outer bot's `act`, preserving composed strategies.
-Composed bots forward optional hooks with their existing delegation mechanism.
+Composed bots expose `delegate_bot()` for explicit optional-hook forwarding.
 The arena rejects reused lifecycle owners or shared resource identities across
 seats. Cleanup errors preserve an established outcome and are retained in
 `MatchResult.lifecycle_errors` and manifest `stats_errors`, as privileged

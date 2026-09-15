@@ -9,12 +9,14 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from functools import partial
 from time import monotonic
-from typing import Any, Literal
+from typing import Any, Literal, NotRequired, TypedDict
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from openai import APIError, OpenAI
-from openai.types.chat import ChatCompletion
+from openai import APIError, APIStatusError, APITimeoutError, OpenAI
+from openai.types.chat import ChatCompletion, ChatCompletionMessageParam, ChatCompletionToolParam
+from openai.types.chat.completion_create_params import CompletionCreateParamsNonStreaming
+from openai.types.shared_params.function_definition import FunctionDefinition
 from pydantic import Field, JsonValue, ValidationError, field_validator, model_validator
 
 from sixnimmt.arena.bots.agent_contract import (
@@ -40,7 +42,17 @@ from sixnimmt.arena.bots.agent_contract import (
 from sixnimmt.arena.bots.agent_contract import (
     system_instructions as system_instructions,
 )
-from sixnimmt.arena.bots.base import ActionBatch, Bot, BotOptions, Rejection, ResolveStrategy, StrategyConstruction
+from sixnimmt.arena.bots.base import (
+    MAX_BATCH_OPERATIONS,
+    ActionBatch,
+    Bot,
+    BotOptions,
+    Rejection,
+    ResolveStrategy,
+    StrategyConstruction,
+)
+from sixnimmt.arena.bots.diagnostics import ModelActivity
+from sixnimmt.arena.bots.lifecycle import DecisionContext, DecisionDeadlineExceeded
 from sixnimmt.common.text import check_representable
 from sixnimmt.engine.actions import Action
 from sixnimmt.engine.views import MatchView
@@ -111,7 +123,28 @@ class ModelDecisionError(RuntimeError):
     """The model endpoint did not supply a usable action."""
 
 
-def parse_tool_call(response: Any, view: MatchView) -> tuple[str, dict[str, Any]]:
+class ModelDecisionTimeout(ModelDecisionError, DecisionDeadlineExceeded):
+    """A bounded adapter decision expired; preserve the public model-error base."""
+
+
+class LLMStatistics(TypedDict):
+    calls: int
+    repairs: int
+    errors: int
+    prompt_tokens: int
+    completion_tokens: int
+    usage_missing_calls: int
+    request_duration_ms: float
+    model: str
+    response_models: list[str]
+    prompt_version: str
+    prompt_sha256: str | None
+    observation_version: str
+    memory_version: NotRequired[str]
+    memory_max_chars: NotRequired[int]
+
+
+def parse_tool_call(response: ChatCompletion, view: MatchView) -> tuple[str, dict[str, Any]]:
     if len(response.choices) == 0:
         msg = "response has no choices"
         raise ValueError(msg)
@@ -143,7 +176,7 @@ def parse_action_arguments(name: str, arguments: dict[str, Any], view: MatchView
     return ACTION_ADAPTER.validate_json(json.dumps({**arguments, "type": name, "from_view": view.view_id}), strict=True)
 
 
-def parse_action(response: Any, view: MatchView) -> Action:
+def parse_action(response: ChatCompletion, view: MatchView) -> Action:
     name, arguments = parse_tool_call(response, view)
     return parse_action_arguments(name, arguments, view)
 
@@ -168,6 +201,38 @@ def repair_feedback(response: ChatCompletion, error: Exception) -> str:
     )
 
 
+def response_activity(response: ChatCompletion) -> tuple[ModelActivity, ...]:
+    """Normalize provider output before it reaches a renderer."""
+    if len(response.choices) == 0:
+        return ()
+    message = response.choices[0].message
+    records: list[ModelActivity] = []
+    if message.content is not None and message.content != "":
+        records.append({"type": "model_text", "text": message.content, "item_id": response.id, "complete": True})
+    extras = message.model_extra
+    if extras is not None:
+        for field in ("reasoning_content", "reasoning"):
+            text: object = extras.get(field)
+            if isinstance(text, str) and text != "":
+                records.append({
+                    "type": "reasoning_summary",
+                    "text": text,
+                    "item_id": response.id + ":" + field,
+                    "complete": True,
+                })
+    if message.tool_calls is not None:
+        for call in message.tool_calls:
+            if call.type == "function":
+                records.append({
+                    "type": "tool_activity",
+                    "text": call.function.name,
+                    "tool_name": call.function.name,
+                    "status": "requested",
+                    "item_id": call.id,
+                })
+    return tuple(records)
+
+
 class LLMBot(Bot):
     def __init__(self, seed: int, *, validated_options: LLMOptions | None = None, **options: Any) -> None:
         if validated_options is not None and len(options) > 0:
@@ -184,7 +249,8 @@ class LLMBot(Bot):
                 raise ValueError(msg)
             self._api_key = key
         self._trace: Callable[[dict[str, Any]], None] | None = None
-        self._stats: dict[str, Any] = {
+        self._decision_context = DecisionContext(None)
+        self._stats: LLMStatistics = {
             "calls": 0,
             "repairs": 0,
             "errors": 0,
@@ -213,8 +279,11 @@ class LLMBot(Bot):
             encoded = encoded.replace(json.dumps(self._api_key)[1:-1], "[REDACTED]")
         self._trace(json.loads(encoded))
 
-    def stats(self) -> dict[str, Any]:
+    def stats(self) -> LLMStatistics:
         return {**self._stats, "response_models": list(self._stats["response_models"])}
+
+    def set_decision_context(self, context: DecisionContext) -> None:
+        self._decision_context = context
 
     def _instructions(self, view: MatchView) -> str:
         return system_instructions(view, self.options.system_prompt, self.options.strategy_prompt)
@@ -231,7 +300,7 @@ class LLMBot(Bot):
 
     def _parse_response(self, response: ChatCompletion, view: MatchView) -> Action | ActionBatch:
         calls = response.choices[0].message.tool_calls if len(response.choices) > 0 else None
-        if calls is None or len(calls) == 0 or len(calls) > 8:
+        if calls is None or len(calls) == 0 or len(calls) > MAX_BATCH_OPERATIONS:
             msg = "return one to eight function tool calls"
             raise ValueError(msg)
         actions = []
@@ -259,17 +328,20 @@ class LLMBot(Bot):
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action | ActionBatch:
         instructions = self._instructions(view)
         self._stats["prompt_sha256"] = hashlib.sha256(instructions.encode()).hexdigest()
-        messages = [
+        messages: list[ChatCompletionMessageParam] = [
             {"role": "system", "content": instructions},
             {"role": "user", "content": self._observation(view, rejection)},
         ]
         decision_id = str(uuid4())
         deadline = monotonic() + self.options.decision_budget_seconds
+        if self._decision_context.deadline is not None:
+            remaining_arena = (self._decision_context.deadline - datetime.now(UTC)).total_seconds()
+            deadline = min(deadline, monotonic() + remaining_arena)
         for attempt in range(self.options.repair_attempts + 1):
             remaining = deadline - monotonic()
             if remaining <= 0:
                 msg = "model decision budget exhausted"
-                raise ModelDecisionError(msg)
+                raise ModelDecisionTimeout(msg)
             context = {
                 "trace_version": 1,
                 "match_id": view.match_id,
@@ -308,7 +380,7 @@ class LLMBot(Bot):
             if monotonic() > deadline:
                 self._record(context, "decision_expired")
                 msg = "model decision budget exhausted"
-                raise ModelDecisionError(msg)
+                raise ModelDecisionTimeout(msg)
             return action
         msg = "model decision produced no action"
         raise ModelDecisionError(msg)
@@ -326,19 +398,41 @@ class LLMBot(Bot):
                         field.pop(constraint, None)
         return tools
 
-    def _request(self, messages: list[dict[str, Any]], view: MatchView, timeout: float, context: dict[str, Any]) -> Any:
-        parameters: dict[str, Any] = {
+    def _request_parameters(
+        self, messages: list[ChatCompletionMessageParam], view: MatchView
+    ) -> CompletionCreateParamsNonStreaming:
+        tools: list[ChatCompletionToolParam] = []
+        for tool in self._request_tools(view):
+            source = tool["function"]
+            function: FunctionDefinition = {
+                "name": source["name"],
+                "description": source["description"],
+                "parameters": source["parameters"],
+            }
+            if "strict" in source:
+                function["strict"] = source["strict"]
+            tools.append({"type": "function", "function": function})
+        parameters: CompletionCreateParamsNonStreaming = {
             "model": self.options.model,
             "messages": messages,
-            "tools": self._request_tools(view),
-            self.options.token_limit_parameter: self.options.max_tokens,
+            "tools": tools,
         }
+        if self.options.token_limit_parameter == "max_tokens":  # noqa: S105 -- API parameter name
+            parameters["max_tokens"] = self.options.max_tokens
+        else:
+            parameters["max_completion_tokens"] = self.options.max_tokens
         if self.options.temperature is not None:
             parameters["temperature"] = self.options.temperature
         if self.options.tool_choice is not None:
             parameters["tool_choice"] = self.options.tool_choice
         if self.options.disable_parallel_tool_calls:
             parameters["parallel_tool_calls"] = False
+        return parameters
+
+    def _request(
+        self, messages: list[ChatCompletionMessageParam], view: MatchView, timeout: float, context: dict[str, Any]
+    ) -> ChatCompletion:
+        parameters = self._request_parameters(messages, view)
         self._record(
             context,
             "request",
@@ -346,7 +440,6 @@ class LLMBot(Bot):
             timeout_seconds=timeout,
             payload={**parameters, **self.options.provider_options},
         )
-        parameters["extra_body"] = self.options.provider_options
         started = monotonic()
         self._stats["calls"] += 1
         try:
@@ -354,7 +447,9 @@ class LLMBot(Bot):
             with OpenAI(
                 base_url=self.options.base_url, api_key=self._api_key, timeout=timeout, max_retries=0
             ) as client:
-                raw = client.chat.completions.with_raw_response.create(**parameters)
+                raw = client.chat.completions.with_raw_response.create(
+                    **parameters, extra_body=self.options.provider_options
+                )
                 self._record(
                     context,
                     "response",
@@ -369,21 +464,24 @@ class LLMBot(Bot):
                     self._record(context, "response_parse_error", error_type=type(error).__name__, message=str(error))
                     msg = "model response could not be decoded"
                     raise ModelDecisionError(msg) from None
+                for activity in response_activity(response):
+                    self._record(context, "activity", **activity)
         except APIError as error:
-            http_response = getattr(error, "response", None)
             self._record(
                 context,
                 "provider_error",
                 error_type=type(error).__name__,
                 message=str(error),
-                status_code=getattr(error, "status_code", None),
-                body=http_response.text if http_response is not None else None,
-                provider_request_id=getattr(error, "request_id", None),
+                status_code=error.status_code if isinstance(error, APIStatusError) else None,
+                body=error.response.text if isinstance(error, APIStatusError) else None,
+                provider_request_id=error.request_id if isinstance(error, APIStatusError) else None,
                 duration_ms=(monotonic() - started) * 1000,
             )
             self._stats["errors"] += 1
             # Provider exception bodies may contain request data or authentication details.
             msg = f"model request failed ({type(error).__name__})"
+            if isinstance(error, APITimeoutError):
+                raise ModelDecisionTimeout(msg) from None
             raise ModelDecisionError(msg) from None
         finally:
             self._stats["request_duration_ms"] += (monotonic() - started) * 1000

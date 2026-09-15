@@ -7,7 +7,7 @@ the recorded games and compare their results.
 The arena supports classic play and communication with table/direct messages,
 explicit commitment, and revised selections. Bots receive filtered player views;
 the engine validates their actions. Built-in strategies include eight [baseline heuristics](docs/bots.md#built-in-baselines-and-board-and-hand-heuristics),
-plus `llm` and `llm_memory`. [External harness tables](docs/harness-players.md)
+plus `llm` and `llm_memory`. [External harness players](docs/harness-players.md)
 also support visible Codex/Claude terminals and supervised headless commands.
 
 Use `--backend process --concurrency 4` to run arena matches across multiple CPU
@@ -20,10 +20,10 @@ Run these commands from the repository root:
 
 ```bash
 uv sync --all-groups
-uv run sixnimmt arena --games 100 --player-count 4
+uv run sixnimmt play --games 100 --player-count 4
 ```
 
-The arena compares the reference strategies across fresh opponent lineups.
+Without fixed seats, the run compares reference strategies across fresh opponent lineups.
 Use `--config` with an [arena configuration](examples/arena.json) to choose
 strategies and settings. Player counts from 2 to 10 are supported. Runs stay in
 memory and print readable results by default. Add `--output-dir runs/first-run`
@@ -34,18 +34,31 @@ Add `--communication` to enable messaging and explicit commitment. Add
 `--trace` with `--output-dir` to also save detailed game logs in its `traces/` folder.
 Interactive terminals show animations while games run and reports are prepared;
 use `--no-animation` to disable them.
-Use `uv run sixnimmt --help` for the available commands, including `table` for
-an explicit lineup of native harnesses, headless agents, and built-in bots.
+To repeat and watch an exact lineup, use the same command:
+
+```bash
+uv run sixnimmt play --seat random --seat lowest_fitting_card --games 2 --hands 1 --watch
+```
+
+Fixed lineups can also mix native harnesses, headless agents, and built-in bots.
+One configuration file controls lineup, execution, sessions, display, and recording.
+Use `uv run sixnimmt play --help` for all options.
 
 ## Python usage
 
 ```python
-from sixnimmt.arena.bots.heuristics import LowestFittingCardBot, RandomBot
-from sixnimmt.arena.runner import run_match
+from sixnimmt.application import run
+from sixnimmt.arena.planning import CandidateConfig, RunSettings
 
-result = run_match([RandomBot(11), LowestFittingCardBot()], seed=1234)
-print(result.outcome, result.winners)
-print([(player.player_id, player.total_score) for player in result.final_state.players])
+result = run(
+    RunSettings(
+        catalogue=(CandidateConfig(bot="random"), CandidateConfig(bot="lowest_fitting_card")),
+        lineup=("random", "lowest_fitting_card"),
+        seed=1234,
+    )
+)
+print(result.report.diagnostics.finished_matches)
+print(result.run.results[0].scores)
 ```
 
 Custom bots implement `act(view, rejection=None)` and return an `Action` or

@@ -1,24 +1,24 @@
 """Affordable row shaping with unchanged card selection."""
 
-import json
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from sixnimmt.arena.bots.base import ActionBatch, BotSpec, Rejection
 from sixnimmt.arena.bots.composed import HandAwareRowChoiceBot, HandAwareRowChoiceOptions
 from sixnimmt.arena.bots.heuristics import HighestCardBot
 from sixnimmt.arena.bots.registry import REGISTRY
+from sixnimmt.arena.config import RunConfig
 from sixnimmt.arena.players import PlayerConfig, resolve_players
-from sixnimmt.arena.runner import RunConfig, run_arena
-from sixnimmt.engine.actions import ChooseRowAction, CommitAction, SelectCardAction
+from sixnimmt.engine.actions import ActionType, ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.errors import ErrorCode
 from sixnimmt.engine.fold import build_view
 from sixnimmt.engine.rules import MatchProtocol
 from sixnimmt.engine.setup import create_match
 from sixnimmt.engine.views import MatchView, RowView, ViewRole
+from tests.run_helpers import match_facts, run_fixed
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def observation() -> MatchView:
             "rows": tuple(RowView(index=index, cards=cards) for index, cards in enumerate(rows)),
             "you": view.you.model_copy(update={"hand": (30, 31, 32)}),
             "awaiting_card": 5,
-            "legal_actions": ("choose_row",),
+            "legal_actions": (ActionType.CHOOSE_ROW,),
         }
     )
 
@@ -89,7 +89,7 @@ class RecordingCardBot:
 
 
 def test_card_proposals_and_feedback_are_delegated_unchanged(observation: MatchView) -> None:
-    view = observation.model_copy(update={"legal_actions": ("select_card",)})
+    view = observation.model_copy(update={"legal_actions": (ActionType.SELECT_CARD,)})
     rejection = Rejection(ErrorCode.WRONG_PHASE, "retry", view.legal_actions)
     delegate = RecordingCardBot()
     assert HandAwareRowChoiceBot(2, delegate).act(view, rejection) is delegate.proposal
@@ -106,13 +106,13 @@ def test_card_proposals_and_feedback_are_delegated_unchanged(observation: MatchV
         {"max_extra_penalty": True, "card_strategy": "random"},
     ],
 )
-def test_configuration_requires_explicit_valid_policy(options: dict) -> None:
+def test_configuration_requires_explicit_valid_policy(options: dict[str, JsonValue]) -> None:
     with pytest.raises(ValidationError):
         HandAwareRowChoiceOptions.model_validate(options)
 
 
 @pytest.mark.parametrize("strategy, options", [("missing", {}), ("random", {"typo": 1})])
-def test_card_strategy_is_validated_before_running(strategy: str, options: dict) -> None:
+def test_card_strategy_is_validated_before_running(strategy: str, options: dict[str, JsonValue]) -> None:
     with pytest.raises(ValueError):
         resolve_players([
             PlayerConfig(
@@ -140,16 +140,22 @@ def test_nested_card_strategy_is_reproducible_across_backends(communication: boo
         PlayerConfig(bot="closest_gap"),
     ]
     protocol = MatchProtocol(communication_enabled=communication, end_condition="fixed_hands", hands=2)
-    first = run_arena(players, 4, 123, protocol=protocol)
+    first = run_fixed(players, 4, 123, protocol=protocol)
     directory = tmp_path / "trace"
-    second = run_arena(
-        players, 4, 123, protocol=protocol, config=RunConfig(backend="process", concurrency=2, trace_dir=directory)
+    second = run_fixed(
+        players,
+        4,
+        123,
+        protocol=protocol,
+        output_dir=directory,
+        trace=True,
+        config=RunConfig(backend="process", concurrency=2),
     )
-    assert first == second
-    assert second.finished == 4
-    assert second.reproducible
-    manifest = json.loads((directory / "manifest.json").read_text())
-    assert manifest["seats"][0]["options"]["card_options"] == {
+    assert [match_facts(record) for record in first.results] == [match_facts(record) for record in second.results]
+    assert len(second.results) == 4
+    assert all(record.outcome == "finished" for record in second.results)
+    assert all(entry.deterministic for entry in second.plan.catalogue)
+    assert second.plan.catalogue[0].options["card_options"] == {
         "K": 3,
         "fallback_strategy": "random",
         "fallback_options": {},
@@ -167,12 +173,13 @@ def test_custom_card_strategy_is_resolved_in_parent(monkeypatch: pytest.MonkeyPa
         PlayerConfig(bot="hand_aware_row_choice", options={"max_extra_penalty": 2, "card_strategy": "custom"}),
         PlayerConfig(bot="random"),
     ]
-    result = run_arena(
+    result = run_fixed(
         players,
         2,
         123,
         protocol=MatchProtocol(end_condition="fixed_hands", hands=1),
         config=RunConfig(backend="process"),
     )
-    assert result.finished == 2
-    assert result.reproducible is deterministic
+    assert len(result.results) == 2
+    assert all(record.outcome == "finished" for record in result.results)
+    assert all(entry.deterministic for entry in result.plan.catalogue) is deterministic

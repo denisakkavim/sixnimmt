@@ -5,7 +5,7 @@ Install Python 3.13 or newer and `uv`, then install the project and development 
 ```bash
 uv sync --all-groups
 uv run sixnimmt --help
-uv run sixnimmt arena --games 10 --seed 1234
+uv run sixnimmt play --games 10 --seed 1234
 ```
 
 This plays ten four-player games using the reference strategy catalogue and
@@ -31,7 +31,7 @@ The bundled [configuration](../examples/arena.json) supplies two strategies:
 ```
 
 ```bash
-uv run sixnimmt arena --config examples/arena.json \
+uv run sixnimmt play --config examples/arena.json \
   --games 10 --player-count 3 --player-count 6 --output-dir runs/two-sizes
 ```
 
@@ -42,7 +42,7 @@ choices, not a fixed seating order. Bots receive anonymous names.
 
 Only finished games contribute competitive outcomes. Reports show unfinished
 games separately, and split win credit equally among tied lowest-score players.
-See [Running arenas](arena.md) for options and
+See [Running games](arena.md) for options and
 [Comparing strategies](comparisons.md) for interpreting the report.
 
 ## Save detailed traces
@@ -51,7 +51,7 @@ Supply `--output-dir` to save compact results. Add `--trace` for full game logs;
 tracing requires an output directory:
 
 ```bash
-uv run sixnimmt arena --config examples/arena.json \
+uv run sixnimmt play --config examples/arena.json \
   --games 2 --seed 1234 --output-dir runs/first-traced-run --trace
 ```
 
@@ -67,32 +67,47 @@ Replay reconstructs the final game state without calling the bots again. Summary
 adds action, messaging, latency, and outcome information from the neighboring
 action log and trace manifest. See [Traces and replay](traces.md) for file details.
 
-## Run a match from Python
+## Fix the lineup and watch
 
-For installation in another project and comparison API examples, see
-[Using sixnimmt from Python](python-api.md).
+Use the same command with ordered seats; `--games` repeats that lineup:
 
-```python
-from sixnimmt.arena.bots.heuristics import LowestFittingCardBot, RandomBot
-from sixnimmt.arena.runner import run_match
-from sixnimmt.engine.rules import MatchProtocol
-
-result = run_match(
-    [RandomBot(11), LowestFittingCardBot()],
-    seed=1234,
-    protocol=MatchProtocol(end_condition="fixed_hands", hands=1),
-)
-print(result.outcome, result.winners)
-print([(player.player_id, player.total_score) for player in result.final_state.players])
+```bash
+uv run sixnimmt play --seat random --seat lowest_fitting_card --games 2 --hands 1 --watch
 ```
 
-`run_match` receives bot instances; construct new instances for independent
-games. `run_plan` constructs fresh instances for comparison jobs, while
-`run_arena` remains available for fixed ordered lineups in Python.
+A fixed lineup defaults to one game. `--watch` selects live presentation and does
+not change execution or recording. To save this run, add `--output-dir` and,
+for detailed logs, `--trace`, just as for a sampled schedule.
+
+## Run games from Python
+
+The same `RunSettings` model backs the CLI and Python application API:
+
+```python
+from sixnimmt.application import run
+from sixnimmt.arena.planning import CandidateConfig, RunSettings
+from sixnimmt.engine.rules import MatchProtocol
+
+result = run(
+    RunSettings(
+        catalogue=(CandidateConfig(bot="random"), CandidateConfig(bot="lowest_fitting_card")),
+        lineup=("random", "lowest_fitting_card"),
+        games=2,
+        seed=1234,
+        protocol=MatchProtocol(end_condition="fixed_hands", hands=1),
+    )
+)
+print(result.report.diagnostics.finished_matches)
+print(result.run.results[0].scores)
+```
+
+Omit `lineup` to sample games from the catalogue. Each job constructs fresh players
+and retains its assigned match and private bot seeds. See the
+[Python guide](python-api.md) for installation, saved evidence, and low-level APIs.
 
 ## Enable communication
 
-Add `--communication` to an arena command. This enables messages and explicit
+Add `--communication` to a `play` command. This enables messages and explicit
 commitment; it does not force bots to talk. Baseline bots select and commit
 without sending messages. Custom bots and LLM players can use the extra actions.
 See [Game rules and information](game-rules.md).

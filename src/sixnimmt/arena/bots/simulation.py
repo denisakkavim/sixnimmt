@@ -5,7 +5,16 @@ import random
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
-from sixnimmt.arena.bots.base import ActionBatch, Bot, BotOptions, Rejection, ResolveStrategy, StrategyConstruction
+from sixnimmt.arena.bots.base import (
+    ActionBatch,
+    Bot,
+    BotOptions,
+    Rejection,
+    ResolveStrategy,
+    StrategyConstruction,
+    observe_bot,
+)
+from sixnimmt.arena.bots.diagnostics import CandidateEvaluation
 from sixnimmt.arena.bots.heuristics import applicable_row
 from sixnimmt.arena.bots.uncertainty.history import InferenceError, PublicHistory
 from sixnimmt.arena.bots.uncertainty.inference import OpponentModel
@@ -15,7 +24,7 @@ from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, Selec
 from sixnimmt.engine.views import MatchView
 
 if TYPE_CHECKING:
-    from sixnimmt.arena.players import ResolvedPlayer
+    from sixnimmt.arena.players import ResolvedStrategy
 
 
 class SimulationBot(Bot):
@@ -29,8 +38,14 @@ class SimulationBot(Bot):
         self.estimates: dict[str, float] = {}
         self.last_evaluation: str | None = None
 
-    def act(self, view: MatchView, rejection: Rejection | None = None) -> Action | ActionBatch:
+    def observe(self, view: MatchView) -> None:
         self.history.observe(view)
+        # An outer strategy may use this observation but choose its own action.
+        # Never attribute an earlier delegate evaluation to that new decision.
+        self.estimates = {}
+
+    def act(self, view: MatchView, rejection: Rejection | None = None) -> Action | ActionBatch:
+        self.observe(view)
         if "choose_row" in view.legal_actions:
             if view.awaiting_card is None:
                 msg = "row choice has no awaiting card"
@@ -90,6 +105,19 @@ class SimulationBot(Bot):
             "sample_count": self.options.sample_count,
         }
 
+    def decision_evaluation(self, cards_remaining: int) -> CandidateEvaluation | None:
+        if len(self.estimates) == 0:
+            return None
+        horizon = (
+            cards_remaining if self.options.horizon == "remaining_hand" else min(self.options.horizon, cards_remaining)
+        )
+        return CandidateEvaluation(
+            tuple((int(card), value) for card, value in self.estimates.items()),
+            self.options.objective,
+            horizon,
+            self.options.sample_count,
+        )
+
 
 class ModelBasedBaitBot(SimulationBot):
     def __init__(self, seed: int, options: ModelBasedBaitOptions, fallback: Bot) -> None:
@@ -105,11 +133,12 @@ class ModelBasedBaitBot(SimulationBot):
         candidates = [card for card in view.you.hand if _targets_full_row(card, view)]
         return self._evaluate_candidates(view, sorted({*candidates, proposal.card}), proposal.card)
 
-    def __getattr__(self, name: str) -> Any:
-        fallback = self.__dict__.get("fallback")
-        if fallback is None:
-            raise AttributeError(name)
-        return getattr(fallback, name)
+    def observe(self, view: MatchView) -> None:
+        super().observe(view)
+        observe_bot(self.fallback, view)
+
+    def delegate_bot(self) -> Bot:
+        return self.fallback
 
 
 def _targets_full_row(card: int, view: MatchView) -> bool:
@@ -140,5 +169,7 @@ def _build_resolved_simulation(seed: int, *, options: SimulationOptions) -> Simu
     return SimulationBot(seed, options.model_copy(deep=True))
 
 
-def _build_resolved_bait(seed: int, *, options: ModelBasedBaitOptions, delegate: "ResolvedPlayer") -> ModelBasedBaitBot:
+def _build_resolved_bait(
+    seed: int, *, options: ModelBasedBaitOptions, delegate: "ResolvedStrategy"
+) -> ModelBasedBaitBot:
     return ModelBasedBaitBot(seed, options.model_copy(deep=True), delegate.build(seed))

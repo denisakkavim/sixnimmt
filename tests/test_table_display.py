@@ -339,20 +339,28 @@ def test_streamed_operator_text_is_bounded_and_has_no_ansi_sequences() -> None:
     assert _safe_text("\x1b]52;c;SECRET\x07safe") == "safe"
 
 
-def test_existing_llm_response_shows_only_assistant_text_and_tool_names(table_state) -> None:
+def test_normalized_model_activity_displays_without_interpreting_private_responses(table_state) -> None:
     state, events = table_state
     display = PublicTableDisplay(report=lambda text: None)
     display.observe(state, events)
     display.activity({
         "kind": "response",
         "player_id": "alice",
-        "body": '{"choices":[{"message":{"content":"Choose a low-risk card.","reasoning_content":"The full row is dangerous.","tool_calls":[{"function":{"name":"select_card","arguments":"PRIVATE RAW ARGUMENTS"}}]}}]}',
+        "body": '{"choices":[{"message":{"content":"PRIVATE RAW RESPONSE"}}]}',
     })
+    display.activity({"type": "model_text", "player_id": "alice", "text": "Choose a low-risk card.", "complete": True})
+    display.activity({
+        "type": "reasoning_summary",
+        "player_id": "alice",
+        "text": "The full row is dangerous.",
+        "complete": True,
+    })
+    display.activity({"type": "tool_activity", "player_id": "alice", "tool_name": "select_card", "status": "requested"})
     output = _render(display)
     assert "Choose a low-risk card." in output
     assert "The full row is dangerous." in output
     assert "select_card" in output
-    assert "PRIVATE RAW ARGUMENTS" not in output
+    assert "PRIVATE RAW RESPONSE" not in output
 
 
 def test_unknown_activity_and_raw_proposals_are_not_reported() -> None:
@@ -638,3 +646,22 @@ def test_old_view_failure_does_not_change_current_activity_after_history_is_trim
     })
     assert display._activities["alice"].status == "deciding"
     assert "OLD FAILURE" not in _render(display)
+
+
+def test_watched_schedule_resets_public_view_and_commentary_between_matches() -> None:
+    display = PublicTableDisplay(report=lambda text: None)
+    first, first_events = create_match("first", ["alice", "bob"], match_seed=123)
+    display.observe(first, tuple(first_events))
+    display.activity({
+        "type": "model_text",
+        "player_id": "alice",
+        "display_name": "alice",
+        "text": "previous match note",
+    })
+    second, second_events = create_match("second", ["carol", "dave"], match_seed=456)
+    display.observe(second, tuple(second_events))
+    view = display.folder.view()
+    assert view.match_id == "second"
+    assert {player.player_id for player in view.players} == {"carol", "dave"}
+    assert "previous match note" not in _render(display)
+    assert "alice" not in _render(display)

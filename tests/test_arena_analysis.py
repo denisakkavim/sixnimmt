@@ -1,32 +1,34 @@
 """Population estimands and dependency-aware uncertainty from compact records."""
 
+import json
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel, ValidationError
 
 from sixnimmt.analytics import AnalysisSpec, analyse_run, finish_credits, report_markdown, report_terminal
 from sixnimmt.analytics.models import Estimate, EvaluationReport
 from sixnimmt.analytics.uncertainty import ratio_interval
+from sixnimmt.arena.artifacts import ArenaRun, MatchRecord, RunStatus, RuntimeProvenance, load_run, runtime_provenance
 from sixnimmt.arena.catalogue import CandidateConfig
 from sixnimmt.arena.planning import (
     ArenaPlan,
     CompositionWeight,
-    LineupConfig,
     PlannedMatch,
     Population,
     ReplacementComparison,
     ResolvedComparison,
+    RunSettings,
     SeatAssignment,
     build_arena_plan,
 )
-from sixnimmt.arena.records import ArenaRun, MatchRecord, RunStatus
 from sixnimmt.arena.results import MatchOutcome
 
 
 @pytest.fixture
 def plan() -> ArenaPlan:
     return build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=(CandidateConfig(key="a", bot="lowest_card"), CandidateConfig(key="b", bot="highest_card")),
             player_counts=(4,),
             games=1,
@@ -376,7 +378,7 @@ def test_fixed_background_comparison_keeps_population_weights_after_failures(
 
 def test_unstarted_shared_conditions_preserve_planned_coverage_without_claiming_started_blocks() -> None:
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=(CandidateConfig(key="a", bot="lowest_card"), CandidateConfig(key="b", bot="highest_card")),
             player_counts=(4,),
             games=0,
@@ -423,7 +425,7 @@ def test_default_qualifying_positions_cover_all_supported_player_counts(plan: Ar
 
 
 def test_large_population_keeps_missing_probability_without_listing_unplayed_combinations() -> None:
-    plan = build_arena_plan(LineupConfig(player_counts=(10,), games=1, analysis=AnalysisSpec(bootstrap_samples=20)))
+    plan = build_arena_plan(RunSettings(player_counts=(10,), games=1, analysis=AnalysisSpec(bootstrap_samples=20)))
     results = tuple(tuple(0 for _ in job.seats) for job in plan.jobs)
     report = analyse_run(_run(plan, plan.jobs, results))
     estimates = [
@@ -479,3 +481,158 @@ def test_markdown_bounds_large_detail_previews_and_links_complete_results(plan: 
     assert "[Full results](analysis.json.gz)" in markdown
     assert len(report.seat_order_estimates) == 100
     assert "Setting-49" not in markdown
+
+
+@pytest.mark.parametrize("mismatch", ["match_id", "seats"])
+def test_analysis_rejects_result_identity_mismatches(plan: ArenaPlan, mismatch: str) -> None:
+    job = _job(plan, "game", "abbb")
+    run = _run(plan, (job,), ((0, 1, 2, 3),))
+    record = run.results[0]
+    invalid = record.model_copy(
+        update={"match_id": "another-game"} if mismatch == "match_id" else {"seats": tuple(reversed(record.seats))}
+    )
+    with pytest.raises(ValueError, match="result identities do not match"):
+        analyse_run(run.model_copy(update={"results": (invalid,)}))
+
+
+def test_analysis_counts_committed_results_when_execution_status_is_stale(plan: ArenaPlan) -> None:
+    job = _job(plan, "game", "abbb")
+    run = _run(plan, (job,), ((0, 1, 2, 3),))
+    stale = RunStatus(state="running", planned_job_ids=(job.job_id,), unstarted_job_ids=(job.job_id,))
+    report = analyse_run(run.model_copy(update={"status": stale}))
+    assert report.diagnostics.started_matches == 1
+    estimate = _estimate(report, plan.catalogue[0].config_id, view="iid")
+    assert estimate.coverage.started_appearances == 1
+
+
+def test_reports_label_every_candidate_in_a_multi_candidate_comparison() -> None:
+    plan = build_arena_plan(
+        RunSettings(
+            catalogue=(
+                CandidateConfig(bot="lowest_card", key="reference", label="Reference"),
+                CandidateConfig(bot="highest_card", key="first", label="Candidate"),
+                CandidateConfig(bot="random", key="second", label="Candidate"),
+            ),
+            player_counts=(3,),
+            games=0,
+            rotations=False,
+            comparisons=(
+                ReplacementComparison(
+                    comparison_id="replacement",
+                    reference="reference",
+                    candidates=("first", "second"),
+                    backgrounds=(("reference", "reference"),),
+                    games=2,
+                ),
+            ),
+            analysis=AnalysisSpec(bootstrap_samples=0),
+        )
+    )
+    report = analyse_run(_run(plan, plan.jobs, tuple((0, 1, 2) for _ in plan.jobs)))
+    terminal = report_terminal(report, width=140)
+    markdown = report_markdown(report)
+    for candidate in plan.catalogue[1:]:
+        label = f"Candidate ({candidate.config_id[-6:]}) vs Reference"
+        assert label in terminal
+        assert label in markdown
+    assert terminal.count("completed comparisons") == 2
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"seat_stats": ({"nested": {"value": float("nan")}}, None, None, None)},
+        {"seat_stats": ({"value": object()}, None, None, None)},
+        {"seat_decision_calls": (True, 0, 0, 0)},
+        {"seat_decision_seconds": (-1.0, None, None, None)},
+    ],
+)
+def test_compact_evidence_rejects_invalid_measurements(plan: ArenaPlan, changes: dict[str, object]) -> None:
+    job = _job(plan, "game", "abbb")
+    run = _run(plan, (job,), ((0, 1, 2, 3),))
+    payload = run.results[0].model_dump(mode="python")
+    with pytest.raises(ValueError):
+        MatchRecord.model_validate(payload | changes)
+
+
+def test_reports_disambiguate_labels_that_normalize_to_the_same_display(plan: ArenaPlan) -> None:
+    report = analyse_run(_run(plan, (_job(plan, "game", "abbb"),), ((0, 1, 2, 3),)))
+    first, second = (entry.config_id for entry in plan.catalogue)
+    report = report.model_copy(update={"catalogue": {first: "same_label", second: "Same label"}})
+    for text in (report_markdown(report), report_terminal(report)):
+        assert f"Same label ({first[-6:]})" in text
+        assert f"Same label ({second[-6:]})" in text
+
+
+def test_terminal_report_does_not_advertise_unpublished_analysis_files(plan: ArenaPlan) -> None:
+    report = analyse_run(_run(plan, (_job(plan, "game", "abbb"),), ((0, 1, 2, 3),)))
+    terminal = report_terminal(report)
+    assert "Full report" not in terminal
+    assert "Saved data" not in terminal
+    assert "See the saved report" not in terminal
+
+
+@pytest.fixture(params=["plan", "record", "status", "provenance"])
+def versioned_model(request: pytest.FixtureRequest, plan: ArenaPlan) -> tuple[BaseModel, str]:
+    if request.param == "plan":
+        return plan, "version"
+    if request.param == "record":
+        job = plan.jobs[0]
+        return MatchRecord(
+            job_id=job.job_id, match_id=job.match_id, seats=job.seats, outcome="failed"
+        ), "record_version"
+    if request.param == "status":
+        return RunStatus(state="running", planned_job_ids=()), "status_version"
+    return RuntimeProvenance.model_validate(runtime_provenance(plan)), "provenance_version"
+
+
+@pytest.mark.parametrize("version", [True, False, 1.0, "1", 2])
+def test_evidence_schema_versions_require_exact_supported_integer(
+    versioned_model: tuple[BaseModel, str], version: object
+) -> None:
+    model, field = versioned_model
+    payload = model.model_dump(mode="json")
+    payload[field] = version
+    with pytest.raises(ValidationError):
+        type(model).model_validate_json(json.dumps(payload))
+
+
+def test_evidence_schema_integer_version_roundtrips(versioned_model: tuple[BaseModel, str]) -> None:
+    model, field = versioned_model
+    restored = type(model).model_validate_json(model.model_dump_json())
+    assert type(getattr(restored, field)) is int
+    assert getattr(restored, field) == 1
+    assert restored == model
+
+
+@pytest.mark.parametrize("field", ["manifest_version", "provenance_version"])
+@pytest.mark.parametrize("version", [True, False, 1.0, "1", 2])
+def test_saved_run_rejects_invalid_manifest_or_provenance_version(
+    tmp_path: Path, plan: ArenaPlan, field: str, version: object
+) -> None:
+    status = RunStatus(state="running", planned_job_ids=tuple(job.job_id for job in plan.jobs))
+    manifest: dict[str, object] = {
+        "manifest_version": 1,
+        "artifact_kind": "arena_run",
+        "plan_id": plan.plan_id,
+        "status": status.model_dump(mode="json"),
+        "provenance": {},
+    }
+    if field == "manifest_version":
+        manifest[field] = version
+    else:
+        manifest["provenance"] = {field: version}
+    (tmp_path / "plan.json").write_text(plan.model_dump_json())
+    (tmp_path / "results.jsonl").write_text("")
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    with pytest.raises(ValidationError):
+        load_run(tmp_path)
+
+
+@pytest.mark.parametrize("version", [True, 1.0, "1"])
+def test_in_memory_evidence_rejects_coerced_provenance_version(plan: ArenaPlan, version: object) -> None:
+    run = _run(plan, plan.jobs, ((0, 1, 2, 3),))
+    payload = run.model_dump(mode="json")
+    payload["provenance"] = {"provenance_version": version}
+    with pytest.raises(ValidationError):
+        ArenaRun.model_validate(payload)

@@ -3,6 +3,7 @@
 import json
 import os
 from collections.abc import Callable, Sequence
+from contextlib import ExitStack
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
@@ -11,6 +12,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, TypeAdapter, ValidationError
 
 from sixnimmt.engine.events import Event
+from sixnimmt.persistence.atomic import sync_directory as _sync_directory
 
 _EVENT_ADAPTER: TypeAdapter[Event] = TypeAdapter(Event)
 
@@ -128,25 +130,6 @@ def pending_path(path: Path) -> Path:
     return path.with_name(path.name + ".pending")
 
 
-def _sync_directory(path: Path) -> None:
-    """Make the creation or removal of a file's directory entry durable.
-
-    Unlinking a file is not itself on disk until its parent directory is
-    synced. Without this a crash could resurrect a sidecar that had already
-    been spent, and recovery would then roll back a batch that the match had
-    committed and published. Platforms that cannot sync a directory simply do
-    not gain the guarantee; nothing else depends on it.
-    """
-    try:
-        handle = os.open(path.parent, os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(handle)
-    finally:
-        os.close(handle)
-
-
 def _staged_length(path: Path) -> int | None:
     """How long the log was before an unacknowledged batch, if there was one.
 
@@ -185,15 +168,19 @@ class JsonlEventSink(EventSink):
 
     def __init__(self, directory: Path, match_id: str) -> None:
         directory.mkdir(parents=True, exist_ok=True)
-        self._events = AtomicJsonlWriter(event_log_path(directory, match_id))
-        self._actions = AtomicJsonlWriter(action_log_path(directory, match_id))
-        self._closed = False
-        self._model_path = directory / f"{match_id}.model.jsonl"
-        self._model_lock = Lock()
-        self._player_names: dict[str, str] = {}
-        # A reopened sink must retain the labels learned when the match began.
-        for event in read_event_log(event_log_path(directory, match_id)):
-            self._remember_names(event)
+        with ExitStack() as opened:
+            self._events = AtomicJsonlWriter(event_log_path(directory, match_id))
+            opened.callback(self._events.close)
+            self._actions = AtomicJsonlWriter(action_log_path(directory, match_id))
+            opened.callback(self._actions.close)
+            self._closed = False
+            self._model_path = directory / f"{match_id}.model.jsonl"
+            self._model_lock = Lock()
+            self._player_names: dict[str, str] = {}
+            # A reopened sink must retain the labels learned when the match began.
+            for event in read_event_log(event_log_path(directory, match_id)):
+                self._remember_names(event)
+            opened.pop_all()
 
     def append(self, events: Sequence[Event]) -> None:
         if len(events) == 0:
@@ -290,14 +277,14 @@ def _incomplete_json(error: json.JSONDecodeError, line: str) -> bool:
     return error.msg.startswith("Unterminated string") or error.pos >= len(line.rstrip())
 
 
-def _parse_log(path: Path, parse: Callable[[str], Any]) -> list[Any]:
+def read_jsonl[Record](path: Path, parse: Callable[[str], Record]) -> list[Record]:
     """Read committed records; recover only an incomplete final JSON write.
 
     Schema errors always fail. An entirely unreadable file also fails, preserving
     the distinction between an empty log and a file that is not a log at all.
     """
     lines = committed_text(path).splitlines(keepends=True)
-    records: list[Any] = []
+    records: list[Record] = []
     for index, line in enumerate(lines):
         if line.strip() == "":
             continue
@@ -318,7 +305,7 @@ def _parse_log(path: Path, parse: Callable[[str], Any]) -> list[Any]:
 
 def read_event_log(path: Path) -> list[Event]:
     """Every event in a match log, in the order the arena wrote it."""
-    return _parse_log(path, _EVENT_ADAPTER.validate_json)
+    return read_jsonl(path, _EVENT_ADAPTER.validate_json)
 
 
 def read_action_log(path: Path) -> list[ActionRecord]:
@@ -327,4 +314,4 @@ def read_action_log(path: Path) -> list[ActionRecord]:
     Records are written inside the per-match serialisation boundary, so the file
     order is the canonical processing order, independent of timestamps.
     """
-    return _parse_log(path, ActionRecord.model_validate_json)
+    return read_jsonl(path, ActionRecord.model_validate_json)

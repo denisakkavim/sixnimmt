@@ -1,16 +1,18 @@
 """Model bots use tool calls through configurable endpoints without privileged state."""
 
 import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx2 as httpx
 import pytest
 from openai import OpenAI
 from openai.types.chat import ChatCompletion
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from sixnimmt.arena.bots.base import ActionBatch
 from sixnimmt.arena.bots.heuristics import LowestFittingCardBot
+from sixnimmt.arena.bots.lifecycle import DecisionContext, DecisionDeadlineExceeded
 from sixnimmt.arena.bots.llm import (
     LLMBot,
     LLMMemoryBot,
@@ -21,8 +23,9 @@ from sixnimmt.arena.bots.llm import (
     parse_action,
     repair_feedback,
 )
+from sixnimmt.arena.config import RunConfig
+from sixnimmt.arena.match import run_match
 from sixnimmt.arena.players import PlayerConfig
-from sixnimmt.arena.runner import RunConfig, run_arena, run_match
 from sixnimmt.engine.actions import SelectCardAction
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.fold import build_view
@@ -30,6 +33,7 @@ from sixnimmt.engine.replay import replay_events
 from sixnimmt.engine.rules import MatchProtocol
 from sixnimmt.engine.setup import create_match
 from sixnimmt.engine.views import MatchView, ViewRole
+from tests.run_helpers import run_fixed
 
 
 @pytest.fixture
@@ -46,11 +50,15 @@ class Endpoint:
         self.invalid_responses = 0
         self.illegal_card_once = False
         self.status = 200
+        self.timeout = False
         self.raw_body: str | None = None
         self.memory: Any = ""
         self.omit_memory = False
 
     def handle(self, request: httpx.Request) -> httpx.Response:
+        if self.timeout:
+            msg = "simulated provider timeout"
+            raise httpx.ReadTimeout(msg, request=request)
         payload = json.loads(request.content)
         self.requests.append(payload)
         self.urls.append(str(request.url))
@@ -209,7 +217,7 @@ def test_configured_credentials_stay_out_of_manifest(
 ) -> None:
     monkeypatch.setenv("ARENA_TEST_KEY", "test-credential")
     trace_dir = tmp_path / "run"
-    result = run_arena(
+    result = run_fixed(
         [
             PlayerConfig(
                 bot="llm",
@@ -219,16 +227,20 @@ def test_configured_credentials_stay_out_of_manifest(
         ],
         2,
         123,
-        config=RunConfig(trace_dir=trace_dir),
+        output_dir=trace_dir,
+        trace=True,
     )
-    assert result.reproducible is False
+    assert not all(entry.deterministic for entry in result.plan.catalogue)
     manifest_text = (trace_dir / "manifest.json").read_text()
     assert "test-credential" not in manifest_text
     assert endpoint.authorizations[0] == "Bearer test-credential"
-    manifest = json.loads(manifest_text)
-    for match in manifest["matches"]:
-        assert match["seat_stats"]["player_1"]["calls"] > 0
-        assert match["seat_stats"]["player_1"]["response_models"] == ["local-model-revision"]
+    assert "test-credential" not in (trace_dir / "plan.json").read_text()
+    for record in result.results:
+        stats = record.seat_stats[0]
+        assert stats is not None
+        calls = stats["calls"]
+        assert isinstance(calls, int) and calls > 0
+        assert stats["response_models"] == ["local-model-revision"]
 
 
 @pytest.mark.parametrize(
@@ -243,7 +255,7 @@ def test_configured_credentials_stay_out_of_manifest(
         {"api_key": "secret"},
     ],
 )
-def test_rejects_invalid_model_configuration(options: dict) -> None:
+def test_rejects_invalid_model_configuration(options: dict[str, JsonValue]) -> None:
     with pytest.raises(ValidationError):
         LLMOptions.model_validate({"model": "local", "base_url": "http://localhost:11434/v1", **options})
 
@@ -266,7 +278,7 @@ def test_view_carries_public_protocol_limits() -> None:
         ("send_message", {"visibility": "direct", "body": "hello", "to_player": "b"}),
     ],
 )
-def test_parses_each_game_action(view: MatchView, name: str, arguments: dict) -> None:
+def test_parses_each_game_action(view: MatchView, name: str, arguments: dict[str, JsonValue]) -> None:
     response = ChatCompletion.model_validate({
         "id": "completion",
         "object": "chat.completion",
@@ -406,7 +418,7 @@ def test_card_tool_lists_only_current_hand(view: MatchView) -> None:
 
 def test_model_trace_preserves_requests_reasoning_and_repairs(endpoint: Endpoint, tmp_path) -> None:
     endpoint.invalid_responses = 1
-    result = run_arena(
+    result = run_fixed(
         [
             PlayerConfig(
                 bot="llm",
@@ -422,11 +434,17 @@ def test_model_trace_preserves_requests_reasoning_and_repairs(endpoint: Endpoint
         1,
         123,
         protocol=MatchProtocol(end_condition="fixed_hands", hands=1),
-        config=RunConfig(trace_dir=tmp_path / "run"),
+        output_dir=tmp_path / "run",
+        trace=True,
     )
-    path = next((tmp_path / "run").glob("*.model.jsonl"))
+    path = next((tmp_path / "run" / "traces").glob("*.model.jsonl"))
     records = [json.loads(line) for line in path.read_text().splitlines()]
-    assert result.finished == 1
+    assert len(result.results) == 1
+    assert all(record.outcome == "finished" for record in result.results)
+    activities = [record for record in records if record["kind"] == "activity"]
+    assert any(record["type"] == "reasoning_summary" for record in activities)
+    assert any(record["type"] == "tool_activity" for record in activities)
+    records = [record for record in records if record["kind"] != "activity"]
     assert [record["kind"] for record in records[:6]] == [
         "request",
         "response",
@@ -664,7 +682,7 @@ def test_memory_bot_sees_engine_rejection_without_rejected_notes(endpoint: Endpo
 
 def test_registered_memory_bots_start_each_match_fresh_without_publishing_notes(endpoint: Endpoint, tmp_path) -> None:
     endpoint.memory = "A private long-term plan."
-    result = run_arena(
+    result = run_fixed(
         [
             PlayerConfig(
                 bot="llm_memory",
@@ -679,11 +697,13 @@ def test_registered_memory_bots_start_each_match_fresh_without_publishing_notes(
         2,
         123,
         protocol=MatchProtocol(end_condition="fixed_hands", hands=2),
-        config=RunConfig(trace_dir=tmp_path / "run"),
+        output_dir=tmp_path / "run",
+        trace=True,
     )
-    assert result.finished == 2
-    assert result.reproducible is False
-    for path in (tmp_path / "run").glob("*.model.jsonl"):
+    assert len(result.results) == 2
+    assert all(record.outcome == "finished" for record in result.results)
+    assert not all(entry.deterministic for entry in result.plan.catalogue)
+    for path in (tmp_path / "run" / "traces").glob("*.model.jsonl"):
         records = [json.loads(line) for line in path.read_text().splitlines()]
         requests = [entry for entry in records if entry["kind"] == "request"]
         assert (
@@ -694,7 +714,7 @@ def test_registered_memory_bots_start_each_match_fresh_without_publishing_notes(
         event_path = path.with_name(path.name.replace(".model.jsonl", ".jsonl"))
         assert "A private long-term plan." not in event_path.read_text()
     manifest = json.loads((tmp_path / "run" / "manifest.json").read_text())
-    assert manifest["seats"][0]["options"]["memory_max_chars"] == 100
+    assert result.plan.catalogue[0].options["memory_max_chars"] == 100
     assert "A private long-term plan." not in json.dumps(manifest)
 
 
@@ -893,3 +913,33 @@ def test_simplified_memory_tool_retains_local_length_validation(endpoint: Endpoi
     assert "memory" not in tools["select_card"]["parameters"]["properties"]
     assert tools["update_memory"]["parameters"]["properties"]["memory"]["type"] == "string"
     assert "maxLength" not in tools["update_memory"]["parameters"]["properties"]["memory"]
+
+
+def test_expired_arena_deadline_skips_provider_request(endpoint: Endpoint, view: MatchView) -> None:
+    bot = LLMBot(1, model="local", base_url="http://localhost:11434/v1")
+    bot.set_decision_context(DecisionContext(datetime.now(UTC) - timedelta(seconds=1)))
+    with pytest.raises(DecisionDeadlineExceeded, match="budget exhausted"):
+        bot.act(view)
+    assert endpoint.requests == []
+
+
+def test_provider_timeout_uses_the_arena_deadline_outcome(endpoint: Endpoint, view: MatchView) -> None:
+    endpoint.timeout = True
+    bot = LLMBot(1, model="local", base_url="http://localhost:11434/v1")
+    with pytest.raises(DecisionDeadlineExceeded, match="APITimeoutError"):
+        bot.act(view)
+    assert bot.stats()["calls"] == 1
+    assert bot.stats()["errors"] == 1
+
+
+@pytest.mark.parametrize(("arena_seconds", "expected"), [(1.0, 1.0), (30.0, 5.0)])
+def test_provider_request_uses_the_shorter_deadline(
+    endpoint: Endpoint, view: MatchView, arena_seconds: float, expected: float
+) -> None:
+    bot = LLMBot(1, model="local", base_url="http://localhost:11434/v1", decision_budget_seconds=5.0)
+    records: list[dict[str, Any]] = []
+    bot.set_trace(records.append)
+    bot.set_decision_context(DecisionContext(datetime.now(UTC) + timedelta(seconds=arena_seconds)))
+    bot.act(view)
+    request = next(record for record in records if record["kind"] == "request")
+    assert expected - 0.5 <= request["timeout_seconds"] <= expected

@@ -14,6 +14,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from pydantic import TypeAdapter
+from typing_extensions import TypedDict
+
 from experiments.mcmc.diagnose import CATALOGUE, ControlledOpponent
 from sixnimmt.arena.bots.base import ActionBatch, Rejection
 from sixnimmt.arena.bots.registry import REGISTRY
@@ -21,7 +24,7 @@ from sixnimmt.arena.bots.simulation import SimulationBot
 from sixnimmt.arena.bots.uncertainty.history import PublicHistory
 from sixnimmt.arena.bots.uncertainty.inference import OpponentModel, World
 from sixnimmt.arena.bots.uncertainty.options import SimulationOptions
-from sixnimmt.arena.runner import run_match
+from sixnimmt.arena.match import run_match
 from sixnimmt.engine.actions import Action
 from sixnimmt.engine.rules import GameRules
 from sixnimmt.engine.views import MatchView
@@ -53,7 +56,7 @@ def capture(
 
 
 class TimedModel(OpponentModel):
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: OpponentModel) -> None:
         super().__init__(model.options)
         self.model = model
         self.seconds = 0.0
@@ -77,7 +80,18 @@ def load_baseline(root: Path, name: str, relative: str) -> Any:
     return module
 
 
-def measure(bot: Any, history: PublicHistory, view: MatchView) -> dict:
+class Measurement(TypedDict):
+    seconds: float
+    inference_seconds: float
+    card: int
+    candidate_values: dict[int, float]
+    diagnostics: dict[str, object]
+
+
+_MEASUREMENT: TypeAdapter[Measurement] = TypeAdapter(Measurement)
+
+
+def measure(bot: Any, history: PublicHistory, view: MatchView) -> Measurement:
     bot.history = copy.deepcopy(history)
     bot.model.seconds = 0.0
     started = time.perf_counter()
@@ -85,16 +99,16 @@ def measure(bot: Any, history: PublicHistory, view: MatchView) -> dict:
     seconds = time.perf_counter() - started
     if getattr(bot, "failures", 0) != 0:
         raise RuntimeError(bot.last_error)
-    return {
+    return _MEASUREMENT.validate_python({
         "seconds": seconds,
         "inference_seconds": bot.model.seconds,
         "card": action.card,
         "candidate_values": bot.estimates,
         "diagnostics": bot.model.diagnostics,
-    }
+    })
 
 
-def regular_times(view: MatchView) -> dict:
+def regular_times(view: MatchView) -> dict[str, float]:
     timings = {}
     for name in ["random", "lowest_card", "closest_gap", "hand_flexibility"]:
         bot = REGISTRY[name].build(123)
@@ -201,15 +215,16 @@ def main() -> None:
         bot = SimulationBot(123, options)
         bot.model = TimedModel(OpponentModel(options.model))
         decisions = []
+        total_seconds = 0.0
         for (hand, play), (history, view) in sorted(trajectories[players].items()):
             if (hand, play) > (3, 5):
                 break
-            decisions.append({"hand": hand, "play": play, **measure(bot, history, view)})
+            measurement = measure(bot, history, view)
+            total_seconds += measurement["seconds"]
+            decisions.append({"hand": hand, "play": play, **measurement})
         result["warm_trajectories"].append({"players": players, "decisions": decisions})
         args.output.write_text(json.dumps(result, indent=2) + "\n")
-        print(
-            json.dumps({"warm_players": players, "total_seconds": sum(row["seconds"] for row in decisions)}), flush=True
-        )
+        print(json.dumps({"warm_players": players, "total_seconds": total_seconds}), flush=True)
 
 
 if __name__ == "__main__":

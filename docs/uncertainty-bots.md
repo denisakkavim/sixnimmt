@@ -20,7 +20,7 @@ selections, the match seed, or the actual undealt cards.
 Use the complete [example configuration](../examples/arena-uncertainty.json):
 
 ```bash
-uv run sixnimmt arena --config examples/arena-uncertainty.json --games 1 --seed 123 --output-dir runs/uncertainty-first-run
+uv run sixnimmt play --config examples/arena-uncertainty.json --games 1 --seed 123 --output-dir runs/uncertainty-first-run
 ```
 
 The example uses the exploratory settings from our
@@ -89,6 +89,9 @@ cards and public reveals. Completed hands reveal all ten original cards, so thei
 behavioural likelihoods can be evaluated directly. The full accumulated likelihood
 is used once; repeated observations, commit callbacks, and row choices do not count
 a selection again. Card knowledge resets at each deal; behavioural evidence persists.
+Stateful bots ingest observations separately from deciding. When used as a nested
+fallback, they still receive the views on which an outer strategy chooses its own
+move. This preserves the initial hand and all public evidence before delegation.
 
 Observed row choices update reconstructed boards but do not contribute behavioural
 likelihoods. Predicted opponents take the cheapest row, breaking ties by row index.
@@ -108,7 +111,10 @@ analytically known posterior. Both represented that posterior successfully.
 PyMC needed graph setup for the black-box policy likelihood; `particles`'s standard
 sampling path uses global NumPy randomness. emcee's [custom MH interface](https://emcee.readthedocs.io/en/stable/user/moves/)
 accepts legal-deal proposals directly and provides a private sampler RNG, fitting
-concurrent arena execution without a global RNG lock. See also [PyMC compound sampling](https://www.pymc.io/projects/examples/en/latest/samplers/sampling_compound_step.html)
+concurrent arena execution without a global RNG lock. A small sampler adapter
+checks returned coordinate shape, float64 dtype, and finiteness before inference
+uses external library state. It preserves the sampler state and private random
+stream between warm-up and retained draws. See also [PyMC compound sampling](https://www.pymc.io/projects/examples/en/latest/samplers/sampling_compound_step.html)
 and [particles SMC samplers](https://particles-sequential-monte-carlo-in-python.readthedocs.io/en/latest/notebooks/SMC_samplers_tutorial.html).
 
 The likelihood is batched across chains and opponents. For each supported
@@ -180,9 +186,11 @@ Upper-tail evaluation includes only the required fraction of a boundary sample.
 All objectives use accumulated penalties over the horizon, excluding prior points.
 
 Simulation statistics retain the configured `objective`, `horizon`, and
-`sample_count` alongside `candidate_values`. The table's operator commentary
-uses this metadata to label candidate comparisons and the accepted card. Its
-displayed horizon accounts for the current hand boundary. These diagnostics do
+`sample_count` alongside `candidate_values`. A separate typed
+`decision_evaluation()` result supplies operator commentary with candidate values,
+objective, sample count, and the horizon capped at the current hand boundary.
+New observations clear the prior decision's candidate values, including when an
+outer wrapper chooses its own move. These diagnostics do
 not affect simulated worlds, random streams, or move selection.
 
 `model_based_bait` requires horizon 1, mean penalty, and cheapest row choice. Other

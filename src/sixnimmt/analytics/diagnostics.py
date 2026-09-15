@@ -9,14 +9,14 @@ from sixnimmt.analytics.models import Diagnostics
 from sixnimmt.analytics.uncertainty import quantile
 
 if TYPE_CHECKING:
-    from sixnimmt.analytics.evaluation import Observation
-    from sixnimmt.arena.records import ArenaRun
+    from sixnimmt.analytics.inputs import Observation
+    from sixnimmt.arena.artifacts import ArenaRun
 
 
 def analyse_diagnostics(run: ArenaRun, rows: list[Observation]) -> Diagnostics:
     jobs = {row.job.job_id: row.job for row in rows}
     results = [record for record in run.results if record.job_id in jobs]
-    started = set(run.status.started_job_ids) & jobs.keys()
+    started = (set(run.status.started_job_ids) | {record.job_id for record in results}) & jobs.keys()
     outcomes = Counter(str(record.outcome) for record in results)
     reasons = Counter(record.reason for record in results if record.outcome != "finished" and record.reason is not None)
     responsible = Counter(

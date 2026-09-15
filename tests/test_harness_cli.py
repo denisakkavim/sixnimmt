@@ -15,9 +15,12 @@ from threading import Event
 import pytest
 from typer.testing import CliRunner
 
+from sixnimmt.arena.artifacts import load_run
 from sixnimmt.arena.bots.external_harnesses.connection import write_connection_bundle
 from sixnimmt.arena.bots.external_harnesses.transport import SeatClient
-from sixnimmt.arena.table import SetupTimeout, create_seats, wait_for_ready
+from sixnimmt.arena.config import SessionOptions
+from sixnimmt.arena.players import PlayerConfig
+from sixnimmt.arena.sessions import SetupTimeout, prepare_seats, wait_for_ready
 from sixnimmt.cli import app
 from sixnimmt.engine.rules import GameRules, MatchProtocol
 
@@ -25,7 +28,18 @@ runner = CliRunner()
 
 
 def table_arguments(directory: Path, *seats: str) -> list[str]:
-    arguments = ["table", "--output-dir", str(directory), "--hands", "1", "--retain-seconds", "0", "--quiet"]
+    arguments = [
+        "play",
+        "--watch",
+        "--trace",
+        "--output-dir",
+        str(directory),
+        "--hands",
+        "1",
+        "--retain-seconds",
+        "0",
+        "--quiet",
+    ]
     for seat in seats:
         arguments.extend(["--seat", seat])
     return arguments
@@ -35,9 +49,15 @@ def test_table_plays_exact_baseline_lineup_and_writes_replayable_traces(tmp_path
     directory = tmp_path / "table"
     result = runner.invoke(app, [*table_arguments(directory, "lowest_card", "highest_card"), "--auto-start"])
     assert result.exit_code == 0, result.output
-    manifest = json.loads((directory / "traces" / "manifest.json").read_text())
-    assert [seat["bot"] for seat in manifest["seats"]] == ["LowestCardBot", "HighestCardBot"]
-    replay = runner.invoke(app, ["replay", str(directory / "traces" / "table.jsonl")])
+    run = load_run(directory)
+    catalogue = {entry.config_id: entry for entry in run.plan.catalogue}
+    assert [catalogue[seat.config_id].bot for seat in run.results[0].seats] == ["lowest_card", "highest_card"]
+    trace = run.results[0].event_trace
+    assert trace is not None
+    assert (directory / "plan.json").is_file()
+    assert (directory / "results.jsonl").is_file()
+    assert (directory / "manifest.json").is_file()
+    replay = runner.invoke(app, ["replay", str(directory / trace)])
     assert replay.exit_code == 0, replay.output
     assert "status=finished" in replay.output
 
@@ -45,9 +65,10 @@ def test_table_plays_exact_baseline_lineup_and_writes_replayable_traces(tmp_path
 def test_ready_table_requires_explicit_start_by_default(tmp_path: Path) -> None:
     directory = tmp_path / "table"
     result = runner.invoke(app, table_arguments(directory, "lowest_card", "highest_card"), input="n\n")
-    assert result.exit_code == 2
+    assert result.exit_code == 1
     assert "All seats ready. Start the match?" in result.output
-    assert not (directory / "traces").exists()
+    assert (directory / "plan.json").is_file()
+    assert load_run(directory).results == ()
 
 
 @pytest.mark.parametrize("seats", [("lowest_card",), ("unknown", "lowest_card"), ("command", "lowest_card")])
@@ -72,20 +93,22 @@ def test_native_setup_times_out_without_starting_the_game(tmp_path: Path) -> Non
         app,
         [*table_arguments(directory, "codex", "claude"), "--auto-start", "--setup-timeout", "0.05"],
     )
-    assert result.exit_code == 2, result.output
+    assert result.exit_code == 1, result.output
     assert "setup timed out" in result.output
     assert "open a separate terminal and run" in result.output
-    assert (directory / "seats" / "player_1" / "launch.sh").is_file()
-    assert not (directory / "traces").exists()
+    assert len(list(directory.glob("matches/*/seats/player_1/launch.sh"))) == 1
+    assert (directory / "plan.json").is_file()
+    assert load_run(directory).results == ()
 
 
 def test_connection_bundles_are_private_scoped_and_select_modern_mcp(tmp_path: Path) -> None:
-    seats = create_seats(
-        ["codex", "claude"],
+    seats = prepare_seats(
+        [PlayerConfig(bot="codex"), PlayerConfig(bot="claude")],
         seed=123456789,
         directory=tmp_path,
         rules=GameRules(),
         protocol=MatchProtocol(),
+        session_options=SessionOptions(),
     )
     for seat in seats:
         assert seat.session is not None
@@ -118,7 +141,14 @@ def test_connection_bundles_are_private_scoped_and_select_modern_mcp(tmp_path: P
 
 
 def test_readiness_requires_every_external_seat(tmp_path: Path) -> None:
-    seats = create_seats(["codex", "claude"], seed=66, directory=tmp_path, rules=GameRules(), protocol=MatchProtocol())
+    seats = prepare_seats(
+        [PlayerConfig(bot="codex"), PlayerConfig(bot="claude")],
+        seed=66,
+        directory=tmp_path,
+        rules=GameRules(),
+        protocol=MatchProtocol(),
+        session_options=SessionOptions(),
+    )
     first = seats[0].session
     second = seats[1].session
     assert first is not None and second is not None
@@ -130,14 +160,13 @@ def test_readiness_requires_every_external_seat(tmp_path: Path) -> None:
 
 
 def test_external_notebook_is_explicit_and_configured_for_each_seat(tmp_path: Path) -> None:
-    seats = create_seats(
-        ["codex", "claude-headless"],
+    seats = prepare_seats(
+        [PlayerConfig(bot="codex"), PlayerConfig(bot="claude-headless")],
         seed=66,
         directory=tmp_path,
         rules=GameRules(),
         protocol=MatchProtocol(),
-        memory_enabled=True,
-        memory_max_chars=1234,
+        session_options=SessionOptions(memory_enabled=True, memory_max_chars=1234),
     )
     for seat in seats:
         assert seat.session is not None
@@ -147,8 +176,13 @@ def test_external_notebook_is_explicit_and_configured_for_each_seat(tmp_path: Pa
 
 
 def test_native_launch_passes_credential_in_environment_without_command_arguments(tmp_path: Path) -> None:
-    seats = create_seats(
-        ["codex", "highest_card"], seed=66, directory=tmp_path, rules=GameRules(), protocol=MatchProtocol()
+    seats = prepare_seats(
+        [PlayerConfig(bot="codex"), PlayerConfig(bot="highest_card")],
+        seed=66,
+        directory=tmp_path,
+        rules=GameRules(),
+        protocol=MatchProtocol(),
+        session_options=SessionOptions(),
     )
     seat = seats[0]
     assert seat.session is not None
@@ -200,18 +234,16 @@ def test_managed_command_completes_a_real_match_without_provider_calls(tmp_path:
     )
     profile = write_command_profile(tmp_path, source)
     directory = tmp_path / "table"
-    arguments = [*table_arguments(directory, f"command:{profile}", "highest_card"), "--auto-start"]
+    arguments = [*table_arguments(directory, f"command:{profile}", "highest_card"), "--auto-start", "--json"]
     if communication:
         arguments.append("--communication")
     result = runner.invoke(app, arguments)
     assert result.exit_code == 0, result.output
-    summary = json.loads((directory / "result.json").read_text())
-    assert summary["outcome"] == "finished"
-    assert result.output.splitlines() == [
-        f"Match finished. Winners: {', '.join(summary['winners'])}",
-        f"Trace: {directory / 'traces' / 'table.jsonl'}",
-    ]
-    replay = runner.invoke(app, ["replay", str(directory / "traces" / "table.jsonl")])
+    record = load_run(directory).results[0]
+    assert record.outcome == "finished"
+    assert json.loads(result.stdout)["report"]["diagnostics"]["finished_matches"] == 1
+    assert record.event_trace is not None
+    replay = runner.invoke(app, ["replay", str(directory / record.event_trace)])
     assert "status=finished" in replay.output
 
 
@@ -223,9 +255,9 @@ def test_managed_timeout_finishes_the_table_with_a_failure_trace(tmp_path: Path)
         [*table_arguments(directory, f"command:{profile}", "highest_card"), "--auto-start"],
     )
     assert result.exit_code == 1, result.output
-    summary = json.loads((directory / "result.json").read_text())
-    assert summary["outcome"] == "failed"
-    assert summary["reason"] == "decision_timeout"
+    record = load_run(directory).results[0]
+    assert record.outcome == "failed"
+    assert record.reason == "decision_timeout"
 
 
 def test_managed_timeout_option_applies_when_command_profile_omits_it(tmp_path: Path) -> None:
@@ -244,8 +276,8 @@ def test_managed_timeout_option_applies_when_command_profile_omits_it(tmp_path: 
         ],
     )
     assert result.exit_code == 1, result.output
-    summary = json.loads((directory / "result.json").read_text())
-    assert summary["reason"] == "decision_timeout"
+    record = load_run(directory).results[0]
+    assert record.reason == "decision_timeout"
 
 
 @pytest.mark.parametrize("malformed", ["not JSON", '{"wrong": "schema"}'])
@@ -279,12 +311,15 @@ def test_managed_format_repair_keeps_the_same_offer_and_submits_once(tmp_path: P
             "1",
         ],
     )
-    assert result.exit_code == 0, result.output
-    actions = [json.loads(line) for line in (directory / "traces" / "table.actions.jsonl").read_text().splitlines()]
+    assert result.exit_code == 1, result.output
+    record = load_run(directory).results[0]
+    assert record.action_trace is not None
+    actions = [json.loads(line) for line in (directory / record.action_trace).read_text().splitlines()]
     assert len(actions) == 1
     assert actions[0]["outcome"] == "accepted"
-    manifest = json.loads((directory / "traces" / "manifest.json").read_text())
-    assert manifest["matches"][0]["seat_stats"]["player_1"]["invocations"] == 2
+    stats = record.seat_stats[0]
+    assert stats is not None
+    assert stats["invocations"] == 2
 
 
 def test_managed_format_repair_does_not_reset_its_decision_budget(tmp_path: Path) -> None:
@@ -292,8 +327,8 @@ def test_managed_format_repair_does_not_reset_its_decision_budget(tmp_path: Path
     directory = tmp_path / "table"
     result = runner.invoke(app, [*table_arguments(directory, f"command:{profile}", "highest_card"), "--auto-start"])
     assert result.exit_code == 1, result.output
-    summary = json.loads((directory / "result.json").read_text())
-    assert summary["reason"] == "decision_timeout"
+    record = load_run(directory).results[0]
+    assert record.reason == "decision_timeout"
 
 
 def test_managed_format_repair_stops_after_one_unsuccessful_correction(tmp_path: Path) -> None:
@@ -301,8 +336,9 @@ def test_managed_format_repair_stops_after_one_unsuccessful_correction(tmp_path:
     directory = tmp_path / "table"
     result = runner.invoke(app, [*table_arguments(directory, f"command:{profile}", "highest_card"), "--auto-start"])
     assert result.exit_code == 1, result.output
-    manifest = json.loads((directory / "traces" / "manifest.json").read_text())
-    assert manifest["matches"][0]["seat_stats"]["player_1"]["invocations"] == 2
+    stats = load_run(directory).results[0].seat_stats[0]
+    assert stats is not None
+    assert stats["invocations"] == 2
 
 
 def test_managed_only_table_does_not_retain_results_without_a_listener(tmp_path: Path) -> None:
@@ -321,16 +357,20 @@ def test_managed_only_table_does_not_retain_results_without_a_listener(tmp_path:
 
 
 def _read_seat_client(directory: Path, player_id: str) -> tuple[SeatClient, str]:
-    workspace = directory / "seats" / player_id
     deadline = time.monotonic() + 5
-    while not (workspace / "launch.sh").exists():
+    launch_scripts = list(directory.glob(f"matches/*/seats/{player_id}/launch.sh"))
+    while len(launch_scripts) == 0:
         if time.monotonic() >= deadline:
             pytest.fail("native seat bundle was not created")
         time.sleep(0.01)
+        launch_scripts = list(directory.glob(f"matches/*/seats/{player_id}/launch.sh"))
+    assert len(launch_scripts) == 1
+    workspace = launch_scripts[0].parent
     config = json.loads((workspace / "claude-mcp.json").read_text())
     environment = config["mcpServers"]["sixnimmt"]["env"]
     client = SeatClient(environment["SIXNIMMT_ENDPOINT"], environment["SIXNIMMT_CREDENTIAL"])
     session_id = json.loads((workspace / "game-info.json").read_text())["session_id"]
+    assert isinstance(session_id, str)
     return client, session_id
 
 

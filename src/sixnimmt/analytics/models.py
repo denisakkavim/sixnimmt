@@ -1,10 +1,25 @@
 """Serializable specifications and results for comparisons of arena runs."""
 
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, JsonValue
 
-from sixnimmt.common.evaluation import AnalysisSpec, EvidenceLabel, Objective
+from sixnimmt.arena.planning import Population
+from sixnimmt.common.evaluation import AnalysisSpec, EvidenceLabel, Objective, PlayerCount, RunStream
+from sixnimmt.engine.rules import GameRules, MatchProtocol
+
+EstimateView = Literal[
+    "iid",
+    "fixed",
+    "composition",
+    "copy_count",
+    "seat_order",
+    "weighted",
+    "paired_replacement",
+    "paired_condition_difference",
+    "weakest_tested",
+]
+Interpretation = Literal["unresolved", "useful gain", "useful loss", "practical equivalence"]
 
 
 class Interval(BaseModel):
@@ -36,13 +51,13 @@ class CellSupport(BaseModel):
 
 class Estimate(BaseModel):
     estimate_id: str
-    view: str
+    view: EstimateView
     configuration_id: str
-    player_count: int
+    player_count: PlayerCount
     objective: Objective
     population_id: str | None = None
     condition_id: str | None = None
-    stream: str | None = None
+    stream: RunStream | None = None
     opponents: tuple[str, ...] | None = None
     copy_count: int | None = None
     seat: int | None = None
@@ -52,7 +67,7 @@ class Estimate(BaseModel):
     value: float | None
     interval: Interval | None = None
     status: Literal["estimated", "insufficient_data", "unsupported"]
-    interpretation: str | None = None
+    interpretation: Interpretation | None = None
     coverage: Coverage
     missing_outcome_bounds: tuple[float, float] | None = None
     evidence_label: EvidenceLabel = "unspecified"
@@ -65,8 +80,8 @@ class Estimate(BaseModel):
 
 class OutcomeProfile(BaseModel):
     configuration_id: str
-    player_count: int
-    view: str
+    player_count: PlayerCount
+    view: EstimateView
     population_id: str | None = None
     opponents: tuple[str, ...] | None = None
     finished_appearances: int
@@ -100,14 +115,26 @@ class Diagnostics(BaseModel):
     resource_notes: tuple[str, ...] = ()
 
 
+class ReportContext(BaseModel):
+    """Recorded game and experimental context shared by report consumers."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    rules: GameRules
+    protocol: MatchProtocol
+    populations: tuple[Population, ...]
+    player_counts: tuple[PlayerCount, ...]
+    streams: tuple[RunStream, ...]
+
+
 class EvaluationReport(BaseModel):
     analysis_version: str = "1"
     analysis_spec: AnalysisSpec
-    run_status: str
+    run_status: Literal["running", "completed", "stopped", "failed"]
     artifact_dir: str | None = None
     catalogue: dict[str, str]
-    context: dict[str, Any]
-    provenance: dict[str, Any]
+    context: ReportContext
+    provenance: dict[str, JsonValue]
     diagnostics: Diagnostics
     population_estimates: tuple[Estimate, ...]
     composition_estimates: tuple[Estimate, ...]

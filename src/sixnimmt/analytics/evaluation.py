@@ -3,118 +3,53 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, NamedTuple, NotRequired, TypedDict, Unpack
 
 from sixnimmt.analytics.comparisons import comparison_estimates
 from sixnimmt.analytics.diagnostics import analyse_diagnostics
-from sixnimmt.analytics.metrics import FinishCredits, finish_credits
-from sixnimmt.analytics.models import AnalysisSpec, CellSupport, Coverage, Estimate, EvaluationReport, OutcomeProfile
+from sixnimmt.analytics.inputs import Observation, observations
+from sixnimmt.analytics.models import (
+    AnalysisSpec,
+    CellSupport,
+    Coverage,
+    Estimate,
+    EstimateView,
+    EvaluationReport,
+    OutcomeProfile,
+    ReportContext,
+)
 from sixnimmt.analytics.populations import population_weights
 from sixnimmt.analytics.uncertainty import ratio_interval, weighted_interval
+from sixnimmt.arena.artifacts import validate_run_evidence
+from sixnimmt.common.evaluation import Objective, RunStream
 
 if TYPE_CHECKING:
-    from sixnimmt.arena.planning import PlannedMatch, Population
-    from sixnimmt.arena.records import ArenaRun, MatchRecord
+    from sixnimmt.arena.artifacts import ArenaRun
+    from sixnimmt.arena.planning import Population
 
 
-@dataclass(frozen=True)
-class Observation:
-    job: PlannedMatch
-    record: MatchRecord | None
-    config_id: str
-    seat: int
-    opponents: tuple[str, ...]
-    block: str
-    stratum: str
-    started: bool
-    credits: FinishCredits | None
-
-    def value(self, objective: str) -> float | None:
-        if self.credits is None:
-            return None
-        return self.credits.win_credit if objective == "win_credit" else self.credits.acceptable_credit
+class ViewEstimates(NamedTuple):
+    population: list[Estimate]
+    composition: list[Estimate]
+    copy_count: list[Estimate]
+    seat_order: list[Estimate]
 
 
-def _selected(job: PlannedMatch, spec: AnalysisSpec) -> bool:
-    return (
-        (len(spec.player_counts) == 0 or job.player_count in spec.player_counts)
-        and (len(spec.condition_ids) == 0 or job.condition_id in spec.condition_ids)
-        and (len(spec.streams) == 0 or job.stream in spec.streams)
-    )
+class ProfileContext(TypedDict):
+    configuration_id: str
+    player_count: int
+    view: EstimateView
+    population_id: NotRequired[str | None]
+    opponents: NotRequired[tuple[str, ...]]
 
 
-def _clusters(jobs: tuple[PlannedMatch, ...]) -> tuple[dict[str, str], dict[str, str]]:
-    """Take the transitive closure of the explicitly declared dependencies."""
-    parents: dict[str, str] = {job.job_id: job.job_id for job in jobs}
-    seen: dict[tuple[int, str, str], str] = {}
-    for job in jobs:
-        identities = [("block", job.block_id), ("deal", job.shared_deal_id)]
-        if job.lineup_draw_id is not None and job.stream in ("iid", "matched"):
-            identities.append(("lineup", job.lineup_draw_id))
-        for kind, identity in identities:
-            if identity is None:
-                continue
-            key = (job.player_count, kind, identity)
-            if key in seen:
-                parents[_root(parents, job.job_id)] = _root(parents, seen[key])
-            else:
-                seen[key] = job.job_id
-    clusters = {job.job_id: _root(parents, job.job_id) for job in jobs}
-    designs: dict[str, set[str]] = defaultdict(set)
-    for job in jobs:
-        # Fixed quotas condition on the declared composition. Shared deals are
-        # resampled once with their entire set of controlled conditions.
-        design = job.stream
-        if job.stream in ("controlled", "fixed") or (job.stream == "matched" and job.lineup_draw_id is None):
-            design += ":" + job.condition_id
-        designs[clusters[job.job_id]].add(design)
-    strata = {block: "|".join(sorted(parts)) for block, parts in designs.items()}
-    return clusters, strata
-
-
-def _root(parents: dict[str, str], item: str) -> str:
-    while parents[item] != item:
-        parents[item] = parents[parents[item]]
-        item = parents[item]
-    return item
-
-
-def _observations(run: ArenaRun, spec: AnalysisSpec) -> list[Observation]:
-    records = {record.job_id: record for record in run.results}
-    if len(records) != len(run.results):
-        msg = "multiple results for one planned job require explicit retry semantics"
-        raise ValueError(msg)
-    job_ids = {job.job_id for job in run.plan.jobs}
-    if any(job_id not in job_ids for job_id in records):
-        msg = "a result does not belong to the saved plan"
-        raise ValueError(msg)
-    clusters, strata = _clusters(run.plan.jobs)
-    started = set(run.status.started_job_ids)
-    rows: list[Observation] = []
-    for job in run.plan.jobs:
-        if not _selected(job, spec):
-            continue
-        cutoff = spec.cutoff(job.player_count)
-        record = records.get(job.job_id)
-        for seat, assignment in enumerate(job.seats):
-            seat_credits = None
-            if record is not None and record.outcome == "finished" and record.scores is not None:
-                seat_credits = finish_credits(record.scores, seat, cutoff)
-            rows.append(
-                Observation(
-                    job=job,
-                    record=record,
-                    config_id=assignment.config_id,
-                    seat=seat,
-                    opponents=tuple(sorted(other.config_id for index, other in enumerate(job.seats) if index != seat)),
-                    block=clusters[job.job_id],
-                    stratum=strata[clusters[job.job_id]],
-                    started=job.job_id in started,
-                    credits=seat_credits,
-                )
-            )
-    return rows
+class EstimateContext(ProfileContext):
+    condition_id: NotRequired[str | None]
+    stream: NotRequired[RunStream]
+    copy_count: NotRequired[int]
+    seat: NotRequired[int]
+    permutation: NotRequired[str]
 
 
 def _coverage(rows: list[Observation], incomplete_pairs: int = 0) -> Coverage:
@@ -135,7 +70,7 @@ def _coverage(rows: list[Observation], incomplete_pairs: int = 0) -> Coverage:
 
 
 def _block_totals(
-    rows: list[Observation], objective: str, universe: list[Observation] | None = None
+    rows: list[Observation], objective: Objective, universe: list[Observation] | None = None
 ) -> dict[str, tuple[str, float, int]]:
     source = universe if universe is not None else rows
     totals: dict[str, tuple[str, float, int]] = {row.block: (row.stratum, 0.0, 0) for row in source}
@@ -149,7 +84,10 @@ def _block_totals(
 
 
 def _estimate(
-    rows: list[Observation], spec: AnalysisSpec, universe: list[Observation] | None = None, **context: object
+    rows: list[Observation],
+    spec: AnalysisSpec,
+    universe: list[Observation] | None = None,
+    **context: Unpack[EstimateContext],
 ) -> tuple[Estimate, Estimate]:
     coverage = _coverage(rows)
     source = universe if universe is not None else rows
@@ -164,25 +102,23 @@ def _estimate(
         interval = ratio_interval(blocks, spec, identity)
         planned = coverage.planned_appearances
         bounds = (numerator / planned, (numerator + planned - finished) / planned) if planned > 0 else None
-        estimate = Estimate.model_validate(
-            dict(
-                context,
-                estimate_id=identity,
-                objective=objective,
-                value=value,
-                interval=interval,
-                status="estimated" if interval is not None else "insufficient_data",
-                coverage=coverage,
-                missing_outcome_bounds=bounds,
-                evidence_label=spec.evidence_label,
-                notes=("Point estimate is conditional on finished appearances.",),
-            )
+        estimate = Estimate(
+            **context,
+            estimate_id=identity,
+            objective=objective,
+            value=value,
+            interval=interval,
+            status="estimated" if interval is not None else "insufficient_data",
+            coverage=coverage,
+            missing_outcome_bounds=bounds,
+            evidence_label=spec.evidence_label,
+            notes=("Point estimate is conditional on finished appearances.",),
         )
         estimates.append(estimate)
     return estimates[0], estimates[1]
 
 
-def _profile(rows: list[Observation], **context: object) -> OutcomeProfile:
+def _profile(rows: list[Observation], **context: Unpack[ProfileContext]) -> OutcomeProfile:
     finished = [row for row in rows if row.credits is not None]
     n = rows[0].job.player_count
     count = len(finished)
@@ -193,42 +129,55 @@ def _profile(rows: list[Observation], **context: object) -> OutcomeProfile:
     hand_scores = [
         score[row.seat] for row in finished if row.record is not None for score in row.record.completed_hand_scores
     ]
-    return OutcomeProfile.model_validate(
-        dict(
-            context,
-            finished_appearances=count,
-            finishing_distribution=tuple(sum(item[place] for item in distributions) / count for place in range(n))
-            if count > 0
-            else None,
-            sole_win_frequency=sum(row.credits.sole_win for row in finished if row.credits is not None) / count
-            if count > 0
-            else None,
-            shared_first_frequency=sum(row.credits.shared_first for row in finished if row.credits is not None) / count
-            if count > 0
-            else None,
-            mean_penalty=sum(scores) / count if count > 0 else None,
-            finished_hand_penalty=sum(hand_scores) / len(hand_scores) if len(hand_scores) > 0 else None,
-            completed_hand_appearances=len(hand_scores),
-        )
+    return OutcomeProfile(
+        **context,
+        finished_appearances=count,
+        finishing_distribution=tuple(sum(item[place] for item in distributions) / count for place in range(n))
+        if count > 0
+        else None,
+        sole_win_frequency=sum(row.credits.sole_win for row in finished if row.credits is not None) / count
+        if count > 0
+        else None,
+        shared_first_frequency=sum(row.credits.shared_first for row in finished if row.credits is not None) / count
+        if count > 0
+        else None,
+        mean_penalty=sum(scores) / count if count > 0 else None,
+        finished_hand_penalty=sum(hand_scores) / len(hand_scores) if len(hand_scores) > 0 else None,
+        completed_hand_appearances=len(hand_scores),
     )
 
 
-def _groups(rows: list[Observation], kind: str) -> dict[tuple, list[Observation]]:
-    groups: dict[tuple, list[Observation]] = defaultdict(list)
+def _group_rows[Key](rows: list[Observation], key: Callable[[Observation], Key | None]) -> dict[Key, list[Observation]]:
+    groups: dict[Key, list[Observation]] = defaultdict(list)
     for row in rows:
-        common = (row.config_id, row.job.player_count)
-        if kind == "iid":
-            if row.job.stream == "iid":
-                groups[(*common, row.job.population_id)].append(row)
-        elif kind == "composition":
-            groups[(*common, row.opponents)].append(row)
-        elif kind == "copies":
-            groups[(*common, row.opponents.count(row.config_id) + 1)].append(row)
-        elif kind == "seats":
-            groups[(*common, row.job.condition_id, row.seat, row.job.permutation)].append(row)
-        elif kind == "fixed" and row.job.stream == "fixed":
-            groups[(*common, row.job.condition_id, row.seat)].append(row)
-    return groups
+        identity = key(row)
+        if identity is not None:
+            groups[identity].append(row)
+    return dict(groups)
+
+
+def _iid_key(row: Observation) -> tuple[str, int, str | None] | None:
+    if row.job.stream != "iid":
+        return None
+    return row.config_id, row.job.player_count, row.job.population_id
+
+
+def _composition_key(row: Observation) -> tuple[str, int, tuple[str, ...]]:
+    return row.config_id, row.job.player_count, row.opponents
+
+
+def _copies_key(row: Observation) -> tuple[str, int, int]:
+    return row.config_id, row.job.player_count, row.opponents.count(row.config_id) + 1
+
+
+def _seats_key(row: Observation) -> tuple[str, int, str, int, int]:
+    return row.config_id, row.job.player_count, row.job.condition_id, row.seat, row.job.permutation
+
+
+def _fixed_key(row: Observation) -> tuple[str, int, str, int] | None:
+    if row.job.stream != "fixed":
+        return None
+    return row.config_id, row.job.player_count, row.job.condition_id, row.seat
 
 
 def _weighted_estimates(
@@ -285,41 +234,37 @@ def _weighted_estimates(
                 blocks[block][1][opponents] = (numerator, denominator)
         interval = weighted_interval(blocks, weights, spec, identity) if supported else None
         estimates.append(
-            Estimate.model_validate({
-                "estimate_id": identity,
-                "view": "weighted",
-                "configuration_id": config_id,
-                "player_count": n,
-                "objective": objective,
-                "population_id": population.population_id,
-                "value": value if supported else None,
-                "interval": interval,
-                "status": "unsupported"
-                if not supported
-                else "estimated"
-                if interval is not None
-                else "insufficient_data",
-                "coverage": coverage,
-                "missing_outcome_bounds": (lower, upper) if population_support.target_cell_count > 0 else None,
-                "evidence_label": spec.evidence_label,
-                "cells": support,
-                "target_cell_count": population_support.target_cell_count,
-                "unlisted_cell_count": population_support.unlisted_cell_count,
-                "unlisted_cell_weight": population_support.unlisted_cell_weight,
-                "notes": ("Declared population weights are retained; no missing cells are filled or renormalised.",),
-            })
+            Estimate(
+                estimate_id=identity,
+                view="weighted",
+                configuration_id=config_id,
+                player_count=n,
+                objective=objective,
+                population_id=population.population_id,
+                value=value if supported else None,
+                interval=interval,
+                status="unsupported" if not supported else "estimated" if interval is not None else "insufficient_data",
+                coverage=coverage,
+                missing_outcome_bounds=(lower, upper) if population_support.target_cell_count > 0 else None,
+                evidence_label=spec.evidence_label,
+                cells=support,
+                target_cell_count=population_support.target_cell_count,
+                unlisted_cell_count=population_support.unlisted_cell_count,
+                unlisted_cell_weight=population_support.unlisted_cell_weight,
+                notes=("Declared population weights are retained; no missing cells are filled or renormalised.",),
+            )
         )
     return estimates[0], estimates[1]
 
 
 def _view_estimates(
     rows: list[Observation], spec: AnalysisSpec, universe: list[Observation], config_ids: list[str]
-) -> tuple[list[Estimate], ...]:
+) -> ViewEstimates:
     population: list[Estimate] = []
     composition: list[Estimate] = []
     copies: list[Estimate] = []
     seats: list[Estimate] = []
-    iid_groups = _groups(rows, "iid")
+    iid_groups = _group_rows(rows, _iid_key)
     source_groups: dict[tuple[int, str | None], list[Observation]] = defaultdict(list)
     for row in universe:
         if row.job.stream == "iid":
@@ -339,7 +284,7 @@ def _view_estimates(
                     stream="iid",
                 )
             )
-    for (config_id, n, condition_id, seat), group in _groups(rows, "fixed").items():
+    for (config_id, n, condition_id, seat), group in _group_rows(rows, _fixed_key).items():
         population.extend(
             _estimate(
                 group,
@@ -352,15 +297,15 @@ def _view_estimates(
                 stream="fixed",
             )
         )
-    for (config_id, n, opponents), group in _groups(rows, "composition").items():
+    for (config_id, n, opponents), group in _group_rows(rows, _composition_key).items():
         composition.extend(
             _estimate(group, spec, view="composition", configuration_id=config_id, player_count=n, opponents=opponents)
         )
-    for (config_id, n, count), group in _groups(rows, "copies").items():
+    for (config_id, n, count), group in _group_rows(rows, _copies_key).items():
         copies.extend(
             _estimate(group, spec, view="copy_count", configuration_id=config_id, player_count=n, copy_count=count)
         )
-    for (config_id, n, condition_id, seat, permutation), group in _groups(rows, "seats").items():
+    for (config_id, n, condition_id, seat, permutation), group in _group_rows(rows, _seats_key).items():
         seats.extend(
             _estimate(
                 group,
@@ -373,16 +318,16 @@ def _view_estimates(
                 permutation=str(permutation),
             )
         )
-    return population, composition, copies, seats
+    return ViewEstimates(population, composition, copies, seats)
 
 
 def _profiles(rows: list[Observation]) -> tuple[OutcomeProfile, ...]:
     profiles: list[OutcomeProfile] = []
-    for (config_id, n, population_id), group in _groups(rows, "iid").items():
+    for (config_id, n, population_id), group in _group_rows(rows, _iid_key).items():
         profiles.append(
             _profile(group, configuration_id=config_id, player_count=n, view="iid", population_id=population_id)
         )
-    for (config_id, n, opponents), group in _groups(rows, "composition").items():
+    for (config_id, n, opponents), group in _group_rows(rows, _composition_key).items():
         profiles.append(
             _profile(group, configuration_id=config_id, player_count=n, view="composition", opponents=opponents)
         )
@@ -390,7 +335,7 @@ def _profiles(rows: list[Observation]) -> tuple[OutcomeProfile, ...]:
 
 
 def _weakest(estimates: list[Estimate]) -> tuple[Estimate, ...]:
-    groups: dict[tuple[str, int, str], list[Estimate]] = defaultdict(list)
+    groups: dict[tuple[str, int, Objective], list[Estimate]] = defaultdict(list)
     for estimate in estimates:
         if estimate.value is not None:
             groups[(estimate.configuration_id, estimate.player_count, estimate.objective)].append(estimate)
@@ -412,8 +357,9 @@ def _estimate_value(estimate: Estimate) -> float:
 
 def analyse_run(run: ArenaRun, analysis_spec: AnalysisSpec | None = None) -> EvaluationReport:
     """Derive all views from a returned run or one reconstructed by ``load_run``."""
+    validate_run_evidence(run.plan, run.results, run.status)
     spec = analysis_spec if analysis_spec is not None else run.plan.analysis
-    universe = _observations(run, spec)
+    universe = observations(run, spec)
     rows = [row for row in universe if len(spec.configuration_ids) == 0 or row.config_id in spec.configuration_ids]
     config_ids = [
         entry.config_id
@@ -448,16 +394,16 @@ def analyse_run(run: ArenaRun, analysis_spec: AnalysisSpec | None = None) -> Eva
         )
     return EvaluationReport(
         analysis_spec=spec,
-        run_status=str(run.status.state),
+        run_status=run.status.state,
         artifact_dir=str(run.artifact_dir) if run.artifact_dir is not None else None,
         catalogue={entry.config_id: entry.label for entry in run.plan.catalogue},
-        context={
-            "rules": run.plan.rules.model_dump(mode="json"),
-            "protocol": run.plan.protocol.model_dump(mode="json"),
-            "populations": [population.model_dump(mode="json") for population in run.plan.populations],
-            "player_counts": sorted({row.job.player_count for row in rows}),
-            "streams": sorted({row.job.stream for row in rows}),
-        },
+        context=ReportContext(
+            rules=run.plan.rules,
+            protocol=run.plan.protocol,
+            populations=run.plan.populations,
+            player_counts=tuple(sorted({row.job.player_count for row in rows})),
+            streams=tuple(sorted({row.job.stream for row in rows})),
+        ),
         provenance=run.provenance,
         diagnostics=diagnostics,
         population_estimates=tuple(populations),

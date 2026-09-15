@@ -3,9 +3,9 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
-from sixnimmt.arena.bots.base import Bot, Rejection
+from sixnimmt.arena.bots.base import Bot, DelegatingBot, Rejection
 from sixnimmt.arena.results import MatchOutcome
 from sixnimmt.engine.rules import GameRules, MatchProtocol
 from sixnimmt.engine.views import MatchView
@@ -16,7 +16,7 @@ class ControllerStopped(Exception):
 
 
 class DecisionDeadlineExceeded(TimeoutError):
-    """A managed bot exhausted its decision budget before the outer deadline."""
+    """A bot exhausted its decision budget before the outer deadline."""
 
 
 @dataclass(frozen=True)
@@ -54,32 +54,78 @@ class BotMatchEnd:
     final_view: MatchView
 
 
+@runtime_checkable
+class StartingBot(Protocol):
+    def start(self, context: BotContext) -> None: ...
+
+
+@runtime_checkable
+class DeadlineBot(Protocol):
+    def set_decision_context(self, context: DecisionContext) -> None: ...
+
+
+@runtime_checkable
+class SettlingBot(Protocol):
+    def settle_decision(self, outcome: DecisionOutcome) -> None: ...
+
+
+@runtime_checkable
+class CancellingBot(Protocol):
+    def cancel(self, reason: str) -> None: ...
+
+
+@runtime_checkable
+class ClosingBot(Protocol):
+    def close(self, result: BotMatchEnd | None) -> None: ...
+
+
+@runtime_checkable
+class ResourceBot(Protocol):
+    def lifecycle_identity(self) -> object: ...
+
+
+def start_bot(bot: Bot, context: BotContext) -> None:
+    if isinstance(bot, StartingBot):
+        bot.start(context)
+    elif isinstance(bot, DelegatingBot):
+        start_bot(bot.delegate_bot(), context)
+
+
+def close_bot(bot: Bot, result: BotMatchEnd | None) -> None:
+    if isinstance(bot, ClosingBot):
+        bot.close(result)
+    elif isinstance(bot, DelegatingBot):
+        close_bot(bot.delegate_bot(), result)
+
+
 def set_decision_context(bot: Bot, context: DecisionContext) -> None:
-    hook = getattr(bot, "set_decision_context", None)
-    if callable(hook):
-        hook(context)
+    if isinstance(bot, DeadlineBot):
+        bot.set_decision_context(context)
+    elif isinstance(bot, DelegatingBot):
+        set_decision_context(bot.delegate_bot(), context)
 
 
 def settle_decision(bot: Bot, outcome: DecisionOutcome) -> None:
-    hook = getattr(bot, "settle_decision", None)
-    if callable(hook):
-        hook(outcome)
+    if isinstance(bot, SettlingBot):
+        bot.settle_decision(outcome)
+    elif isinstance(bot, DelegatingBot):
+        settle_decision(bot.delegate_bot(), outcome)
 
 
 def cancel_bot(bot: Bot, reason: str) -> None:
-    hook = getattr(bot, "cancel", None)
-    if callable(hook):
-        hook(reason)
+    if isinstance(bot, CancellingBot):
+        bot.cancel(reason)
+    elif isinstance(bot, DelegatingBot):
+        cancel_bot(bot.delegate_bot(), reason)
 
 
 def lifecycle_owners(bot: Bot) -> set[int]:
-    """Identify forwarded bound hooks so two seats cannot share one session."""
+    """Identify all resources in a delegate chain so seats cannot share a session."""
     owners: set[int] = set()
-    identity = getattr(bot, "lifecycle_identity", None)
-    if callable(identity):
-        owners.add(id(identity()))
-    for name in ("start", "set_decision_context", "settle_decision", "cancel", "close"):
-        hook = getattr(bot, name, None)
-        if callable(hook):
-            owners.add(id(getattr(hook, "__self__", bot)))
+    if isinstance(bot, ResourceBot):
+        owners.add(id(bot.lifecycle_identity()))
+    if isinstance(bot, (StartingBot, DeadlineBot, SettlingBot, CancellingBot, ClosingBot)):
+        owners.add(id(bot))
+    if isinstance(bot, DelegatingBot):
+        owners.update(lifecycle_owners(bot.delegate_bot()))
     return owners

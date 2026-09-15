@@ -1,5 +1,7 @@
 """Available arena strategies and their construction registry."""
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import JsonValue
@@ -25,8 +27,8 @@ from sixnimmt.arena.bots.heuristics import (
     LowestFittingCardBot,
     RandomBot,
 )
-from sixnimmt.arena.bots.llm import LLMBot, LLMMemoryBot, LLMMemoryOptions, LLMOptions, resolve_llm
-from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot, build_simulation, resolve_simulation
+from sixnimmt.arena.bots.llm import LLMBot, LLMMemoryBot, LLMMemoryOptions, LLMOptions
+from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot, resolve_simulation
 from sixnimmt.arena.bots.uncertainty.options import ModelBasedBaitOptions, SimulationOptions
 
 __all__ = [
@@ -126,14 +128,33 @@ def build_model_based_bait(seed: int, **settings: Any) -> ModelBasedBaitBot:
     return ModelBasedBaitBot(seed, options, fallback)
 
 
+@dataclass(frozen=True)
+class _SeedOnlyConstructor:
+    build: Callable[[int], Bot]
+
+    def __call__(self, seed: int, options: BotOptions) -> Bot:
+        return self.build(seed)
+
+
+def _baseline(name: str, build: Callable[[int], Bot], version: str = "1") -> BotSpec:
+    return BotSpec.typed(name, BotOptions, _SeedOnlyConstructor(build), True, {"strategy_id": name, "version": version})
+
+
+def _construct_simulation(seed: int, options: SimulationOptions) -> SimulationBot:
+    return SimulationBot(seed, options)
+
+
+def _construct_llm(seed: int, options: LLMOptions) -> LLMBot:
+    return LLMBot(seed, validated_options=options)
+
+
+def _construct_memory_llm(seed: int, options: LLMMemoryOptions) -> LLMMemoryBot:
+    return LLMMemoryBot(seed, validated_options=options)
+
+
 REGISTRY: dict[str, BotSpec] = {
-    "simulation": BotSpec(
-        "simulation",
-        build_simulation,
-        True,
-        {"strategy_id": "simulation", "version": "1"},
-        SimulationOptions,
-        resolve_simulation,
+    "simulation": BotSpec.typed(
+        "simulation", SimulationOptions, _construct_simulation, True, {"strategy_id": "simulation", "version": "1"}
     ),
     "model_based_bait": BotSpec(
         "model_based_bait",
@@ -167,28 +188,16 @@ REGISTRY: dict[str, BotSpec] = {
         ControlledBurnOptions,
         resolve_composed,
     ),
-    "hand_flexibility": BotSpec(
-        "hand_flexibility", _build_hand_flexibility, True, {"strategy_id": "hand_flexibility", "version": "1"}
+    "hand_flexibility": _baseline("hand_flexibility", _build_hand_flexibility),
+    "highest_fitting_card": _baseline("highest_fitting_card", _build_highest_fitting_card),
+    "coldest_row": _baseline("coldest_row", _build_coldest_row),
+    "closest_gap": _baseline("closest_gap", _build_closest_gap),
+    "highest_card": _baseline("highest_card", _build_highest_card),
+    "lowest_card": _baseline("lowest_card", _build_lowest_card),
+    "llm": BotSpec.typed("llm", LLMOptions, _construct_llm, False, {"strategy_id": "llm", "version": "1"}),
+    "llm_memory": BotSpec.typed(
+        "llm_memory", LLMMemoryOptions, _construct_memory_llm, False, {"strategy_id": "llm_memory", "version": "1"}
     ),
-    "highest_fitting_card": BotSpec(
-        "highest_fitting_card",
-        _build_highest_fitting_card,
-        True,
-        {"strategy_id": "highest_fitting_card", "version": "1"},
-    ),
-    "coldest_row": BotSpec("coldest_row", _build_coldest_row, True, {"strategy_id": "coldest_row", "version": "1"}),
-    "closest_gap": BotSpec("closest_gap", _build_closest_gap, True, {"strategy_id": "closest_gap", "version": "1"}),
-    "highest_card": BotSpec("highest_card", _build_highest_card, True, {"strategy_id": "highest_card", "version": "1"}),
-    "lowest_card": BotSpec("lowest_card", _build_lowest_card, True, {"strategy_id": "lowest_card", "version": "1"}),
-    "llm": BotSpec("llm", LLMBot, False, {"strategy_id": "llm", "version": "1"}, LLMOptions, resolve_llm),
-    "llm_memory": BotSpec(
-        "llm_memory", LLMMemoryBot, False, {"strategy_id": "llm_memory", "version": "1"}, LLMMemoryOptions, resolve_llm
-    ),
-    "random": BotSpec("random", RandomBot, True, {"strategy_id": "random", "version": "2"}),
-    "lowest_fitting_card": BotSpec(
-        "lowest_fitting_card",
-        _build_lowest_fitting_card,
-        True,
-        {"strategy_id": "lowest_fitting_card", "version": "1"},
-    ),
+    "random": _baseline("random", RandomBot, "2"),
+    "lowest_fitting_card": _baseline("lowest_fitting_card", _build_lowest_fitting_card),
 }

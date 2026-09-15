@@ -4,13 +4,13 @@ import pytest
 
 from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.players import PlayerConfig
-from sixnimmt.arena.runner import run_arena
 from sixnimmt.engine.actions import ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.fold import build_view
 from sixnimmt.engine.rules import MatchProtocol
 from sixnimmt.engine.setup import create_match
 from sixnimmt.engine.views import MatchView, RowView, ViewRole
+from tests.run_helpers import match_facts, run_fixed
 
 BASELINE_NAMES = (
     "random",
@@ -132,8 +132,9 @@ def test_baseline_commits_selected_card(observation: MatchView, strategy: str) -
 def test_mixed_baseline_matches_are_reproducible(communication: bool) -> None:
     players = [PlayerConfig(bot=name) for name in BASELINE_NAMES]
     protocol = MatchProtocol(communication_enabled=communication, end_condition="fixed_hands", hands=2)
-    first = run_arena(players, games=3, seed=123, protocol=protocol)
-    second = run_arena(players, games=3, seed=123, protocol=protocol)
-    assert first == second
-    assert first.finished == 3
-    assert first.reproducible
+    first = run_fixed(players, games=3, seed=123, protocol=protocol)
+    second = run_fixed(players, games=3, seed=123, protocol=protocol)
+    assert [match_facts(record) for record in first.results] == [match_facts(record) for record in second.results]
+    assert len(first.results) == 3
+    assert all(record.outcome == "finished" for record in first.results)
+    assert all(entry.deterministic for entry in first.plan.catalogue)

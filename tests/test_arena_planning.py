@@ -2,22 +2,31 @@
 
 import json
 from collections import Counter, defaultdict
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from sixnimmt.arena.bots.registry import REGISTRY
-from sixnimmt.arena.catalogue import CandidateConfig, reference_catalogue, resolve_catalogue, resolve_frozen_catalogue
+from sixnimmt.arena.catalogue import (
+    CandidateConfig,
+    reference_catalogue,
+    resolve_catalogue,
+    resolve_frozen_catalogue,
+    validate_frozen_catalogue,
+)
 from sixnimmt.arena.config import RunConfig
 from sixnimmt.arena.planning import (
     ArenaPlan,
-    LineupConfig,
     PlannedMatch,
     PopulationConfig,
     ReplacementComparison,
+    RunSettings,
     build_arena_plan,
     with_execution,
 )
+from sixnimmt.arena.players import PlayerConfig
+from sixnimmt.common.evaluation import AnalysisSpec
 from sixnimmt.engine.rules import EndCondition, MatchProtocol
 
 
@@ -78,7 +87,7 @@ def test_catalogue_rejects_duplicate_keys_and_equivalent_configurations() -> Non
 def test_execution_settings_change_plan_identity_without_changing_jobs(
     small_catalogue: tuple[CandidateConfig, ...],
 ) -> None:
-    original = build_arena_plan(LineupConfig(catalogue=small_catalogue, games=1))
+    original = build_arena_plan(RunSettings(catalogue=small_catalogue, games=1))
     changed = with_execution(original, RunConfig(concurrency=3))
     assert changed.plan_id != original.plan_id
     assert changed.jobs == original.jobs
@@ -97,9 +106,9 @@ def test_saved_catalogue_rejects_changed_registered_factory(monkeypatch) -> None
 
 
 def test_resolved_plan_is_deeply_immutable_and_roundtrips_json(
-    small_catalogue: tuple[CandidateConfig, ...], tmp_path
+    small_catalogue: tuple[CandidateConfig, ...],
 ) -> None:
-    plan = build_arena_plan(LineupConfig(catalogue=small_catalogue, games=1, execution=RunConfig(trace_dir=tmp_path)))
+    plan = build_arena_plan(RunSettings(catalogue=small_catalogue, games=1, execution=RunConfig(concurrency=2)))
     restored = ArenaPlan.model_validate_json(plan.model_dump_json())
     assert restored == plan
     restored.catalogue[0].options["injected"] = 3
@@ -112,8 +121,13 @@ def test_resolved_plan_is_deeply_immutable_and_roundtrips_json(
         restored.seed = 0
 
 
+def test_run_settings_require_the_common_recording_options(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match=r"use recording\.output_dir and recording\.trace"):
+        RunSettings.model_validate({"execution": {"trace_dir": str(tmp_path)}})
+
+
 def test_iid_samples_complete_lineups_with_replacement(small_catalogue: tuple[CandidateConfig, ...]) -> None:
-    plan = build_arena_plan(LineupConfig(catalogue=small_catalogue, player_counts=(4,), games=100, rotations=False))
+    plan = build_arena_plan(RunSettings(catalogue=small_catalogue, player_counts=(4,), games=100, rotations=False))
     assert len(plan.jobs) == 100
     assert len({job.block_id for job in plan.jobs}) == 100
     assert all(job.stream == "iid" for job in plan.jobs)
@@ -128,7 +142,7 @@ def test_iid_samples_complete_lineups_with_replacement(small_catalogue: tuple[Ca
 def test_each_random_game_has_a_fresh_lineup_draw_deal_and_private_seeds(
     small_catalogue: tuple[CandidateConfig, ...],
 ) -> None:
-    plan = build_arena_plan(LineupConfig(catalogue=small_catalogue, player_counts=(4,), games=6))
+    plan = build_arena_plan(RunSettings(catalogue=small_catalogue, player_counts=(4,), games=6))
     assert len(plan.jobs) == 6
     assert len({job.lineup_draw_id for job in plan.jobs}) == 6
     assert len({job.block_id for job in plan.jobs}) == 6
@@ -142,7 +156,7 @@ def test_pair_coverage_includes_every_copy_count_once(
     small_catalogue: tuple[CandidateConfig, ...], players, compositions
 ) -> None:
     plan = build_arena_plan(
-        LineupConfig(catalogue=small_catalogue, player_counts=(players,), games=0, controlled_games=2)
+        RunSettings(catalogue=small_catalogue, player_counts=(players,), games=0, controlled_games=2)
     )
     conditions = Counter(job.condition_id for job in plan.jobs)
     assert len(conditions) == compositions
@@ -156,7 +170,7 @@ def test_pair_coverage_includes_every_copy_count_once(
 @pytest.mark.parametrize(("players", "compositions"), [(4, 1001), (5, 3003)])
 def test_exhaustive_reference_coverage_counts_distinct_multisets(players, compositions) -> None:
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             player_counts=(players,),
             games=0,
             controlled_games=1,
@@ -170,7 +184,7 @@ def test_exhaustive_reference_coverage_counts_distinct_multisets(players, compos
 
 def test_explicit_compositions_deduplicate_seat_order(small_catalogue: tuple[CandidateConfig, ...]) -> None:
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=small_catalogue,
             player_counts=(4,),
             games=0,
@@ -191,7 +205,7 @@ def test_controlled_rotations_balance_seats_across_fresh_games(
     small_catalogue: tuple[CandidateConfig, ...],
 ) -> None:
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=small_catalogue,
             player_counts=(5,),
             games=0,
@@ -211,7 +225,7 @@ def test_controlled_rotations_balance_seats_across_fresh_games(
 def test_schedule_is_deterministic_and_root_seed_changes_fresh_games(
     small_catalogue: tuple[CandidateConfig, ...],
 ) -> None:
-    config = LineupConfig(
+    config = RunSettings(
         catalogue=small_catalogue,
         player_counts=(4,),
         games=5,
@@ -235,7 +249,7 @@ def test_game_budget_is_exact_for_every_supported_player_count(
     count: int,
 ) -> None:
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=small_catalogue, player_counts=(count,), games=7, reverse_order=True, additional_permutations=3
         )
     )
@@ -247,11 +261,11 @@ def test_game_budget_is_exact_for_every_supported_player_count(
 @pytest.mark.parametrize("count", (1, 11, True))
 def test_rejects_player_counts_outside_engine_support(count: int) -> None:
     with pytest.raises(ValidationError):
-        LineupConfig(player_counts=(count,))
+        RunSettings(player_counts=(count,))
 
 
 def test_default_schedule_uses_one_player_count_and_the_declared_game_budget() -> None:
-    plan = build_arena_plan(LineupConfig(games=3))
+    plan = build_arena_plan(RunSettings(games=3))
     assert plan.player_counts == (4,)
     assert len(plan.jobs) == 3
 
@@ -260,7 +274,7 @@ def test_named_populations_preserve_family_weights_and_member_subsets(
     small_catalogue: tuple[CandidateConfig, ...],
 ) -> None:
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=small_catalogue,
             player_counts=(4,),
             games=1,
@@ -283,7 +297,7 @@ def test_matched_replacements_keep_backgrounds_slots_and_seeds_identical(
     small_catalogue: tuple[CandidateConfig, ...],
 ) -> None:
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=small_catalogue,
             player_counts=(4,),
             games=0,
@@ -323,7 +337,7 @@ def test_matched_replacements_keep_backgrounds_slots_and_seeds_identical(
 def test_group_roster_expands_all_subsets_with_declared_weights() -> None:
     roster = ("random", "lowest_card", "highest_card", "lowest_fitting_card", "highest_fitting_card", "closest_gap")
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             player_counts=(4, 5),
             games=0,
             rotations=False,
@@ -346,7 +360,7 @@ def test_group_roster_expands_all_subsets_with_declared_weights() -> None:
 
 def test_sampled_replacement_backgrounds_preserve_draw_identity(small_catalogue: tuple[CandidateConfig, ...]) -> None:
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=small_catalogue,
             player_counts=(4,),
             games=0,
@@ -370,7 +384,7 @@ def test_sampled_replacement_backgrounds_preserve_draw_identity(small_catalogue:
 
 def test_shared_controlled_deals_explicitly_share_blocks(small_catalogue: tuple[CandidateConfig, ...]) -> None:
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=small_catalogue,
             player_counts=(4,),
             games=0,
@@ -386,7 +400,7 @@ def test_shared_controlled_deals_explicitly_share_blocks(small_catalogue: tuple[
 
 
 def test_protocol_json_defaults_to_anonymous_names(small_catalogue: tuple[CandidateConfig, ...]) -> None:
-    config = LineupConfig.model_validate_json(
+    config = RunSettings.model_validate_json(
         json.dumps({
             "catalogue": [entry.model_dump() for entry in small_catalogue],
             "games": 1,
@@ -395,7 +409,7 @@ def test_protocol_json_defaults_to_anonymous_names(small_catalogue: tuple[Candid
     )
     assert config.protocol.anonymise_display_names
     assert config.protocol.end_condition == EndCondition.FIXED_HANDS
-    explicit = LineupConfig(catalogue=small_catalogue, games=1, protocol=MatchProtocol())
+    explicit = RunSettings(catalogue=small_catalogue, games=1, protocol=MatchProtocol())
     assert explicit.protocol.anonymise_display_names
 
 
@@ -403,7 +417,7 @@ def test_protocol_json_defaults_to_anonymous_names(small_catalogue: tuple[Candid
 def test_saved_plan_rejects_inconsistent_job_contract(
     small_catalogue: tuple[CandidateConfig, ...], corruption: str
 ) -> None:
-    plan = build_arena_plan(LineupConfig(catalogue=small_catalogue, player_counts=(4,), games=1))
+    plan = build_arena_plan(RunSettings(catalogue=small_catalogue, player_counts=(4,), games=1))
     data = json.loads(plan.model_dump_json())
     if corruption == "duplicate_job":
         data["jobs"].append(data["jobs"][0])
@@ -428,14 +442,14 @@ def test_saved_plan_rejects_inconsistent_job_contract(
 )
 def test_rejects_invalid_lineup_references(small_catalogue: tuple[CandidateConfig, ...], settings) -> None:
     with pytest.raises(ValueError):
-        build_arena_plan(LineupConfig(catalogue=small_catalogue, player_counts=(4,), games=1, **settings))
+        build_arena_plan(RunSettings(catalogue=small_catalogue, player_counts=(4,), games=1, **settings))
 
 
 @pytest.mark.arena_slow
 def test_varied_population_schedule_preserves_game_budgets_and_seed_relationships_at_volume(
     small_catalogue: tuple[CandidateConfig, ...],
 ) -> None:
-    config = LineupConfig(
+    config = RunSettings(
         catalogue=small_catalogue,
         player_counts=tuple(range(2, 11)),
         games=100,
@@ -470,3 +484,152 @@ def test_varied_population_schedule_preserves_game_budgets_and_seed_relationship
             assert tuple(seat.bot_seed for seat in jobs[0].seats) == tuple(seat.bot_seed for seat in jobs[1].seats)
         else:
             assert len(jobs) == 1
+
+
+@pytest.mark.parametrize("design", [[], 1, None, '"text"', "[]"])
+def test_plan_rejects_non_object_design(small_catalogue: tuple[CandidateConfig, ...], design: object) -> None:
+    plan = build_arena_plan(RunSettings(catalogue=small_catalogue, games=1))
+    payload = plan.model_dump(mode="json")
+    payload["design"] = design
+    with pytest.raises(ValidationError, match="plan design must be a JSON object"):
+        ArenaPlan.model_validate(payload)
+
+
+@pytest.mark.parametrize("setting", ["games", "controlled_games", "additional_permutations"])
+@pytest.mark.parametrize("value", [True, "2", 1.5])
+def test_lineup_rejects_non_integer_counts(setting: str, value: object) -> None:
+    with pytest.raises(ValidationError):
+        RunSettings.model_validate({setting: value})
+
+
+@pytest.mark.parametrize(
+    "settings", [{"bootstrap_samples": True}, {"streams": ["invented"]}, {"player_counts": [True]}]
+)
+def test_analysis_rejects_invalid_counts_and_unknown_streams(settings: dict[str, object]) -> None:
+    with pytest.raises(ValidationError):
+        AnalysisSpec.model_validate(settings)
+
+
+def test_fixed_settings_derive_one_game_and_keep_named_seats() -> None:
+    settings = RunSettings(
+        catalogue=(CandidateConfig(bot="lowest_card", key="low", label="Low"),),
+        lineup=("low", "low"),
+    )
+    assert settings.games == 1
+    assert settings.player_counts == (2,)
+    assert not settings.protocol.anonymise_display_names
+    assert tuple(player.display_name for player in settings.players()) == ("Low", "Low")
+
+
+def test_fixed_plan_preserves_order_and_repeats_with_fresh_seeds() -> None:
+    settings = RunSettings(
+        catalogue=(CandidateConfig(bot="lowest_card", key="low"), CandidateConfig(bot="highest_card", key="high")),
+        lineup=("high", "low", "high"),
+        games=4,
+    )
+    plan = build_arena_plan(settings)
+    identities = {entry.key: entry.config_id for entry in plan.catalogue}
+    assert len(plan.jobs) == 4
+    assert all(job.lineup == tuple(identities[key] for key in settings.lineup) for job in plan.jobs)
+    assert all(job.stream == "fixed" and job.rotation == job.permutation == 0 for job in plan.jobs)
+    assert len({job.match_seed for job in plan.jobs}) == 4
+    assert len({seat.bot_seed for job in plan.jobs for seat in job.seats}) == 12
+    assert plan.populations == ()
+    assert plan.comparisons == ()
+    assert plan == build_arena_plan(settings)
+
+
+@pytest.mark.parametrize("changes", [{"rotations": True}, {"controlled_games": 1}, {"player_counts": [4]}])
+def test_fixed_settings_reject_conflicting_schedule_settings(changes: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        RunSettings.model_validate({"lineup": ["random", "random"]} | changes)
+
+
+def test_fixed_external_plan_omits_private_command_options_and_verifies_originals() -> None:
+    settings = RunSettings(
+        catalogue=(
+            CandidateConfig(bot="command", key="custom", options={"command": ["example", "private-argument"]}),
+            CandidateConfig(bot="lowest_card", key="low"),
+        ),
+        lineup=("custom", "low"),
+    )
+    plan = build_arena_plan(settings)
+    external = next(entry for entry in plan.catalogue if entry.key == "custom")
+    assert "private-argument" not in plan.model_dump_json()
+    assert "command" not in external.options
+    assert not external.deterministic
+    with pytest.raises(ValueError, match="original private construction options"):
+        validate_frozen_catalogue(plan.catalogue)
+    validate_frozen_catalogue(plan.catalogue, {external.config_id: settings.players()[0]})
+    with pytest.raises(ValueError, match="current implementation or options"):
+        validate_frozen_catalogue(
+            plan.catalogue,
+            {external.config_id: PlayerConfig(bot="command", options={"command": ["example", "changed"]})},
+        )
+
+
+def test_fixed_native_plan_needs_no_registered_factory_or_private_options() -> None:
+    settings = RunSettings(
+        catalogue=(CandidateConfig(bot="codex"), CandidateConfig(bot="lowest_card")),
+        lineup=("codex", "lowest_card"),
+    )
+    plan = build_arena_plan(settings)
+    validate_frozen_catalogue(plan.catalogue)
+    assert plan.catalogue[0].metadata["ownership"] == "attached"
+
+
+def test_external_seats_reject_sampled_schedules() -> None:
+    with pytest.raises(ValueError, match="external seats require an explicit fixed lineup"):
+        build_arena_plan(RunSettings(catalogue=(CandidateConfig(bot="codex"),)))
+
+
+@pytest.mark.parametrize("field", ["rotations", "reverse_order", "share_controlled_deals"])
+@pytest.mark.parametrize("value", [0, 1, "false", "true"])
+def test_run_settings_rejects_coerced_design_flags(field: str, value: object) -> None:
+    with pytest.raises(ValidationError):
+        RunSettings.model_validate({field: value})
+
+
+@pytest.mark.parametrize("weight", [True, "1", float("inf"), float("nan")])
+def test_population_settings_rejects_non_numeric_or_nonfinite_weights(weight: object) -> None:
+    with pytest.raises(ValidationError):
+        PopulationConfig.model_validate({
+            "population_id": "custom",
+            "weighting": "explicit",
+            "weights": {"random": weight},
+        })
+
+
+@pytest.mark.parametrize("field", ["confidence_level", "practical_effect_threshold"])
+@pytest.mark.parametrize("value", [True, "0.5", float("inf"), float("nan")])
+def test_analysis_settings_rejects_coerced_or_nonfinite_probabilities(field: str, value: object) -> None:
+    with pytest.raises(ValidationError):
+        AnalysisSpec.model_validate({field: value})
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"display": {"watch": True}, "execution": {"backend": "process"}},
+        {"display": {"watch": True}, "execution": {"concurrency": 2}},
+        {
+            "catalogue": [{"bot": "codex"}, {"bot": "random"}],
+            "lineup": ["codex", "random"],
+            "execution": {"concurrency": 2},
+        },
+        {
+            "catalogue": [{"bot": "codex-headless"}, {"bot": "random"}],
+            "lineup": ["codex-headless", "random"],
+            "execution": {"backend": "process"},
+        },
+    ],
+)
+def test_run_settings_rejects_unsupported_execution_capabilities(changes: dict[str, object]) -> None:
+    with pytest.raises(ValidationError, match="thread"):
+        RunSettings.model_validate(changes)
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan")])
+def test_run_settings_rejects_nonfinite_nested_catalogue_options(value: float) -> None:
+    with pytest.raises(ValidationError):
+        RunSettings.model_validate({"catalogue": [{"bot": "random", "options": {"nested": [{"value": value}]}}]})

@@ -8,10 +8,11 @@ from typing import Literal
 import emcee
 import numpy as np
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 from scipy.special import expit, logit
 
 from sixnimmt.arena.bots.base import ActionBatch
+from sixnimmt.arena.bots.composed import ControlledBurnBot
 from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.bots.simulation import ModelBasedBaitBot, SimulationBot
 from sixnimmt.arena.bots.uncertainty.history import HandHistory, InferenceError, ObservedTurn, PublicHistory
@@ -33,9 +34,9 @@ from sixnimmt.arena.bots.uncertainty.options import (
 )
 from sixnimmt.arena.bots.uncertainty.policies import probability
 from sixnimmt.arena.bots.uncertainty.rollouts import initial_state, penalty_value, resolve_turn, rollout
-from sixnimmt.arena.config import RunConfig
+from sixnimmt.arena.config import Backend, RunConfig
+from sixnimmt.arena.match import run_match
 from sixnimmt.arena.players import PlayerConfig, resolve_players
-from sixnimmt.arena.runner import run_arena, run_match
 from sixnimmt.engine.actions import ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.fold import build_view
@@ -43,6 +44,7 @@ from sixnimmt.engine.rules import GameRules, MatchProtocol
 from sixnimmt.engine.setup import create_match
 from sixnimmt.engine.state import Phase
 from sixnimmt.engine.views import MatchView, OpponentView, PlayerSelfView, RowView, ViewRole
+from tests.run_helpers import match_facts, run_fixed
 
 
 @pytest.fixture
@@ -106,7 +108,7 @@ def test_rejects_invalid_horizon(options: SimulationOptions, horizon: object) ->
         {"kind": "mean", "threshold": 2},
     ],
 )
-def test_requires_only_relevant_objective_parameters(settings: dict) -> None:
+def test_requires_only_relevant_objective_parameters(settings: dict[str, JsonValue]) -> None:
     with pytest.raises(ValidationError):
         parse_penalty_objective(settings)
 
@@ -121,7 +123,7 @@ def test_requires_only_relevant_objective_parameters(settings: dict) -> None:
         ({"kind": "upper_tail", "tail_fraction": 1.0}, 3.5),
     ],
 )
-def test_penalty_objectives_include_fractional_tail_mass(objective: dict, expected: float) -> None:
+def test_penalty_objectives_include_fractional_tail_mass(objective: dict[str, JsonValue], expected: float) -> None:
     assert penalty_value([0, 2, 4, 8], parse_penalty_objective(objective)) == pytest.approx(expected)
 
 
@@ -280,18 +282,18 @@ def test_bots_finish_games_and_retain_cross_hand_learning(
 
 
 @pytest.mark.parametrize("backend", ["thread", "process"])
-def test_seeded_arena_is_repeatable_across_workers(options: SimulationOptions, backend: str) -> None:
+def test_seeded_arena_is_repeatable_across_workers(options: SimulationOptions, backend: Backend) -> None:
     players = [
         PlayerConfig(bot="simulation", options=options.model_dump(mode="json")),
         PlayerConfig(bot="highest_card"),
     ]
-    serial = run_arena(players, 2, 72, rules=GameRules(target_score=10))
-    concurrent = run_arena(
+    serial = run_fixed(players, 2, 72, rules=GameRules(target_score=10))
+    concurrent = run_fixed(
         players, 2, 72, rules=GameRules(target_score=10), config=RunConfig(backend=backend, concurrency=2)
     )
-    assert serial == concurrent
-    assert serial.failed == serial.abandoned == serial.forfeited == 0
-    assert serial.finished == 2
+    assert [match_facts(record) for record in serial.results] == [match_facts(record) for record in concurrent.results]
+    assert len(serial.results) == 2
+    assert all(record.outcome == "finished" for record in serial.results)
 
 
 def test_parallel_inference_uses_independent_rngs(view: MatchView, options: SimulationOptions) -> None:
@@ -310,8 +312,40 @@ def test_bait_resolves_nested_fallback_before_construction(options: SimulationOp
     }
     player = resolve_players([PlayerConfig(bot="model_based_bait", options=settings)])[0]
     assert player.deterministic
-    assert player.metadata["fallback_metadata"]["strategy_id"] == "controlled_burn"
+    fallback_metadata = player.metadata["fallback_metadata"]
+    assert isinstance(fallback_metadata, dict)
+    assert fallback_metadata["strategy_id"] == "controlled_burn"
     assert isinstance(player.build(3), SimulationBot)
+
+
+@pytest.mark.parametrize("communication", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+def test_stateful_fallback_observes_turns_chosen_by_outer_strategy(
+    options: SimulationOptions, communication: bool, nested: bool
+) -> None:
+    settings: dict[str, JsonValue] = {
+        "K": 99,
+        "fallback_strategy": "simulation",
+        "fallback_options": options.model_dump(mode="json"),
+    }
+    if nested:
+        settings = {"K": 99, "fallback_strategy": "controlled_burn", "fallback_options": settings}
+    player = resolve_players([PlayerConfig(bot="controlled_burn", options=settings)])[0]
+    bot = player.build(1)
+    result = run_match(
+        [bot, REGISTRY["highest_card"].build(1)],
+        1,
+        protocol=MatchProtocol(communication_enabled=communication, end_condition="fixed_hands", hands=2),
+    )
+    assert result.outcome.value == "finished"
+    assert isinstance(bot, ControlledBurnBot)
+    delegate = bot.delegate_bot()
+    if nested:
+        assert isinstance(delegate, ControlledBurnBot)
+        delegate = delegate.delegate_bot()
+    assert isinstance(delegate, SimulationBot)
+    assert set(delegate.history.hands) == {1, 2}
+    assert len(delegate.history.hands[1].turns) == 10
 
 
 @pytest.mark.parametrize(("mode", "minimum", "maximum"), [("learned_mixture", 0.98, 1.0), ("fixed_mixture", 0.3, 0.7)])

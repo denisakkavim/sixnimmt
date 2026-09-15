@@ -11,16 +11,15 @@ import pytest
 
 from sixnimmt.analytics.evaluation import analyse_run
 from sixnimmt.analytics.summary import summarise
+from sixnimmt.arena.artifacts import MatchRecord
 from sixnimmt.arena.bots.base import ActionBatch, BotOptions, BotSpec, Rejection
 from sixnimmt.arena.bots.heuristics import RandomBot
 from sixnimmt.arena.bots.registry import REGISTRY
 from sixnimmt.arena.catalogue import CandidateConfig
-from sixnimmt.arena.config import RunConfig
-from sixnimmt.arena.planned import PlannedArenaError, load_run, run_plan
-from sixnimmt.arena.planning import ArenaPlan, LineupConfig, build_arena_plan
+from sixnimmt.arena.config import Backend, RunConfig
+from sixnimmt.arena.execution import RunExecutionError, load_run, run_plan
+from sixnimmt.arena.planning import ArenaPlan, RunSettings, build_arena_plan
 from sixnimmt.arena.players import PlayerConfig
-from sixnimmt.arena.records import MatchRecord
-from sixnimmt.arena.runner import run_arena
 from sixnimmt.engine.actions import Action, ChooseRowAction
 from sixnimmt.engine.events import Event
 from sixnimmt.engine.replay import replay_events
@@ -29,6 +28,7 @@ from sixnimmt.engine.state import MatchState
 from sixnimmt.engine.views import MatchView
 from sixnimmt.persistence.manifest import ManifestMatch
 from sixnimmt.persistence.sink import read_action_log, read_event_log
+from tests.run_helpers import run_fixed
 
 
 class AuditOptions(BotOptions):
@@ -82,7 +82,7 @@ class OversizedBatchBot:
 @pytest.fixture
 def short_plan() -> ArenaPlan:
     return build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=(CandidateConfig(bot="random"), CandidateConfig(bot="closest_gap")),
             player_counts=(4, 5),
             games=2,
@@ -110,12 +110,12 @@ def _reject_artifact_writer(*args: object, **kwargs: object) -> None:
 
 @pytest.mark.parametrize("backend", ["thread", "process"])
 def test_omitted_output_directory_keeps_all_results_in_memory(
-    short_plan: ArenaPlan, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str
+    short_plan: ArenaPlan, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: Backend
 ) -> None:
     monkeypatch.chdir(tmp_path)
     config = RunConfig(backend=backend, concurrency=2)
     with monkeypatch.context() as guard:
-        guard.setattr("sixnimmt.arena.planned.ArenaRunWriter", _reject_artifact_writer)
+        guard.setattr("sixnimmt.arena.execution.ArenaRunWriter", _reject_artifact_writer)
         memory = run_plan(short_plan, config=config)
     assert memory.artifact_dir is None
     assert list(tmp_path.iterdir()) == []
@@ -142,7 +142,7 @@ def test_traces_require_an_explicit_output_directory(
 def test_variable_player_counts_match_across_backends(tmp_path: Path, communication: bool) -> None:
     counts = (2, 3, 4, 5, 6, 10)
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=(CandidateConfig(bot="random"), CandidateConfig(bot="closest_gap")),
             player_counts=counts,
             games=1,
@@ -207,7 +207,7 @@ def test_legacy_duplicate_files_remain_readable(short_plan: ArenaPlan, tmp_path:
 
 @pytest.mark.parametrize("backend", ["thread", "process"])
 def test_untraced_run_keeps_timing_totals_without_individual_samples(
-    short_plan: ArenaPlan, tmp_path: Path, backend: str
+    short_plan: ArenaPlan, tmp_path: Path, backend: Backend
 ) -> None:
     run = run_plan(short_plan, output_dir=tmp_path / "run", config=RunConfig(backend=backend))
     assert run.artifact_dir is not None
@@ -234,11 +234,11 @@ def test_mismatched_legacy_jobs_are_rejected(short_plan: ArenaPlan, tmp_path: Pa
 
 @pytest.mark.parametrize("backend", ["thread", "process"])
 def test_fresh_bots_receive_explicit_seeds_after_plan_is_durable(
-    audit_registry: None, tmp_path: Path, backend: str
+    audit_registry: None, tmp_path: Path, backend: Backend
 ) -> None:
     directory = tmp_path / "run"
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=(CandidateConfig(bot="audit", label="secret", options={"output_directory": str(directory)}),),
             games=2,
             rotations=False,
@@ -263,7 +263,7 @@ def _check_anonymous_seats(state: MatchState, events: tuple[Event, ...]) -> None
 def test_analysis_labels_are_absent_from_engine_state(audit_registry: None, tmp_path: Path) -> None:
     directory = tmp_path / "run"
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=(
                 CandidateConfig(
                     bot="audit", label="secret", family="secret", options={"output_directory": str(directory)}
@@ -349,7 +349,7 @@ def test_call_is_measured_when_batch_exceeds_action_limit(
 ) -> None:
     monkeypatch.setitem(REGISTRY, "batch", BotSpec("batch", OversizedBatchBot, True, {}))
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=(CandidateConfig(bot="batch"),),
             player_counts=(4,),
             games=1,
@@ -370,11 +370,11 @@ def test_call_is_measured_when_batch_exceeds_action_limit(
 
 @pytest.mark.parametrize("backend", ["thread", "process"])
 def test_stop_on_failure_persists_every_submitted_outcome_and_unstarted_job(
-    audit_registry: None, tmp_path: Path, backend: str
+    audit_registry: None, tmp_path: Path, backend: Backend
 ) -> None:
     directory = tmp_path / "run"
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=(
                 CandidateConfig(bot="audit", options={"output_directory": str(directory), "fail_after_hand": 0}),
             ),
@@ -395,14 +395,14 @@ def test_stop_on_failure_persists_every_submitted_outcome_and_unstarted_job(
 def test_crashed_process_preserves_lost_and_unstarted_jobs(audit_registry: None, tmp_path: Path) -> None:
     directory = tmp_path / "run"
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=(CandidateConfig(bot="audit", options={"output_directory": str(directory), "crash": True}),),
             player_counts=(2, 10),
             games=5,
             rotations=False,
         )
     )
-    with pytest.raises(PlannedArenaError, match="saved run") as captured:
+    with pytest.raises(RunExecutionError, match="saved run") as captured:
         run_plan(plan, output_dir=directory, config=RunConfig(backend="process", concurrency=2))
     run = load_run(directory)
     assert run == captured.value.run
@@ -414,11 +414,11 @@ def test_crashed_process_preserves_lost_and_unstarted_jobs(audit_registry: None,
 
 @pytest.mark.parametrize("backend", ["thread", "process"])
 def test_timeout_limit_retains_returned_failures_and_unavailable_resources(
-    audit_registry: None, tmp_path: Path, backend: str
+    audit_registry: None, tmp_path: Path, backend: Backend
 ) -> None:
     directory = tmp_path / "run"
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=(
                 CandidateConfig(bot="audit", options={"output_directory": str(directory), "delay_seconds": 0.5}),
             ),
@@ -427,7 +427,7 @@ def test_timeout_limit_retains_returned_failures_and_unavailable_resources(
             rotations=False,
         )
     )
-    with pytest.raises(PlannedArenaError, match="max_abandoned_decisions"):
+    with pytest.raises(RunExecutionError, match="max_abandoned_decisions"):
         run_plan(
             plan,
             output_dir=directory,
@@ -452,7 +452,7 @@ def _fail_progress(count: int) -> None:
 
 def test_progress_callback_failure_drains_already_submitted_jobs(short_plan: ArenaPlan, tmp_path: Path) -> None:
     directory = tmp_path / "run"
-    with pytest.raises(PlannedArenaError, match="progress callback failed"):
+    with pytest.raises(RunExecutionError, match="progress callback failed"):
         run_plan(short_plan, output_dir=directory, config=RunConfig(concurrency=2), on_progress=_fail_progress)
     run = load_run(directory)
     assert len(run.results) == 2
@@ -464,7 +464,7 @@ def test_in_memory_failure_retains_collected_results_without_a_saved_path(
     short_plan: ArenaPlan, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(PlannedArenaError, match="progress callback failed") as captured:
+    with pytest.raises(RunExecutionError, match="progress callback failed") as captured:
         run_plan(short_plan, config=RunConfig(concurrency=2), on_progress=_fail_progress)
     run = captured.value.run
     assert run.artifact_dir is None
@@ -474,16 +474,18 @@ def test_in_memory_failure_retains_collected_results_without_a_saved_path(
     assert list(tmp_path.iterdir()) == []
 
 
-def test_fixed_lineup_progress_callback_error_propagates_directly() -> None:
-    with pytest.raises(RuntimeError, match=r"^progress callback failed$") as captured:
-        run_arena(
+def test_fixed_lineup_progress_callback_error_retains_collected_results() -> None:
+    with pytest.raises(RunExecutionError, match="progress callback failed") as captured:
+        run_fixed(
             [PlayerConfig(bot="random")] * 4,
             2,
             66,
             protocol=MatchProtocol(end_condition="fixed_hands", hands=1),
             on_progress=_fail_progress,
         )
-    assert type(captured.value) is RuntimeError
+    assert len(captured.value.run.results) == 1
+    assert captured.value.run.status.state == "failed"
+    assert isinstance(captured.value.__cause__, RuntimeError)
 
 
 def test_durable_results_recover_from_stale_status(short_plan: ArenaPlan, tmp_path: Path) -> None:
@@ -515,7 +517,7 @@ def test_unknown_record_versions_are_rejected(short_plan: ArenaPlan, tmp_path: P
 @pytest.mark.arena_slow
 def test_planned_volume_matches_variable_player_count_process_results(tmp_path: Path) -> None:
     plan = build_arena_plan(
-        LineupConfig(
+        RunSettings(
             catalogue=(
                 CandidateConfig(bot="random"),
                 CandidateConfig(bot="closest_gap"),

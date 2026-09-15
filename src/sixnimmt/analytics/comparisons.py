@@ -6,16 +6,20 @@ from collections import defaultdict
 from itertools import combinations
 from typing import TYPE_CHECKING
 
-from sixnimmt.analytics.models import AnalysisSpec, CellSupport, Coverage, Estimate
+from sixnimmt.analytics.models import AnalysisSpec, CellSupport, Coverage, Estimate, Interpretation
 from sixnimmt.analytics.uncertainty import ratio_interval, weighted_interval
+from sixnimmt.common.evaluation import Objective
 
 if TYPE_CHECKING:
-    from sixnimmt.analytics.evaluation import Observation
+    from sixnimmt.analytics.inputs import Observation
     from sixnimmt.arena.planning import ArenaPlan, Population
 
 
+type ObjectiveBlocks = dict[Objective, dict[str, tuple[str, float, int]]]
+
+
 def _paired_blocks(
-    rows: list[Observation], candidate: str, reference: str, objective: str
+    rows: list[Observation], candidate: str, reference: str, objective: Objective
 ) -> tuple[dict[str, tuple[str, float, int]], int]:
     by_block: dict[str, dict[str, list[Observation]]] = defaultdict(lambda: defaultdict(list))
     for row in rows:
@@ -45,7 +49,7 @@ def _complete_pair(candidate: list[Observation], reference: list[Observation]) -
     return candidate_positions == reference_positions and len(candidate) == len(reference)
 
 
-def _interpretation(estimate: Estimate, spec: AnalysisSpec) -> str:
+def _interpretation(estimate: Estimate, spec: AnalysisSpec) -> Interpretation:
     interval = estimate.interval
     if interval is None:
         return "unresolved"
@@ -61,9 +65,9 @@ def _interpretation(estimate: Estimate, spec: AnalysisSpec) -> str:
 
 def _comparison(
     rows: list[Observation], candidate: str, reference: str, spec: AnalysisSpec, condition: str | None
-) -> tuple[list[Estimate], dict[str, dict[str, tuple[str, float, int]]]]:
+) -> tuple[list[Estimate], ObjectiveBlocks]:
     estimates: list[Estimate] = []
-    objective_blocks: dict[str, dict[str, tuple[str, float, int]]] = {}
+    objective_blocks: ObjectiveBlocks = {}
     for objective in ("win_credit", "acceptable_credit"):
         blocks, planned_blocks = _paired_blocks(rows, candidate, reference, objective)
         objective_blocks[objective] = blocks
@@ -82,29 +86,29 @@ def _comparison(
             incomplete_pairs=missing,
             completion_fraction=len(blocks) / planned_blocks if planned_blocks > 0 else None,
         )
-        estimate = Estimate.model_validate({
-            "estimate_id": identity,
-            "view": "paired_replacement",
-            "configuration_id": candidate,
-            "reference_id": reference,
-            "comparison_id": first.comparison_id,
-            "population_id": first.population_id,
-            "player_count": first.player_count,
-            "condition_id": condition,
-            "stream": "matched",
-            "objective": objective,
-            "value": total / len(blocks) if len(blocks) > 0 else None,
-            "interval": interval,
-            "status": "estimated" if interval is not None else "insufficient_data",
-            "coverage": coverage,
-            "missing_outcome_bounds": ((total - missing) / planned_blocks, (total + missing) / planned_blocks)
+        estimate = Estimate(
+            estimate_id=identity,
+            view="paired_replacement",
+            configuration_id=candidate,
+            reference_id=reference,
+            comparison_id=first.comparison_id,
+            population_id=first.population_id,
+            player_count=first.player_count,
+            condition_id=condition,
+            stream="matched",
+            objective=objective,
+            value=total / len(blocks) if len(blocks) > 0 else None,
+            interval=interval,
+            status="estimated" if interval is not None else "insufficient_data",
+            coverage=coverage,
+            missing_outcome_bounds=((total - missing) / planned_blocks, (total + missing) / planned_blocks)
             if planned_blocks > 0
             else None,
-            "evidence_label": spec.evidence_label,
-            "notes": (
+            evidence_label=spec.evidence_label,
+            notes=(
                 "Candidate minus reference. Each independent sample contributes the average difference between its completed candidate and reference games.",
             ),
-        })
+        )
         estimates.append(estimate.model_copy(update={"interpretation": _interpretation(estimate, spec)}))
     return estimates, objective_blocks
 
@@ -174,7 +178,7 @@ def _weighted_comparison(
 
 
 def _condition_differences(
-    conditions: dict[str, dict[str, dict[str, tuple[str, float, int]]]],
+    conditions: dict[str, ObjectiveBlocks],
     template: Estimate,
     spec: AnalysisSpec,
     planned_conditions: dict[str, set[str]],
@@ -266,7 +270,7 @@ def comparison_estimates(
                 by_condition: dict[str, list[Observation]] = defaultdict(list)
                 for row in group:
                     by_condition[row.job.condition_id].append(row)
-                condition_blocks: dict[str, dict[str, dict[str, tuple[str, float, int]]]] = {}
+                condition_blocks: dict[str, ObjectiveBlocks] = {}
                 for condition, condition_rows in by_condition.items():
                     conditional, blocks = _comparison(condition_rows, candidate, comparison.reference, spec, condition)
                     estimates.extend(conditional)

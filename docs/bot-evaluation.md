@@ -518,11 +518,11 @@ deterministic deals, action validation, scoring, and both fixed-hand and
 The [arena guide](arena.md), [rules guide](game-rules.md), and
 [trace guide](traces.md) describe the existing interfaces.
 
-| Experiments | What works today | Proposed addition |
+| Experiments | Implemented foundation | Further work |
 | --- | --- | --- |
-| All | `run_arena` repeats one configured lineup; traces preserve events, actions, options, seeds, and outcomes | A versioned experiment plan and compact per-match/per-seat result export with question, experiment, condition, block, objective, cutoff, and comparison IDs |
-| 1 | Several runs with equal root seeds and game indices can manually reuse deals at the same player count | Schedule random and controlled full lineups, replacement arms, rotations, and copy-count coverage; record sampling probabilities/quotas and all planned jobs, including incomplete ones |
-| All | Trace-based summaries expose per-hand scores and measured latency | Analytics for both credits, finishing distributions, failure coverage, declared population weights, paired differences, and block intervals |
+| All | One `RunSettings`/`application.run` workflow, versioned plans, compact per-match evidence, declared objectives/cutoffs, and optional traces | Additional question- and intervention-specific provenance as required below |
+| 1 | Random/controlled lineups, replacement arms, rotations, copy-count coverage, sampling probabilities, quotas, and incomplete-job accounting | Freeze the chosen evaluation design before collecting confirmation evidence |
+| All | Both competitive credits, finishing distributions, failure coverage, population weights, paired differences, and block intervals | Select the evidence and practical-effect thresholds for each stated question |
 | 2 | Deterministic matches can be rerun with instrumented policies | A controlled one-decision intervention wrapper, trigger sampling, and source-match IDs; preserve or reconstruct bot state when needed |
 | 3–4 | Bots can maintain state and implement composed behaviour | The specified switching policies, detector/counter variants, history controls, and optional per-decision diagnostic records |
 | 5 | Simple rules can be implemented as bots and compared using the same match runner | An advice record linking each rule to its supporting experiment and a separate human-observation protocol |
@@ -537,17 +537,15 @@ recompute both primary metrics and all comparison denominators.
 
 There are several implementation details that matter to this plan:
 
-- [Aggregate results](../src/sixnimmt/arena/aggregation.py) currently retain seat
-  totals rather than a public stream of individual scores and tie sizes.
-  Finished-only scores cannot be divided by `ArenaResult.total_hands`: that
-  counter also includes unfinished matches and possibly a partial current hand.
-  Derive completed-hand counts from `hand_ended` events or explicit new counters.
-- [Seed derivation](../src/sixnimmt/arena/execution.py) keeps match and bot streams
-  separate, but `run_arena` derives both from one root. The arena derives fresh
-  private bot seeds for each game and preserves those
-  assignments across prescribed replacement arms.
-  Changing player count changes dealt hands and starting rows, so do not treat
-  equal seeds across four and five players as identical states.
+- [Compact evidence](../src/sixnimmt/arena/artifacts.py) retains finished scores,
+  winner indices, and completed-hand scores separately from unfinished partial
+  scores. Derive competitive denominators from finished outcomes and completed
+  hands, preserving missing-game coverage.
+- [Seed derivation](../src/sixnimmt/arena/planning.py) keeps match and bot streams
+  separate, deriving both from one root. Each job records private bot seeds and
+  preserves their assignments across prescribed replacement arms. Changing
+  player count changes dealt hands and starting rows, so equal seeds across four
+  and five players do not identify the same dealt state.
 - [Per-match analytics](../src/sixnimmt/analytics/summary.py) and
   [LLM statistics](../src/sixnimmt/arena/bots/llm.py) already expose useful action,
   latency, token, repair, and model metadata. Standardise those measurements;

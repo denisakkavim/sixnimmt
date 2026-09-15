@@ -1,17 +1,17 @@
 # Comparing strategies
 
-`arena` plays games across opponent lineups and prints a readable comparison.
+`play` plays games across opponent lineups and prints a readable comparison.
 The default run stays entirely in memory. One optional configuration file controls
 the comparison; `--output-dir` saves its evidence and reports in one directory.
 
 ```bash
-uv run sixnimmt arena --games 100 --player-count 6
+uv run sixnimmt play --games 100 --player-count 6
 ```
 
 This plays exactly 100 six-player games using the eleven reference strategies.
 Every game draws a fresh lineup and deal and constructs fresh bots. Each seat
 is sampled independently, so multiple independent copies of a strategy can
-appear together. The default is 100 games with four players; any player count
+appear together. Without a fixed lineup, the default is 100 games with four players; any player count
 from 2 to 10 is supported. Repeat `--player-count` to analyse several table
 sizes separately, with the requested number of games at each size.
 
@@ -49,31 +49,29 @@ Use `--config settings.json` to choose strategies or save more detailed settings
 }
 ```
 
-The catalogue lists available strategies, not fixed seats. `key` defaults to the
+For sampled experiments, omit `lineup`; the catalogue then lists available strategies. `key` defaults to the
 bot name; use distinct keys for different parameter settings. `label` optionally
 sets the name in reports. The plan records resolved defaults, nested component
 options, and implementation identity. Bots see anonymous seats and legitimate
-game observations; report labels stay with the arena.
+game observations; report labels stay with the arena. Both terminal and Markdown
+reports identify every candidate/reference pair. Labels that would display the
+same name receive an identity suffix in both formats.
 
 The same file can contain populations, controlled lineups, replacement
-comparisons, game rules, execution limits, and analysis settings. Its fields
-match the Python `LineupConfig` model. Explicit command options override the
+comparisons, game rules, execution limits, and analysis settings. Fixed lineups use
+this same model and execution path; see [Running games](arena.md). Its fields
+match the Python `RunSettings` model. Explicit command options override the
 corresponding file settings; omitted options preserve them.
 
-| Option | Default | Meaning |
-| --- | --- | --- |
-| `--config` | Built-in reference strategies | Optional JSON strategy and arena settings |
-| `--games` | 100 | Random-opponent games per selected player count |
-| `--player-count` | 4 | Players per game, from 2 to 10; repeat for several sizes |
-| `--controlled-games` | 0 | Additional games per selected controlled lineup |
-| `--seed` | 66 | Seed for reproducible games |
-| `--output-dir` | Unset | Save all evidence and reports in this new directory |
-| `--trace` | Off | Also save full logs in `traces/`; requires `--output-dir` |
-| `--json` | Off | Print the full structured report and artifact paths as pretty-printed JSON |
-| `--animation` / `--no-animation` | On | Show game and analysis animations in interactive terminals |
+Count settings require integers in both Python and JSON: booleans, quoted numbers,
+and fractional values are rejected. This includes game counts, player counts,
+seat/order counts, and analysis bootstrap samples. Analysis stream filters accept
+`iid`, `controlled`, `matched`, and `fixed`; unknown names are rejected. See the
+[arena guide](arena.md) for execution limits and their validation.
 
-Execution options such as `--backend process`, `--concurrency 4`, and
-`--decision-timeout` are described in the [arena guide](arena.md#cli-reference).
+The [play CLI reference](arena.md#cli-reference) owns the complete option and
+default table, including execution settings such as `--backend process`,
+`--concurrency 4`, and `--decision-timeout`.
 Game counts are actual matches; seat balancing does not multiply them. A root
 seed determines both deals and the private random streams used by bots.
 `--json` without `--output-dir` prints the complete report and saves nothing.
@@ -99,9 +97,9 @@ same opponents, deal, seat assignment, and assigned private seeds. For example:
 
 ```python
 from sixnimmt.arena.catalogue import REFERENCE_GROUP
-from sixnimmt.arena.planning import LineupConfig, ReplacementComparison
+from sixnimmt.arena.planning import RunSettings, ReplacementComparison
 
-settings = LineupConfig(
+settings = RunSettings(
     player_counts=(4,),
     games=0,
     comparisons=(
@@ -135,12 +133,12 @@ from tempfile import TemporaryDirectory
 
 from sixnimmt.analytics.evaluation import analyse_run
 from sixnimmt.analytics.models import AnalysisSpec
+from sixnimmt.application import run
 from sixnimmt.arena.artifacts import load_run
-from sixnimmt.arena.config import RunConfig
-from sixnimmt.arena.planned import run_plan
-from sixnimmt.arena.planning import CandidateConfig, LineupConfig, build_arena_plan
+from sixnimmt.arena.config import RecordingOptions, RunConfig
+from sixnimmt.arena.planning import CandidateConfig, RunSettings
 
-settings = LineupConfig(
+settings = RunSettings(
     catalogue=(
         CandidateConfig(bot="closest_gap", family="board"),
         CandidateConfig(bot="lowest_card", family="card_order"),
@@ -151,25 +149,47 @@ settings = LineupConfig(
     execution=RunConfig(concurrency=2),
     analysis=AnalysisSpec(bootstrap_samples=100, evidence_label="development"),
 )
-plan = build_arena_plan(settings)
-run = run_plan(plan)
-report = analyse_run(run)
-assert run.artifact_dir is None
-print(report.diagnostics.finished_matches)
+result = run(settings)
+assert result.run.artifact_dir is None
+assert result.artifacts is None
+print(result.report.diagnostics.finished_matches)
+print(result.report.context.rules.target_score)
 
 with TemporaryDirectory() as temporary:
     directory = Path(temporary) / "comparison"
-    run = run_plan(plan, output_dir=directory, trace=True)
-    report = analyse_run(run)
+    saved_settings = RunSettings.model_validate({
+        **settings.model_dump(),
+        "recording": RecordingOptions(output_dir=directory, trace=True),
+    })
+    saved = run(saved_settings)
     saved_report = analyse_run(load_run(directory))
-    assert report == saved_report
-    print(report.diagnostics.finished_matches)
+    assert saved.report == saved_report
+    assert saved.artifacts is not None
+    assert saved.artifacts.report.is_file()
+    assert saved.artifacts.analysis.is_file()
 ```
 
-`run_plan(plan)` returns compact outcomes in memory and writes nothing.
-`ArenaRun.artifact_dir` is `None` for these runs. Supply `output_dir` to save
-evidence; `trace=True` requires it. The example also demonstrates a temporary
-saved run. Use a persistent path to retain that evidence. Process execution requires
+`run(settings)` executes and analyses either a fixed or sampled run. Its
+`RunResult` contains `run`, `report`, and published `artifacts`, which is `None`
+for an in-memory run. `recording.output_dir` saves evidence and both reports;
+`recording.trace=True` requires that directory. Use a persistent path to retain
+the temporary example's output.
+
+For separate execution and analysis, `build_arena_plan(settings)` freezes the
+schedule, `run_plan(plan)` returns compact outcomes, and `analyse_run(evidence)`
+builds the report. `run_plan(..., output_dir=...)` saves only evidence.
+`arena.artifacts.publish_analysis(directory, report.model_dump(mode="json"),
+report_markdown(report))` publishes derived reports separately and returns their
+actual paths. Pass those paths as `artifacts=` to `report_terminal` when rendering
+links to published files. An evidence directory alone does not imply that reports
+have been written.
+
+`EvaluationReport.context` is a `ReportContext` model: access game settings through
+`report.context.rules` and `report.context.protocol`, and experimental settings
+through `.populations`, `.player_counts`, and `.streams`. Its JSON representation
+retains the same nested objects and arrays.
+
+Process execution requires
 an importable script with a `__main__` guard. Both backends construct independent
 bots for each match and bound the number of games running at once.
 
@@ -181,7 +201,7 @@ analysis selected after inspecting results is exploratory.
 For example, save a larger process run with an explicit output directory:
 
 ```bash
-uv run sixnimmt arena --games 10000 --player-count 4 \
+uv run sixnimmt play --games 10000 --player-count 4 \
   --backend process --concurrency 4 --output-dir runs/comparison
 ```
 
@@ -209,14 +229,24 @@ When `--output-dir` is supplied, the output directory contains five files:
 | `report.md` | Formatted strategy comparison and readable supporting results |
 | `analysis.json.gz` | Full typed analysis, stored as gzip-compressed JSON |
 
-The CLI writes the two reports after execution. Python callers can use
-`analyse_run` with the evidence saved by `run_plan`. Optional full traces live
+The shared run workflow writes the two reports after execution and analysis.
+Each report is replaced atomically, so readers see a complete old or new file.
+Reports are derived artifacts and can be rebuilt from the evidence; publication
+of the two files is not one transaction. Python callers can use `run`, or
+analyse and publish evidence saved by `run_plan` separately. Optional full traces live
 in `traces/` under the same directory. `--json` still prints the full analysis
 as pretty-printed JSON to standard output; when saved, the file stays compressed.
 Without `--output-dir`, the CLI prints results and writes none of these files.
 
 Compact outcomes retain final scores, winners, completed-hand scores, action and
 rejection counts, available timings and resources, and failure context.
+Both `load_run` and `analyse_run` validate result identities against the plan:
+job IDs must be known and unique, and match IDs and seat assignments must agree.
+Execution status must refer to the same jobs. Committed results may be newer than
+the last status snapshot after interruption; loading reconciles that snapshot,
+and analysis counts those returned jobs as started. This recovery allowance does
+not permit mismatched identities. See [crash recovery](traces.md#crash-recovery).
+
 Decision counts and total time are retained by default. Individual call timings
 are collected only with `--trace`, which also enables median and 95th-percentile
 decision timings. Reanalysis of an untraced run preserves aggregate timings and
@@ -229,7 +259,9 @@ exact chance of qualifying under random tie breaking; the default cutoff is
 half the players, rounded up. That means top two with four players, top three
 with five or six, and top five with ten. The objectives are reported separately.
 
-Random-lineup estimates use only their finished appearances. Controlled extra
+Fixed-lineup estimates describe the recorded opponents and seats. They do not
+claim performance against an unobserved opponent population. Random-lineup
+estimates use only their finished appearances. Controlled extra
 games do not alter that average. Weighted population estimates retain declared
 opponent weights: missing required opponents make a population unsupported,
 without treating missing results as zero or silently redistributing their weight.

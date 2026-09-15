@@ -41,7 +41,7 @@ their model names as example configuration, not availability guarantees.
 After editing the configuration for your endpoint:
 
 ```bash
-uv run sixnimmt arena --config examples/arena-llm.json --games 1 --seed 1234 --decision-timeout 130 --output-dir runs/llm-first-run --trace
+uv run sixnimmt play --config examples/arena-llm.json --games 1 --seed 1234 --decision-timeout 130 --output-dir runs/llm-first-run --trace
 ```
 
 Start with a small game budget and concurrency one to check tool compatibility
@@ -52,7 +52,7 @@ commitment. Give different models or prompts using the same bot distinct `key`
 values, as in the OpenRouter examples.
 
 For one fixed lineup mixing LLM adapters with Codex or Claude Code, use
-[`sixnimmt table --config`](harness-players.md#configure-models-and-a-lineup).
+[`sixnimmt play --watch --config`](harness-players.md#configure-models-and-a-lineup).
 Its file uses the same catalogue entries, and every model is selected through
 `options.model`. LLM entries retain the endpoint options below; headless harness
 entries use their installed CLI's authentication. The
@@ -94,9 +94,12 @@ Headless Codex and Claude seats use `options.reasoning_effort` alongside
 `options.model`; their drivers translate it to client settings rather than an
 HTTP request. See [headless options](harness-players.md#headless-options).
 
-Set the arena `--decision-timeout` above the adapter's `decision_budget_seconds`.
-The provider timeout and adapter budget are useful bounds, but the arena deadline
-is the outer protection against a call that does not return. A timeout does not
+The effective decision budget is the shorter of `decision_budget_seconds` and
+the remaining arena deadline. Each provider request is bounded by that remaining
+budget and `request_timeout_seconds`; repair attempts share the same budget.
+Budget exhaustion uses the arena's typed deadline outcome. Setting the arena
+`--decision-timeout` above the adapter budget gives cleanup additional time.
+A timeout does not
 cancel the underlying thread or guarantee that the provider stops processing it.
 
 ## Observations and tool calls
@@ -116,7 +119,9 @@ SDK retries or a fallback move.
 
 Use `strategy_prompt` to compare personalities while retaining shared rules.
 Use `system_prompt` to replace those rules. Active mode and match settings are
-still injected, and validation remains enforced by code.
+still injected, and validation remains enforced by code. Shared rules and decision
+instructions are composed explicitly with the adapter's delivery instructions;
+LLM tool calls and harness JSON proposals use the same rule text.
 
 ## Private memory
 
@@ -141,7 +146,11 @@ the provider. Statistics record usage when supplied, missing usage, requests,
 repairs, errors, and latency; the project does not calculate monetary costs.
 
 Trace files may contain private hands, messages, notebook contents, and raw
-provider output. Authentication headers are not recorded and the configured key
+provider output. Alongside private raw response records, the LLM adapter emits
+normalized `model_text`, `reasoning_summary`, and `tool_activity` records for
+operator display. Terminal renderers consume those records without parsing the
+provider response. Tool activity describes a requested call; arena acceptance is
+reported separately. Authentication headers are not recorded and the configured key
 is redacted if echoed, but that does not make arbitrary provider output safe to
 publish. See [Traces and replay](traces.md).
 

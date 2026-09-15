@@ -76,7 +76,7 @@ def test_arena_games_are_identical_across_interpreter_hash_seeds(tmp_path: Path)
         sys.executable,
         "-c",
         "from sixnimmt.cli import app; app()",
-        "arena",
+        "play",
         "--config",
         str(config_file),
         "--games",

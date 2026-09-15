@@ -1,4 +1,4 @@
-"""The arena command retains comparison evidence and renders reusable reports."""
+"""The shared run command retains comparison evidence and reusable reports."""
 
 import gzip
 import json
@@ -43,9 +43,9 @@ def config_file(tmp_path: Path) -> Path:
     return path
 
 
-def test_comparison_command_saves_reanalysable_evidence(config_file: Path, tmp_path: Path) -> None:
+def test_run_command_saves_reanalysable_evidence(config_file: Path, tmp_path: Path) -> None:
     directory = tmp_path / "results"
-    result = runner.invoke(app, ["arena", "--config", str(config_file), "--output-dir", str(directory)])
+    result = runner.invoke(app, ["play", "--config", str(config_file), "--output-dir", str(directory)])
     assert result.exit_code == 0, result.output
     assert {path.name for path in directory.iterdir()} == {
         "plan.json",
@@ -65,13 +65,13 @@ def test_comparison_command_saves_reanalysable_evidence(config_file: Path, tmp_p
 
 
 @pytest.mark.parametrize("backend", ["thread", "process"])
-def test_interactive_arena_animates_progress_across_all_table_sizes(
+def test_interactive_run_animates_progress_across_all_table_sizes(
     config_file: Path, tmp_path: Path, backend: str
 ) -> None:
     result = runner.invoke(
         app,
         [
-            "arena",
+            "play",
             "--config",
             str(config_file),
             "--output-dir",
@@ -96,10 +96,10 @@ def test_interactive_arena_animates_progress_across_all_table_sizes(
 
 
 @pytest.mark.parametrize("arguments", [["--no-animation"], ["--json"]])
-def test_interactive_arena_can_omit_animation(config_file: Path, tmp_path: Path, arguments: list[str]) -> None:
+def test_interactive_run_can_omit_animation(config_file: Path, tmp_path: Path, arguments: list[str]) -> None:
     result = runner.invoke(
         app,
-        ["arena", "--config", str(config_file), "--output-dir", str(tmp_path / "results"), *arguments],
+        ["play", "--config", str(config_file), "--output-dir", str(tmp_path / "results"), *arguments],
         env={"TTY_COMPATIBLE": "1", "TERM": "xterm"},
     )
     assert result.exit_code == 0, result.output
@@ -115,7 +115,7 @@ def test_without_output_directory_runs_without_saving_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, json_output: bool
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    arguments = ["arena", "--games", "2", "--no-animation"]
+    arguments = ["play", "--games", "2", "--no-animation"]
     if json_output:
         arguments.append("--json")
     result = runner.invoke(app, arguments)
@@ -134,9 +134,9 @@ def test_without_output_directory_runs_without_saving_files(
 
 def test_trace_requires_an_explicit_output_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
-    result = runner.invoke(app, ["arena", "--games", "1", "--trace"])
+    result = runner.invoke(app, ["play", "--games", "1", "--trace"])
     assert result.exit_code == 2
-    assert "--trace requires --output-dir" in result.stderr
+    assert "recording.trace requires recording.output_dir" in result.stderr
     assert list(tmp_path.iterdir()) == []
 
 
@@ -145,7 +145,7 @@ def test_explicit_command_options_override_saved_settings(config_file: Path, tmp
     result = runner.invoke(
         app,
         [
-            "arena",
+            "play",
             "--config",
             str(config_file),
             "--output-dir",
@@ -178,7 +178,7 @@ def test_catalogue_command_uses_comparison_sampling(tmp_path: Path) -> None:
     result = runner.invoke(
         app,
         [
-            "arena",
+            "play",
             "--config",
             str(catalogue),
             "--player-count",
@@ -199,7 +199,7 @@ def test_failed_matches_are_reported_without_competitive_scores(config_file: Pat
     result = runner.invoke(
         app,
         [
-            "arena",
+            "play",
             "--config",
             str(config_file),
             "--output-dir",
@@ -209,18 +209,18 @@ def test_failed_matches_are_reported_without_competitive_scores(config_file: Pat
             "--json",
         ],
     )
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     report = json.loads(result.stdout)["report"]
     assert report["diagnostics"]["finished_matches"] == 0
     assert report["diagnostics"]["unsuccessful_matches"] == 2
     assert all(record.scores is None for record in load_run(directory).results)
 
 
-def test_invalid_lineup_settings_do_not_create_run_directory(tmp_path: Path) -> None:
+def test_invalid_run_settings_do_not_create_run_directory(tmp_path: Path) -> None:
     path = tmp_path / "invalid.json"
     path.write_text('{"games": -1}', encoding="utf-8")
     directory = tmp_path / "results"
-    result = runner.invoke(app, ["arena", "--config", str(path), "--output-dir", str(directory)])
+    result = runner.invoke(app, ["play", "--config", str(path), "--output-dir", str(directory)])
     assert result.exit_code == 2
     assert not directory.exists()
 
@@ -230,7 +230,7 @@ def test_existing_artifacts_are_preserved(config_file: Path, tmp_path: Path) -> 
     directory.mkdir()
     marker = directory / "keep.txt"
     marker.write_text("existing evidence", encoding="utf-8")
-    result = runner.invoke(app, ["arena", "--config", str(config_file), "--output-dir", str(directory)])
+    result = runner.invoke(app, ["play", "--config", str(config_file), "--output-dir", str(directory)])
     assert result.exit_code == 1
     assert marker.read_text(encoding="utf-8") == "existing evidence"
     assert str(directory) in result.stderr
@@ -244,7 +244,7 @@ def test_stopped_plan_saves_report_and_returns_nonzero(tmp_path: Path, monkeypat
     result = runner.invoke(
         app,
         [
-            "arena",
+            "play",
             "--config",
             str(catalogue),
             "--player-count",

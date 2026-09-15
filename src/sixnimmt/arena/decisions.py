@@ -1,7 +1,8 @@
 """Measure trusted bot calls and bound waiting without blocking match workers."""
 
 import threading
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from multiprocessing import get_context
 from multiprocessing.sharedctypes import Synchronized
@@ -9,8 +10,9 @@ from multiprocessing.synchronize import Event as ProcessEvent
 from multiprocessing.synchronize import Lock as ProcessLock
 from queue import Empty, Queue
 from time import monotonic
+from typing import Literal, Protocol
 
-from sixnimmt.arena.bots.base import ActionBatch, Bot, Rejection, memory_bot
+from sixnimmt.arena.bots.base import MAX_BATCH_OPERATIONS, ActionBatch, Bot, Rejection, memory_bot, observe_bot
 from sixnimmt.arena.bots.lifecycle import (
     ControllerStopped,
     DecisionContext,
@@ -25,15 +27,30 @@ from sixnimmt.engine.actions import (
     SendMessageAction,
     UncommitAction,
 )
+from sixnimmt.engine.errors import EngineRejection, ErrorCode
+from sixnimmt.engine.events import Event
+from sixnimmt.engine.rules import GameRules, MatchProtocol
+from sixnimmt.engine.state import MatchState
+from sixnimmt.engine.transition import transition
 from sixnimmt.engine.views import MatchView
+
+
+class StopSignal(Protocol):
+    """Cancellation shared by local threads or spawned match workers."""
+
+    def is_set(self) -> bool: ...
+
+    def set(self) -> None: ...
+
+    def wait(self, timeout: float | None = None) -> bool: ...
 
 
 @dataclass(frozen=True)
 class SharedAbandonedState:
     """Run-wide counters passed to spawned workers during initialization."""
 
-    total: Synchronized
-    active: Synchronized
+    total: "Synchronized[int]"
+    active: "Synchronized[int]"
     lock: ProcessLock
     exceeded: ProcessEvent
 
@@ -93,13 +110,34 @@ def _release_abandoned_slot(thread: threading.Thread, shared: SharedAbandonedSta
 
 
 @dataclass(frozen=True)
-class Decision:
-    action: Action | ActionBatch | None
-    error: BaseException | None
-    timed_out: bool
+class DecisionTiming:
     started_at: datetime
     ended_at: datetime
     duration_ms: float
+
+
+@dataclass(frozen=True)
+class ActionDecision(DecisionTiming):
+    action: Action | ActionBatch
+    error: None = field(default=None, init=False)
+    timed_out: Literal[False] = field(default=False, init=False)
+
+
+@dataclass(frozen=True)
+class FailedDecision(DecisionTiming):
+    error: BaseException
+    action: None = field(default=None, init=False)
+    timed_out: Literal[False] = field(default=False, init=False)
+
+
+@dataclass(frozen=True)
+class TimedOutDecision(DecisionTiming):
+    action: None = field(default=None, init=False)
+    error: None = field(default=None, init=False)
+    timed_out: Literal[True] = field(default=True, init=False)
+
+
+type Decision = ActionDecision | FailedDecision | TimedOutDecision
 
 
 def decide(
@@ -108,7 +146,7 @@ def decide(
     rejection: Rejection | None,
     timeout: float | None,
     abandoned: AbandonedDecisions,
-    stop_event: threading.Event | None = None,
+    stop_event: StopSignal | None = None,
 ) -> Decision:
     started_at = datetime.now(UTC)
     started = monotonic()
@@ -149,11 +187,25 @@ def decide(
     if isinstance(error, DecisionDeadlineExceeded):
         timed_out = True
         error = None
-    return Decision(action, error, timed_out, started_at, datetime.now(UTC), (monotonic() - started) * 1000)
+    timing = DecisionTiming(started_at, datetime.now(UTC), (monotonic() - started) * 1000)
+    return _decision_result(action, error, timed_out, timing)
+
+
+def _decision_result(
+    action: Action | ActionBatch | None, error: BaseException | None, timed_out: bool, timing: DecisionTiming
+) -> Decision:
+    if timed_out:
+        return TimedOutDecision(timing.started_at, timing.ended_at, timing.duration_ms)
+    if error is not None:
+        return FailedDecision(timing.started_at, timing.ended_at, timing.duration_ms, error)
+    if action is None:
+        msg = "decision completed without an action or failure"
+        raise RuntimeError(msg)
+    return ActionDecision(timing.started_at, timing.ended_at, timing.duration_ms, action)
 
 
 def _wait_for_reply(
-    replies: Queue[Action | ActionBatch | BaseException], timeout: float | None, stop_event: threading.Event | None
+    replies: Queue[Action | ActionBatch | BaseException], timeout: float | None, stop_event: StopSignal | None
 ) -> Action | ActionBatch | BaseException:
     deadline = None if timeout is None else monotonic() + timeout
     while True:
@@ -174,6 +226,7 @@ def _wait_for_reply(
 
 def _call_bot(bot: Bot, view: MatchView, rejection: Rejection | None, context: DecisionContext) -> Action | ActionBatch:
     set_decision_context(bot, context)
+    observe_bot(bot, view)
     result = bot.act(view, rejection)
     if isinstance(result, ActionBatch):
         if not isinstance(result.actions, tuple):
@@ -184,7 +237,7 @@ def _call_bot(bot: Bot, view: MatchView, rejection: Rejection | None, context: D
         if result.memory is not None and not isinstance(result.memory, str):
             msg = "batch memory must be a string or None"
             raise TypeError(msg)
-        if not 1 <= result.size <= 8:
+        if not 1 <= result.size <= MAX_BATCH_OPERATIONS:
             msg = "a batch must contain one to eight calls"
             raise ValueError(msg)
         if result.memory is not None and memory_bot(bot) is None:
@@ -212,3 +265,81 @@ def _queue_decision(
         replies.put(_call_bot(bot, view, rejection, context))
     except BaseException as error:
         replies.put(error)
+
+
+@dataclass
+class DecisionMetrics:
+    player_ids: Sequence[str]
+    retain_samples: bool = False
+    seconds: dict[str, float] = field(init=False)
+    calls: dict[str, int] = field(init=False)
+    samples: dict[str, list[float]] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.seconds = dict.fromkeys(self.player_ids, 0.0)
+        self.calls = dict.fromkeys(self.player_ids, 0)
+        self.samples = {player_id: [] for player_id in self.player_ids}
+
+    def record_call(self, player_id: str, duration_ms: float) -> None:
+        """Count calls, including batches rejected before their first action."""
+        seconds = duration_ms / 1000
+        self.seconds[player_id] += seconds
+        self.calls[player_id] += 1
+        if self.retain_samples:
+            self.samples[player_id].append(seconds)
+
+
+class Scheduler(Protocol):
+    def next_seat(self, state: MatchState) -> int | None: ...
+
+
+class SequentialScheduler(Scheduler):
+    """Offer the first uncommitted seat; suitable for classic matches only."""
+
+    def next_seat(self, state: MatchState) -> int | None:
+        return next((index for index, player in enumerate(state.players) if not player.committed), None)
+
+
+class RoundRobinScheduler(Scheduler):
+    """Resume after the last offered seat, skipping committed players."""
+
+    def __init__(self) -> None:
+        self._last_seat = -1
+
+    def next_seat(self, state: MatchState) -> int | None:
+        for offset in range(1, len(state.players) + 1):
+            index = (self._last_seat + offset) % len(state.players)
+            if not state.players[index].committed:
+                self._last_seat = index
+                return index
+        return None
+
+
+@dataclass(frozen=True)
+class PreparedBatch:
+    steps: tuple[tuple[MatchState, list[Event]], ...]
+    rejection: Rejection | None = None
+
+
+def prepare_batch(
+    state: MatchState, player_id: str, batch: ActionBatch, protocol: MatchProtocol, rules: GameRules
+) -> PreparedBatch:
+    steps = []
+    terminal = False
+    for index, action in enumerate(batch.actions):
+        if terminal:
+            message = (
+                f"Game action {index + 1}: cannot follow a terminal action. Nothing was applied; memory is unchanged."
+            )
+            return PreparedBatch((), Rejection(ErrorCode.WRONG_PHASE, message, (), action))
+        try:
+            before = (state.hand_number, state.play_number, state.phase)
+            state, events = transition(state, player_id, action, protocol, rules)
+            after = (state.hand_number, state.play_number, state.phase)
+            committed = next(player.committed for player in state.players if player.player_id == player_id)
+            terminal = action.type in ("commit", "choose_row") or before != after or committed
+            steps.append((state, events))
+        except EngineRejection as error:
+            message = f"Game action {index + 1} ({action.type.value}) failed: {error}. Nothing was applied; memory is unchanged."
+            return PreparedBatch((), Rejection(error.code, message, (), action))
+    return PreparedBatch(tuple(steps))
