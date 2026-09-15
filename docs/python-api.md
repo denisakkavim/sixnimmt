@@ -302,6 +302,21 @@ and available simulation candidate values. It can be called from decision or
 output threads, so it must be fast and thread-safe. Queue work for a display
 thread if rendering or writing it could block.
 
+Decision start and completion records include a per-seat `decision_number`,
+`view_id`, `hand_number`, `play_number`, `phase`, and `cards_remaining`. These
+describe the offered decision even when publishing it advances the game. A
+completion record's `actions` contains only accepted actions; rejected or failed
+attempts appear under `attempted_actions`. Action identifiers and notebook
+contents are excluded from these summaries. Managed `decision_id` values remain
+separate identifiers; use the associated `view_id` and player to connect them
+to the arena's active decision.
+
+Simulation activity includes `chosen_card`, `candidate_values`, `objective`,
+`sample_count`, and `horizon_plays` when available. The chosen card comes from
+the accepted action; the horizon is capped at the cards remaining in that hand.
+These values describe the completed card evaluation and are not repeated for a
+later commit or row choice.
+
 Activity records are privileged diagnostics and can reveal cards or plans.
 They do not change game state and are not input to event replay. Use public
 event filtering for a spectator board, and label any activity pane as operator

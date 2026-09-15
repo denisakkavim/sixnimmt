@@ -24,6 +24,7 @@ from sixnimmt.arena.results import MatchOutcome, MatchResult
 from sixnimmt.arena.scheduling import RoundRobinScheduler, Scheduler, SequentialScheduler
 from sixnimmt.arena.tracing import write_standalone_manifest
 from sixnimmt.arena.transactions import prepare_batch
+from sixnimmt.engine.actions import Action, SelectCardAction
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.errors import EngineRejection, ErrorCode
 from sixnimmt.engine.events import (
@@ -44,6 +45,14 @@ from sixnimmt.persistence.sink import ActionRecord, EventSink, JsonlEventSink, N
 ActionOutcome = Literal["accepted", "rejected", "timeout", "error"]
 Observer = Callable[[MatchState, tuple[Event, ...]], None]
 ActivityObserver = Callable[[dict[str, Any]], None]
+
+
+def _decision_actions(decision: Decision) -> tuple[Action, ...]:
+    if isinstance(decision.action, ActionBatch):
+        return decision.action.actions
+    if decision.action is None:
+        return ()
+    return (decision.action,)
 
 
 class ArenaError(RuntimeError):
@@ -133,6 +142,7 @@ class _Match:
         self.folders = [ViewFolder(Viewer(ViewRole.PLAYER, seat.player_id)) for seat in seats]
         self.accepted = [0] * len(seats)
         self.rejected = [0] * len(seats)
+        self.decision_numbers = [0] * len(seats)
         self.action_seq = 0
         self.play_attempts = 0
         self.lifecycle = _BotLifecycle()
@@ -208,22 +218,28 @@ class _Match:
         player_id = self.state.players[seat].player_id
         while True:
             view = self.folders[seat].view()
+            self.decision_numbers[seat] += 1
+            context = {
+                "decision_number": self.decision_numbers[seat],
+                "view_id": view.view_id,
+                "hand_number": view.hand_number,
+                "play_number": view.play_number,
+                "phase": view.phase.value,
+                "cards_remaining": len(view.you.hand),
+            }
             started = datetime.now(UTC)
             timeout = self.config.decision_timeout_seconds
             deadline = None if timeout is None else (started + timedelta(seconds=timeout)).isoformat()
-            self.activity(seat, "decision_started", deadline=deadline)
+            self.activity(seat, "decision_started", **context, deadline=deadline)
             decision = decide(bot, view, rejection, self.config.decision_timeout_seconds, abandoned, stop_event)
             if decision.timed_out:
                 self.lifecycle.cancel(bot, player_id, "decision_timeout")
             elif isinstance(decision.error, ControllerStopped):
                 self.lifecycle.cancel(bot, player_id, "operator_stop")
             result, rejection, outcome = self.publish_decision(bot, seat, decision)
-            reason = decision_reason(decision, rejection)
-            if reason is None and outcome.status == "failed":
-                reason = result.reason if result is not None else outcome.reason
-            self.activity(seat, "decision_finished", status=outcome.status, text=reason)
+            self.report_completion(seat, decision, outcome, result, rejection, context)
             if outcome.status == "accepted" and decision.error is None and not decision.timed_out:
-                self.report_evaluation(bot, seat, decision)
+                self.report_evaluation(bot, seat, decision, context)
             if result is not None or rejection is None:
                 return result
             rejections += 1
@@ -244,15 +260,43 @@ class _Match:
             **data,
         })
 
-    def report_evaluation(self, bot: Bot, seat: int, decision: Decision) -> None:
+    def report_completion(
+        self,
+        seat: int,
+        decision: Decision,
+        outcome: DecisionOutcome,
+        result: MatchResult | None,
+        rejection: Rejection | None,
+        context: dict[str, Any],
+    ) -> None:
         if self.on_activity is None:
             return
-        action = decision.action
-        if isinstance(action, ActionBatch):
-            selected_card = any(item.type == "select_card" for item in action.actions)
-        else:
-            selected_card = action is not None and action.type == "select_card"
-        if not selected_card:
+        reason = decision_reason(decision, rejection)
+        if reason is None and outcome.status == "failed":
+            reason = result.reason if result is not None else outcome.reason
+        actions = [
+            action.model_dump(mode="json", exclude={"action_id", "from_view", "expected_view_version"})
+            for action in _decision_actions(decision)
+        ]
+        accepted = outcome.status == "accepted"
+        self.activity(
+            seat,
+            "decision_finished",
+            **context,
+            status=outcome.status,
+            text=reason,
+            actions=actions if accepted else [],
+            attempted_actions=[] if accepted else actions,
+        )
+
+    def report_evaluation(self, bot: Bot, seat: int, decision: Decision, context: dict[str, Any]) -> None:
+        if self.on_activity is None:
+            return
+        chosen_card = next(
+            (action.card for action in reversed(_decision_actions(decision)) if isinstance(action, SelectCardAction)),
+            None,
+        )
+        if chosen_card is None:
             return
         statistics = statistics_bot(bot)
         if statistics is None:
@@ -264,7 +308,22 @@ class _Match:
             return
         candidates = stats.get("candidate_values")
         if isinstance(candidates, dict) and len(candidates) > 0:
-            self.activity(seat, "simulation_evaluation", candidate_values=dict(candidates))
+            horizon = stats.get("horizon")
+            horizon_plays = None
+            if type(horizon) is int:
+                horizon_plays = min(horizon, context["cards_remaining"])
+            elif horizon == "remaining_hand":
+                horizon_plays = context["cards_remaining"]
+            self.activity(
+                seat,
+                "simulation_evaluation",
+                **context,
+                chosen_card=chosen_card,
+                objective=stats.get("objective"),
+                horizon_plays=horizon_plays,
+                sample_count=stats.get("sample_count"),
+                candidate_values=dict(candidates),
+            )
 
     def publish_decision(
         self, bot: Bot, seat: int, decision: Decision

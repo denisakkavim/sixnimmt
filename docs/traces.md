@@ -177,9 +177,9 @@ remain without response records.
 
 Managed external harnesses use the same model-log file. A `sixnimmt table` run
 writes it as `traces/table.model.jsonl`, alongside the event and action logs.
-Records carry `player_id`, `display_name`, `client`, configured `model`,
-`invocation`, `decision_id`, and a timestamp. Worker records additionally carry
-the offered `view_id` and attempt number.
+Records carry `player_id`, `display_name`, `client`, configured `model` and
+`reasoning_effort`, `invocation`, `decision_id`, `view_id`, and a timestamp.
+Worker records additionally carry the attempt number.
 
 | Record type | Contents |
 | --- | --- |
@@ -188,7 +188,9 @@ the offered `view_id` and attempt number.
 | `model_text`, `reasoning_summary`, `tool_activity`, `stderr` | Available CLI output while the process runs |
 | `invocation_output` | Bounded completed output for diagnosis |
 | `proposal` | Parsed final proposal, before broker or arena acceptance |
+| `decision_explanation` | Optional short model explanation from completed managed output, still awaiting acceptance |
 | `proposal_rejected`, `protocol_repair` | Validation error, previous proposal or bounded excerpt, and retry context |
+| `delivery_cancelled` | Delivery stopped while waiting for the next offer; this does not reject a move already accepted |
 | `invocation_failed` | Process failure with bounded stdout/stderr diagnostics |
 | `cleanup_failed` | Process cleanup failure; an existing invocation error remains the reported cause of failure |
 
@@ -197,6 +199,19 @@ its stderr can supply live diagnostic text. Vendor stream records are never
 submissions. A repair retains the same decision identifiers, schema, and work
 deadline, while getting a new invocation number. Inspect the action log and
 receipts to determine whether a proposal was accepted.
+
+Text and reasoning records preserve `item_id` and carry `complete` to mark a
+finished message. An empty text record can mark completion of text already
+streamed; it is not a new message. Tool records preserve the tool item's ID and
+expose `tool_name` and `status`, allowing a display to update an existing entry.
+Completion of streamed tool input is separate from completion of tool execution.
+
+Managed output may include an optional `explanation`. It is validated and removed
+before the proposal reaches the broker, and consumes no action or notebook
+budget. The corresponding explanation record is operator commentary; accepted
+actions and rejected attempts remain determined by arena settlement. Completed
+output is retained privately for diagnosis, including explanations that fail
+validation.
 
 These diagnostics survive failed games and are saved even when the operator
 uses `--quiet` or `--no-commentary`. Large output is bounded and truncation is

@@ -181,7 +181,7 @@ def test_operator_comments_are_separate_and_can_be_disabled(table_state) -> None
     hidden.observe(state, events)
     hidden.activity({"type": "model_text", "player_id": "alice", "text": "My private card is 99."})
     assert "My private card is 99." not in _render(hidden)
-    assert len(hidden._lines) == 0
+    assert hidden._commentary.snapshot().current is None
 
 
 def test_simulation_candidates_are_ordered_by_value_in_operator_pane(table_state) -> None:
@@ -194,7 +194,10 @@ def test_simulation_candidates_are_ordered_by_value_in_operator_pane(table_state
         "candidate_values": {"99": 4.5, "20": 0.25, "30": 1.0},
     })
     output = _render(display)
-    assert "Candidate values (lower is better): [20] 0.25, [30] 1.00, [99] 4.50" in output
+    assert "Candidate value · lower is better" in output
+    assert output.index("[20]") < output.index("[30]") < output.index("[99]")
+    assert "0.25" in output
+    assert "4.50" in output
 
 
 def test_activity_shows_deciding_deadline_retry_and_final_failure(table_state) -> None:
@@ -325,11 +328,14 @@ def test_live_game_frame_fits_terminal_width(table_state, width: int) -> None:
 
 def test_streamed_operator_text_is_bounded_and_has_no_ansi_sequences() -> None:
     display = PublicTableDisplay(report=lambda text: None)
-    record: dict[str, Any] = {"type": "model_text", "player_id": "alice", "text": "x" * 500}
+    record: dict[str, Any] = {"type": "model_text", "player_id": "alice", "text": "x" * 500, "delta": True}
     for _ in range(100):
         display.activity(record)
-    assert len(display._lines) == 1
-    assert len(display._lines[0].text) == 1200
+    current = display._commentary.snapshot().current
+    assert current is not None
+    assert len(current.messages) == 1
+    assert len(current.messages[0].text) == 16000
+    assert current.messages[0].truncated
     assert _safe_text("\x1b]52;c;SECRET\x07safe") == "safe"
 
 
@@ -409,3 +415,92 @@ def test_animation_can_be_disabled_on_an_interactive_terminal(
         display.observe(state, events)
     assert "Rows " in "\n".join(messages)
     assert capsys.readouterr().out == ""
+
+
+def test_completed_commentary_is_written_to_plain_scrollback_once(table_state, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TTY_COMPATIBLE", "0")
+    state, events = table_state
+    messages: list[str] = []
+    with table_display(report=messages.append) as display:
+        display.observe(state, events)
+        display.activity({"type": "decision_started", "player_id": "alice", "decision_number": 1})
+        display.activity({
+            "type": "model_text",
+            "player_id": "alice",
+            "text": "COMPLETE COMMENTARY ENTRY",
+            "complete": True,
+        })
+        display.activity({
+            "type": "decision_finished",
+            "player_id": "alice",
+            "decision_number": 1,
+            "status": "accepted",
+            "actions": [{"type": "select_card", "card": 20}],
+        })
+        display.activity({"type": "match_finished", "outcome": "completed"})
+    output = "\n".join(messages)
+    assert output.count("COMPLETE COMMENTARY ENTRY") == 1
+    assert "Operator decision · private information" in output
+    assert "Accepted: select card 20" in output
+
+
+def test_commentary_uses_remaining_terminal_height_without_hiding_board(table_state) -> None:
+    state, events = table_state
+    display = PublicTableDisplay(report=lambda text: None)
+    display.observe(state, events)
+    display.activity({"type": "decision_started", "player_id": "alice", "decision_number": 1})
+    display.activity({
+        "type": "model_text",
+        "player_id": "alice",
+        "text": "\n\n".join(["Long commentary paragraph."] * 30),
+    })
+    console = Console(width=100, height=24, color_system=None)
+    with console.capture() as capture:
+        console.print(display.render(100, 24))
+    output = capture.get()
+    assert len(output.splitlines()) <= 24
+    assert "Four rows" in output
+    assert "Operator commentary" in output
+    assert "More" in output
+
+
+def test_late_failure_cannot_replace_accepted_activity_or_operator_status(table_state) -> None:
+    state, events = table_state
+    display = PublicTableDisplay(report=lambda text: None)
+    display.observe(state, events)
+    display.activity({"type": "decision_started", "player_id": "alice", "view_id": "view-1", "decision_number": 1})
+    display.activity({
+        "type": "decision_finished",
+        "player_id": "alice",
+        "view_id": "view-1",
+        "decision_number": 1,
+        "status": "accepted",
+        "actions": [{"type": "select_card", "card": 20}],
+    })
+    display.activity({"type": "invocation_failed", "player_id": "alice", "view_id": "view-1", "text": "LATE FAILURE"})
+    output = _render(display)
+    assert "Accepted: select card 20" in output
+    assert "LATE FAILURE" not in output
+    assert display._activities["alice"].status == "accepted"
+
+
+def test_old_view_failure_does_not_change_current_activity_after_history_is_trimmed(table_state) -> None:
+    state, events = table_state
+    display = PublicTableDisplay(report=lambda text: None)
+    display.observe(state, events)
+    for number in range(1, 26):
+        display.activity({
+            "type": "decision_started",
+            "player_id": "alice",
+            "view_id": f"view-{number}",
+            "decision_number": number,
+        })
+    display.activity({
+        "type": "invocation_failed",
+        "player_id": "alice",
+        "view_id": "view-1",
+        "decision_id": "external-old",
+        "text": "OLD FAILURE",
+    })
+    assert display._activities["alice"].status == "deciding"
+    assert "OLD FAILURE" not in _render(display)

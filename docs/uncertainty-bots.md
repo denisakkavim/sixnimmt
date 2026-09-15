@@ -179,6 +179,12 @@ real decisions and simulated continuations.
 Upper-tail evaluation includes only the required fraction of a boundary sample.
 All objectives use accumulated penalties over the horizon, excluding prior points.
 
+Simulation statistics retain the configured `objective`, `horizon`, and
+`sample_count` alongside `candidate_values`. The table's operator commentary
+uses this metadata to label candidate comparisons and the accepted card. Its
+displayed horizon accounts for the current hand boundary. These diagnostics do
+not affect simulated worlds, random streams, or move selection.
+
 `model_based_bait` requires horizon 1, mean penalty, and cheapest row choice. Other
 settings remain explicit, including the unused continuation policy. Bait additionally
 requires `fallback_strategy`: the registered reference strategy to follow unless

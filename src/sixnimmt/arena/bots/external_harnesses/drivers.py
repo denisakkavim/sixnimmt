@@ -309,6 +309,7 @@ class ManagedCommandDriver:
         self._last_stderr = b""
         self._stderr_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._decision_id: str | None = None
+        self._view_id: str | None = None
         self._credentials: tuple[str, ...] = ()
         self._pending_text: dict[tuple[str, str], dict[str, Any]] = {}
         self.invocations = 0
@@ -332,6 +333,7 @@ class ManagedCommandDriver:
                 "reasoning_effort": self.profile.reasoning_effort,
                 "invocation": self.invocations,
                 "decision_id": self._decision_id,
+                "view_id": self._view_id,
                 "timestamp": datetime.now(UTC).isoformat(),
                 **redacted,
             }
@@ -355,9 +357,12 @@ class ManagedCommandDriver:
                 if text.endswith(credential[:length]):
                     pending = max(pending, length)
         if pending > 0:
-            self._pending_text[key] = {**record, "text": text[-pending:]}
-            text = text[:-pending]
-        if text == "":
+            if record.get("complete") is True:
+                text = text[:-pending] + "[redacted]"
+            else:
+                self._pending_text[key] = {**record, "text": text[-pending:]}
+                text = text[:-pending]
+        if text == "" and record.get("complete") is not True:
             return None
         return {**record, "text": text}
 
@@ -387,6 +392,7 @@ class ManagedCommandDriver:
             raise DriverError(msg)
         self.invocations += 1
         self._decision_id = offer.get("decision_id")
+        self._view_id = offer.get("view_id")
         self._last_stdout = b""
         self._last_stderr = b""
         self._stderr_decoder.reset()

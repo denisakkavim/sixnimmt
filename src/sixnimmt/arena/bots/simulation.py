@@ -78,11 +78,14 @@ class SimulationBot:
             return SelectCardAction(card=fallback_card)
         return SelectCardAction(card=best)
 
-    def stats(self) -> dict:
+    def stats(self) -> dict[str, Any]:
         return {
             "model": self.model.diagnostics,
             "evaluation": self.last_evaluation,
             "candidate_values": self.estimates,
+            "objective": self.options.objective.model_dump(mode="json"),
+            "horizon": self.options.horizon,
+            "sample_count": self.options.sample_count,
         }
 
 

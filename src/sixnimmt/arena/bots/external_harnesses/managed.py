@@ -8,7 +8,11 @@ from typing import Any
 
 from sixnimmt.arena.bots.external_harnesses.broker import PLAY_INSTRUCTIONS, SeatSession
 from sixnimmt.arena.bots.external_harnesses.drivers import DriverError, DriverFormatError, ManagedCommandDriver
-from sixnimmt.arena.bots.external_harnesses.protocol import HarnessError, decision_proposal_schema
+from sixnimmt.arena.bots.external_harnesses.protocol import (
+    HarnessError,
+    managed_proposal_schema,
+    parse_managed_proposal,
+)
 from sixnimmt.arena.bots.lifecycle import DecisionDeadlineExceeded
 
 
@@ -50,6 +54,10 @@ class ManagedSeatWorker:
             "\n\nReturn one final JSON proposal for the offered decision. Include protocol_version, "
             "session_id, decision_id, submission_id, view_id, actions and memory. Copy the offered IDs "
             "and choose a fresh unique submission_id. The arena validates the complete proposal. "
+            "Add an explanation of your proposed move in one or two concise sentences, at most 1000 characters. "
+            "Give a short decision summary grounded in the current game situation. "
+            "This is private commentary for the operator and does not send a message to other players. "
+            "Use explanation: null when no explanation is available. "
             "This invocation ends after the proposal; another invocation handles the next decision. "
             "Only an enabled arena-accepted notebook persists across invocations."
         )
@@ -69,7 +77,7 @@ class ManagedSeatWorker:
             response = self._submit_decision(offer, info)
 
     def _submit_decision(self, offer: dict[str, Any], info: dict[str, Any]) -> dict[str, Any]:
-        schema = decision_proposal_schema(
+        schema = managed_proposal_schema(
             offer, memory_enabled=info["memory_enabled"], memory_max_chars=info["memory_max_chars"]
         )
         decision_info = {**info, "proposal_schema": schema}
@@ -96,7 +104,15 @@ class ManagedSeatWorker:
             try:
                 proposal = self.driver.invoke(request_offer, decision_info, schema, deadline=deadline)
                 self.driver.emit_trace({"type": "proposal", **context, **_bounded_data("proposal", proposal, 65_536)})
-                return self.session.play(self.session.session_id, proposal, cancel=self.stopped)
+                parsed = parse_managed_proposal(proposal)
+                if parsed.explanation is not None and parsed.explanation.strip() != "":
+                    self.driver.emit_trace({
+                        "type": "decision_explanation",
+                        **context,
+                        "submission_id": parsed.submission_id,
+                        "text": parsed.explanation.strip(),
+                    })
+                return self.session.play(self.session.session_id, parsed.game_proposal(), cancel=self.stopped)
             except (DriverFormatError, HarnessError) as error:
                 repairable = isinstance(error, DriverFormatError) or error.code in (
                     "invalid_proposal",
@@ -109,6 +125,9 @@ class ManagedSeatWorker:
                 }
                 if proposal is not None:
                     feedback.update(_bounded_data("previous_proposal", proposal, 16_384))
+                if isinstance(error, HarnessError) and error.code == "cancelled":
+                    self.driver.emit_trace({"type": "delivery_cancelled", **context, "error": feedback})
+                    raise
                 self.driver.emit_trace({
                     "type": "proposal_rejected",
                     **context,

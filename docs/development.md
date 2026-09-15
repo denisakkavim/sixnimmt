@@ -25,6 +25,7 @@
 | `terminal/__init__.py` | Shared terminal presentation entry points |
 | `terminal/animations.py` | Arena progress and analysis animations |
 | `terminal/table.py` | Queued animation of actual public game events and a separate private operator activity pane |
+| `terminal/commentary.py` | Decision grouping, formatted model messages, tool status, and candidate comparisons |
 | `terminal/board.py` | Shared card rows, penalty totals, and capture/placement highlights |
 
 The engine owns rules and hidden state. It does not call bots, write files, or
@@ -48,6 +49,13 @@ events into its board and queues frames for a separate output thread; it never
 uses the authoritative state's hidden cards for rendering. Activity records
 feed a labelled operator pane and do not participate in engine transitions or
 event replay. Hiding commentary or board output does not disable model traces.
+
+Commentary is grouped by the arena's per-seat decision number and the managed
+client's decision, invocation, and item identifiers. The arena publishes action
+summaries after settlement; arbitrary model text cannot mark a move accepted.
+The output thread renders Markdown, fits commentary to the available terminal
+height, and moves completed decisions into normal terminal scrollback. Its
+bounded presentation state excludes raw offers and notebook contents.
 
 Managed workers derive structured-output schemas from each offer's shared
 action tools. The schemas constrain available actions, card/row values, message

@@ -45,6 +45,41 @@ def test_activity_reports_decision_start_before_model_output_and_settlement() ->
     assert activity[3]["reason"] == "match_action_limit"
 
 
+def test_decision_context_remains_attached_to_its_offer_when_the_game_advances() -> None:
+    activity: list[dict[str, Any]] = []
+    run_match(
+        [LowestCardBot(), LowestCardBot()],
+        66,
+        protocol=MatchProtocol(end_condition=EndCondition.FIXED_HANDS, hands=1),
+        on_activity=activity.append,
+    )
+    fields = ("view_id", "hand_number", "play_number", "phase", "cards_remaining")
+    started: dict[tuple[str, int], dict[str, Any]] = {}
+    counts: dict[str, int] = {}
+    for record in activity:
+        if record["type"] not in ("decision_started", "decision_finished"):
+            continue
+        player_id = record["player_id"]
+        key = (player_id, record["decision_number"])
+        if record["type"] == "decision_started":
+            counts[player_id] = counts.get(player_id, 0) + 1
+            assert record["decision_number"] == counts[player_id]
+            started[key] = record
+        else:
+            offer = started.pop(key)
+            assert {field: record[field] for field in fields} == {field: offer[field] for field in fields}
+    assert started == {}
+    assert all(count >= 10 for count in counts.values())
+
+
+def test_accepted_choice_is_reported_without_action_metadata() -> None:
+    activity: list[dict[str, Any]] = []
+    result = run_match([LowestCardBot(), LowestCardBot()], 66, max_actions=1, on_activity=activity.append)
+    finished = next(record for record in activity if record["type"] == "decision_finished")
+    assert finished["actions"] == [{"type": "select_card", "card": result.final_state.players[0].selection}]
+    assert finished["attempted_actions"] == []
+
+
 def test_model_output_reaches_both_live_observer_and_durable_trace(tmp_path: Path) -> None:
     activity: list[dict[str, Any]] = []
     directory = tmp_path / "traces"
@@ -133,11 +168,23 @@ def test_memory_publication_failure_reports_failed_without_accepting_a_move() ->
     assert finished["status"] == "failed"
     assert finished["text"] == result.reason
     assert "notebook write failed" in finished["text"]
+    assert finished["actions"] == []
+    assert len(finished["attempted_actions"]) == 1
+    assert finished["attempted_actions"][0]["type"] == "select_card"
+    assert "Remember this play." not in json.dumps(activity)
 
 
 class EvaluatingPlayer(LowestCardBot):
+    def __init__(self, horizon: int | str = 2) -> None:
+        self.horizon = horizon
+
     def stats(self) -> dict[str, Any]:
-        return {"candidate_values": {"18": 0.5, "45": 1.25}}
+        return {
+            "candidate_values": {"18": 0.5, "45": 1.25},
+            "objective": {"kind": "mean"},
+            "horizon": self.horizon,
+            "sample_count": 16,
+        }
 
 
 def test_candidate_scores_are_reported_as_separate_operator_activity() -> None:
@@ -146,7 +193,21 @@ def test_candidate_scores_are_reported_as_separate_operator_activity() -> None:
     evaluation = next(record for record in activity if record["type"] == "simulation_evaluation")
     assert evaluation["player_id"] == "player_1"
     assert evaluation["candidate_values"] == {"18": 0.5, "45": 1.25}
+    assert evaluation["chosen_card"] == result.final_state.players[0].selection
+    assert evaluation["objective"] == {"kind": "mean"}
+    assert evaluation["horizon_plays"] == 2
+    assert evaluation["sample_count"] == 16
+    assert evaluation["view_id"] == activity[0]["view_id"]
+    assert evaluation["decision_number"] == activity[0]["decision_number"]
     assert all("candidate_values" not in event.data for event in result.events)
+
+
+@pytest.mark.parametrize("horizon", [20, "remaining_hand"])
+def test_candidate_horizon_is_limited_to_cards_remaining_in_this_hand(horizon: int | str) -> None:
+    activity: list[dict[str, Any]] = []
+    run_match([EvaluatingPlayer(horizon), LowestCardBot()], 66, max_actions=1, on_activity=activity.append)
+    evaluation = next(record for record in activity if record["type"] == "simulation_evaluation")
+    assert evaluation["horizon_plays"] == 10
 
 
 def test_committing_a_selection_does_not_report_its_cached_candidate_scores_again() -> None:

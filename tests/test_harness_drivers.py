@@ -92,6 +92,43 @@ def test_generic_driver_receives_filtered_offer_and_returns_final_object(tmp_pat
     assert list((tmp_path / "workspace").iterdir()) == []
 
 
+def test_every_driver_record_carries_current_decision_view_and_generation_settings(tmp_path: Path) -> None:
+    message = {
+        "type": "item.completed",
+        "item": {"id": "message_1", "type": "agent_message", "text": "A concise explanation"},
+    }
+    source = (
+        "import pathlib, sys\n"
+        "sys.stdin.read()\n"
+        f"print({json.dumps(message)!r}, flush=True)\n"
+        "print('Client diagnostic', file=sys.stderr, flush=True)\n"
+        "pathlib.Path(sys.argv[sys.argv.index('--output-last-message') + 1]).write_text('{}')\n"
+    )
+    driver = make_driver(tmp_path, source, kind="codex", model="chosen-model", reasoning_effort="high")
+    records: list[dict[str, Any]] = []
+    driver.set_trace(records.append)
+    for invocation in (1, 2):
+        records.clear()
+        offer = {"decision_id": f"decision-{invocation}", "view_id": f"view-{invocation}"}
+        assert driver.invoke(offer, {}, {}) == {}
+        driver.emit_trace({"type": "proposal", "proposal": {"actions": []}})
+        assert {record["type"] for record in records} == {
+            "invocation_started",
+            "model_text",
+            "stderr",
+            "invocation_output",
+            "invocation_completed",
+            "proposal",
+        }
+        for record in records:
+            assert record["decision_id"] == offer["decision_id"]
+            assert record["view_id"] == offer["view_id"]
+            assert record["invocation"] == invocation
+            assert record["client"] == "codex"
+            assert record["model"] == "chosen-model"
+            assert record["reasoning_effort"] == "high"
+
+
 @pytest.mark.parametrize(
     "contents",
     [b'{"a":1}\n{"a":2}', b'[{"a":1}]', b'{"a":1,"a":2}', b'{"a":NaN}', b"```json\n{}\n```"],
@@ -427,12 +464,13 @@ def test_failure_trace_retains_bounded_stdout_and_stderr_before_cleanup(
     records: list[dict[str, Any]] = []
     driver.set_trace(records.append)
     with pytest.raises(DriverError, match=message):
-        driver.invoke({"decision_id": "decision-1"}, {}, {})
+        driver.invoke({"decision_id": "decision-1", "view_id": "view-1"}, {}, {})
     failure = records[-1]
     assert failure["type"] == "invocation_failed"
     assert failure["stdout"] == "partial response\n"
     assert failure["stderr"] == "provider diagnostic\n"
     assert failure["decision_id"] == "decision-1"
+    assert all(record["view_id"] == "view-1" for record in records)
     assert failure["invocation"] == 1
     assert list((tmp_path / "workspace").iterdir()) == []
 
@@ -591,3 +629,22 @@ def test_trace_redacts_credentials_split_between_streamed_messages(
     driver.emit_trace({"type": "model_text", "text": credential[12:], "item_id": "a"})
     text = "".join(record["text"] for record in records if record["type"] == "model_text")
     assert text == "[redacted]"
+
+
+def test_text_completion_survives_redaction_even_without_new_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-secret-provider-credential")
+    driver = make_driver(tmp_path, "print('{}')\n")
+    records: list[dict[str, Any]] = []
+    driver.set_trace(records.append)
+    assert driver.invoke({"view_id": "view-1"}, {}, {}) == {}
+    driver.emit_trace({"type": "model_text", "text": "test-secret-", "item_id": "a", "complete": False})
+    driver.emit_trace({"type": "model_text", "text": "", "item_id": "a", "complete": True})
+    assert records[-1]["text"] == "[redacted]"
+    assert records[-1]["complete"] is True
+    assert records[-1]["view_id"] == "view-1"
+    driver.emit_trace({"type": "model_text", "text": "", "item_id": "b", "complete": True})
+    assert records[-1]["text"] == ""
+    assert records[-1]["item_id"] == "b"
+    assert records[-1]["complete"] is True

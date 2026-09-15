@@ -13,6 +13,7 @@ from sixnimmt.common.text import check_representable
 
 PROTOCOL_VERSION = 1
 MAX_PROPOSAL_BYTES = 131_072
+MAX_EXPLANATION_CHARS = 1000
 
 
 class HarnessError(Exception):
@@ -120,6 +121,29 @@ class Proposal(_Payload):
 PROPOSAL_SCHEMA: dict[str, Any] = Proposal.model_json_schema()
 
 
+class ManagedProposal(Proposal):
+    """A managed command's game proposal with optional operator commentary."""
+
+    explanation: str | None = Field(
+        default=None,
+        max_length=MAX_EXPLANATION_CHARS,
+        description="A brief explanation of the proposed move for the operator, in one or two sentences.",
+    )
+
+    @field_validator("explanation")
+    @classmethod
+    def check_explanation_text(cls, value: str | None) -> str | None:
+        check_representable(value)
+        return value
+
+    def game_proposal(self) -> dict[str, Any]:
+        """Strip operator metadata before the broker sees the transaction."""
+        return self.model_dump(mode="json", exclude={"explanation"})
+
+
+MANAGED_PROPOSAL_SCHEMA: dict[str, Any] = ManagedProposal.model_json_schema()
+
+
 def decision_proposal_schema(offer: dict[str, Any], *, memory_enabled: bool, memory_max_chars: int) -> dict[str, Any]:
     """Constrain model output to the same actions and values offered to LLM bots."""
     schema = deepcopy(PROPOSAL_SCHEMA)
@@ -149,6 +173,13 @@ def decision_proposal_schema(offer: dict[str, Any], *, memory_enabled: bool, mem
     return schema
 
 
+def managed_proposal_schema(offer: dict[str, Any], *, memory_enabled: bool, memory_max_chars: int) -> dict[str, Any]:
+    """Add optional commentary without extending the native MCP proposal contract."""
+    schema = decision_proposal_schema(offer, memory_enabled=memory_enabled, memory_max_chars=memory_max_chars)
+    schema["properties"]["explanation"] = deepcopy(MANAGED_PROPOSAL_SCHEMA["properties"]["explanation"])
+    return schema
+
+
 def _message_schemas(parameters: dict[str, Any]) -> list[dict[str, Any]]:
     """Keep table and direct recipient constraints aligned with their visibility."""
     alternatives: list[dict[str, Any]] = []
@@ -167,6 +198,14 @@ def _message_schemas(parameters: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def parse_proposal(value: object) -> Proposal:
+    return _parse_proposal(value, Proposal)
+
+
+def parse_managed_proposal(value: object) -> ManagedProposal:
+    return _parse_proposal(value, ManagedProposal)
+
+
+def _parse_proposal[ProposalType: Proposal](value: object, model: type[ProposalType]) -> ProposalType:
     try:
         encoded = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
     except (TypeError, ValueError, UnicodeError) as error:
@@ -174,7 +213,7 @@ def parse_proposal(value: object) -> Proposal:
     if len(encoded) > MAX_PROPOSAL_BYTES:
         raise HarnessError("invalid_proposal", f"Proposal exceeds {MAX_PROPOSAL_BYTES} bytes")
     try:
-        return Proposal.model_validate(value)
+        return model.model_validate(value)
     except ValidationError as error:
         paths = [".".join(str(part) for part in item["loc"]) for item in error.errors(include_input=False)[:4]]
         fields = ", ".join(paths)

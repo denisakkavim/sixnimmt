@@ -62,10 +62,27 @@ updates.
 An **operator commentary** panel is enabled by default. It can contain private
 card analysis or planned moves. Headless Codex and Claude sessions stream
 assistant text, tool activity, and reasoning summaries when their CLI exposes
-them. Existing LLM bots supply their response text after the provider response
+them. Managed proposals also request a short explanation of the proposed move,
+shown when the completed response arrives. This provides useful commentary even
+when a CLI emits only structured output. An explanation describes a proposed
+move; the seat's status separately reports whether the arena accepts it.
+Existing LLM bots supply their response text after the provider response
 completes; simulation and Lookahead bots report candidate values after accepted
 card selections. Native sessions keep their transcripts in their own terminal or UI.
 The controller does not request or reconstruct hidden reasoning.
+
+Commentary is grouped by player, hand, play, and decision. Paragraphs, lists,
+emphasis, and code blocks retain their formatting. The panel shows the requested
+model and effort, labels proposed and accepted moves separately, and combines
+repeated tool updates into a compact status line. Simulation comparisons show
+the best candidates and chosen card, the scoring objective and units, the number
+of simulated plays, and the sample count.
+
+The live panel fits the space below the board. Completed decisions are printed
+once into normal terminal scrollback, including messages from repair attempts;
+scroll up to read commentary that did not fit on screen. Stored message length
+and history are bounded, with truncation marked. Complete available diagnostics
+remain in the bounded model trace.
 
 | Option | Behavior |
 | --- | --- |
@@ -356,6 +373,37 @@ The command runs without a shell. It reads one JSON object from stdin containing
 stdout and exits successfully. Stderr is diagnostic output. Duplicate JSON keys,
 partial output, code fences, and additional stdout text are rejected.
 
+Managed output may add an `explanation` field to the seven-field game proposal:
+
+```json
+{
+  "protocol_version": 1,
+  "session_id": "session-example",
+  "decision_id": "decision-example",
+  "submission_id": "unique-submission-example",
+  "view_id": "view-example",
+  "actions": [{"type": "select_card", "card": 42}],
+  "memory": null,
+  "explanation": "This card fits the current row and keeps my lower cards available."
+}
+```
+
+The instructions request one or two concise sentences grounded in the current
+game situation, with a maximum of 1,000 characters. This is a short decision
+summary for the operator. It does not ask for detailed private deliberation.
+Codex and Claude's strict output schemas require the field but allow `null`.
+Existing custom commands can omit it; null, empty, or whitespace-only values
+produce no commentary. A wrong type or excessive length triggers the same repair
+path as other malformed proposal fields.
+
+The controller validates and saves the explanation with the proposal, then
+removes it before submitting game operations to the broker. It never becomes a
+table message or notebook entry, uses no action or memory budget, and requires
+no additional model call. It can expose private cards or plans, so it appears
+only in operator commentary and the private model trace. The native MCP
+`play` contract remains the seven-field proposal shown above; it does not accept
+`explanation`.
+
 The controller permits one format/protocol repair using the same offer and
 schema. Error feedback identifies unavailable action types and the allowed
 alternatives, or the invalid fields or memory setting. When a proposal was
@@ -413,7 +461,7 @@ Traces record accepted game events, attempted actions, timing, seat metadata,
 and final statistics, including notebook settings and shared instruction/schema
 versions. Managed sessions also write `traces/table.model.jsonl`: filtered
 decision requests, proposal schemas, streamed output, final proposals, repair
-feedback, and bounded stdout/stderr diagnostics on failure. These records include
+feedback, decision explanations, and bounded stdout/stderr diagnostics on failure. These records include
 seat, client, requested model, invocation, and decision identifiers. Known
 credential values are redacted; the trace still contains private gameplay and
 model output. It remains available with `--quiet` or `--no-commentary`.

@@ -1,8 +1,6 @@
 """Live public gameplay with a separate, explicitly privileged operator pane."""
 
 import json
-import re
-import unicodedata
 from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -25,12 +23,11 @@ from sixnimmt.engine.fold import ViewFolder
 from sixnimmt.engine.state import MatchState
 from sixnimmt.engine.views import MatchView, MessageView, OpponentView, ViewRole
 from sixnimmt.terminal.board import render_board
+from sixnimmt.terminal.commentary import CommentaryBook, CommentarySnapshot, render_commentary, render_decision
+from sixnimmt.terminal.commentary import safe_text as _safe_text
 
 _MAX_FRAMES = 32
-_MAX_OPERATOR_LINES = 8
-_MAX_TEXT = 1200
 _FRAME_SECONDS = 0.22
-_ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])")
 _FRAME_EVENTS = frozenset({
     "match_created",
     "hand_started",
@@ -49,22 +46,23 @@ _FRAME_EVENTS = frozenset({
     "match_ended",
     "match_abandoned",
 })
-_DETAIL_TYPES = frozenset({"model_text", "reasoning_summary", "tool_activity", "stderr", "simulation_evaluation"})
+_DETAIL_TYPES = frozenset({
+    "model_text",
+    "reasoning_summary",
+    "tool_activity",
+    "stderr",
+    "simulation_evaluation",
+    "decision_explanation",
+    "proposal",
+    "decision_request",
+    "delivery_cancelled",
+})
 _FAILURE_TYPES = frozenset({"invocation_failed", "proposal_rejected", "protocol_repair"})
 _ACTIVITY_TYPES = (
     _DETAIL_TYPES
     | _FAILURE_TYPES
     | {"decision_started", "decision_finished", "match_finished", "invocation_started", "invocation_completed"}
 )
-
-
-def _safe_text(value: object, limit: int = _MAX_TEXT) -> str:
-    """Treat model output as text, removing terminal controls and bidi overrides."""
-    text = _ANSI.sub("", str(value)[: limit * 4])
-    clean = "".join(char for char in text if char == "\n" or not unicodedata.category(char).startswith("C"))
-    if len(clean) > limit:
-        return clean[:limit] + "…"
-    return clean
 
 
 def _name(view: MatchView, player_id: str) -> str:
@@ -88,14 +86,9 @@ class _SeatActivity:
     started: float
     deadline: datetime | None = None
     finished: float | None = None
-
-
-@dataclass(frozen=True)
-class _OperatorLine:
-    player_id: str
-    name: str
-    kind: str
-    text: str
+    view_id: str = ""
+    decision_number: int | None = None
+    settled: bool = False
 
 
 def _event_frame(view: MatchView, event: Event) -> _Frame:  # noqa: C901 - exhaustive public event captions
@@ -115,7 +108,7 @@ def _event_frame(view: MatchView, event: Event) -> _Frame:  # noqa: C901 - exhau
         case "row_choice_required":
             caption = f"{_name(view, event.data['player_id'])} must choose a row for [{event.data['card']}]"
         case "message_sent":
-            caption = f"{_name(view, event.data['from'])}: {_safe_text(event.data['body'])}"
+            caption = f"{_name(view, event.data['from'])}: {_safe_text(event.data['body'], 240)}"
         case "selection_registered":
             caption = f"{_name(view, event.data['player_id'])} selected a face-down card"
         case "player_committed":
@@ -199,24 +192,16 @@ def _public_messages(view: MatchView) -> list[Text]:
     ]
 
 
-def _operator_panel(lines: tuple[_OperatorLine, ...], width: int) -> Panel:
-    rows = [Text(f"{line.name} · {line.kind.replace('_', ' ')}\n{line.text[-360:]}") for line in lines[-3:]]
-    if len(rows) == 0:
-        rows = [Text("Waiting for model commentary or strategy evaluations…", style="dim")]
-    return Panel(
-        Group(*rows), title="Operator commentary · may include private information", border_style="magenta", width=width
-    )
-
-
 def _render_frame(
     frame: _Frame,
     activities: dict[str, _SeatActivity],
-    lines: tuple[_OperatorLine, ...],
+    operator: CommentarySnapshot,
     terminal: str,
     *,
     width: int,
     now: float,
     commentary: bool,
+    height: int | None = None,
 ) -> Group:
     view = frame.view
     title = f"6 nimmt! · Hand {view.hand_number} · Play {view.play_number} · {view.phase.value.replace('_', ' ')}"
@@ -236,7 +221,16 @@ def _render_frame(
     if terminal != "":
         panels.append(Panel(Text(terminal), title="Operator status", border_style="red", width=width))
     if commentary:
-        panels.append(_operator_panel(lines, width))
+        if height is None:
+            panels.append(render_commentary(operator, width=width))
+        else:
+            console = Console(width=width, height=height, color_system=None)
+            used = len(console.render_lines(Group(*panels), console.options))
+            remaining = height - used
+            if remaining >= 4:
+                panels.append(render_commentary(operator, width=width, height=remaining))
+            elif remaining > 0:
+                return Group(*panels, Text("Operator commentary in terminal scrollback", style="dim"))
     return Group(*panels)
 
 
@@ -256,7 +250,7 @@ def _record_text(record: dict[str, Any]) -> str:
         if isinstance(value, dict):
             value = value.get("message")
         if value is not None:
-            return _safe_text(value)
+            return _safe_text(value, 1000)
     return ""
 
 
@@ -292,23 +286,27 @@ def _activity_records(record: dict[str, Any]) -> list[dict[str, Any]]:
     ):
         text = message.get(field)
         if isinstance(text, str) and text != "":
-            records.append({**record, "type": kind, "text": text})
+            records.append({
+                **record,
+                "type": kind,
+                "text": text,
+                "complete": True,
+                "item_id": record.get("timestamp", "response"),
+            })
     calls = message.get("tool_calls", [])
     if isinstance(calls, list):
         for call in calls:
             function = call.get("function") if isinstance(call, dict) else None
             if isinstance(function, dict) and isinstance(function.get("name"), str):
-                records.append({**record, "type": "tool_activity", "text": function["name"]})
+                records.append({
+                    **record,
+                    "type": "tool_activity",
+                    "text": function["name"],
+                    "tool_name": function["name"],
+                    "status": "requested",
+                    "item_id": call.get("id", function["name"]),
+                })
     return records
-
-
-def _candidate_text(record: dict[str, Any]) -> str:
-    values = record.get("candidate_values")
-    if not isinstance(values, dict) or len(values) == 0:
-        return _safe_text(record.get("evaluation", "No candidate estimates"))
-    entries = [(str(card), float(value)) for card, value in values.items() if isinstance(value, (float, int))]
-    entries.sort(key=lambda entry: (entry[1], entry[0]))
-    return "Candidate values (lower is better): " + ", ".join(f"[{card}] {value:.2f}" for card, value in entries[:10])
 
 
 class PublicTableDisplay:
@@ -328,7 +326,7 @@ class PublicTableDisplay:
         self._current = _Frame(self.folder.view())
         self._latest = self._current
         self._activities: dict[str, _SeatActivity] = {}
-        self._lines: deque[_OperatorLine] = deque(maxlen=_MAX_OPERATOR_LINES)
+        self._commentary = CommentaryBook()
         self._plain_activity: deque[str] = deque(maxlen=32)
         self._terminal = ""
         self._queued = False
@@ -373,19 +371,20 @@ class PublicTableDisplay:
             return
         player_id = _safe_text(record.get("player_id", "table"), 80)
         name = _safe_text(record.get("display_name", player_id), 80).replace("\n", " ")
-        text = _candidate_text(record) if kind == "simulation_evaluation" else _record_text(record)
+        text = _record_text(record)
         with self._lock:
             self._update_activity(record, kind, player_id, name, text)
-            if kind in _DETAIL_TYPES or kind in _FAILURE_TYPES:
-                self._add_operator_line(_OperatorLine(player_id, name, kind, text))
+            if self.commentary:
+                self._commentary.observe(record)
+            if kind in _DETAIL_TYPES:
+                self._wake.set()
+                return
             label = f"{name} · {kind.replace('_', ' ')}"
             status = record.get("status") if kind == "decision_finished" else record.get("outcome")
             if status is not None:
                 label += f" · {_safe_text(status, 80)}"
             if text != "":
                 label += f": {text}"
-            if kind in _DETAIL_TYPES:
-                label = "Operator commentary · " + label
             if self._queued:
                 self._plain_activity.append(label)
                 self._wake.set()
@@ -393,12 +392,22 @@ class PublicTableDisplay:
         self.report(label)
 
     def _update_activity(self, record: dict[str, Any], kind: str, player_id: str, name: str, text: str) -> None:
+        activity = self._activities.get(player_id)
+        if kind != "decision_started" and activity is not None and not self._current_activity(activity, record):
+            return
         self._update_terminal(record, kind, name, text)
         now = monotonic()
         if kind == "decision_started":
-            self._activities[player_id] = _SeatActivity(name, "deciding", now, _deadline(record.get("deadline")))
+            number = record.get("decision_number")
+            self._activities[player_id] = _SeatActivity(
+                name,
+                "deciding",
+                now,
+                _deadline(record.get("deadline")),
+                view_id=str(record.get("view_id", "")),
+                decision_number=number if type(number) is int else None,
+            )
             return
-        activity = self._activities.get(player_id)
         if activity is not None:
             if kind == "invocation_started":
                 deadline = _deadline(record.get("deadline"))
@@ -408,9 +417,23 @@ class PublicTableDisplay:
                 self._activities[player_id] = replace(activity, status="retrying", finished=None)
             elif kind == "decision_finished":
                 status = _safe_text(record.get("status", "finished"), 40)
-                self._activities[player_id] = replace(activity, status=status, finished=now)
+                self._activities[player_id] = replace(activity, status=status, finished=now, settled=True)
             elif kind == "invocation_failed":
                 self._activities[player_id] = replace(activity, status="failed", finished=now)
+
+    @staticmethod
+    def _current_activity(activity: _SeatActivity, record: dict[str, Any]) -> bool:
+        view = record.get("view_id")
+        if isinstance(view, str) and activity.view_id not in ("", view):
+            return False
+        number = record.get("decision_number")
+        if type(number) is int and activity.decision_number is not None and number != activity.decision_number:
+            return False
+        return not (
+            activity.settled
+            and record.get("type")
+            in ("invocation_started", "invocation_failed", "proposal_rejected", "protocol_repair", "decision_finished")
+        )
 
     def _update_terminal(self, record: dict[str, Any], kind: str, name: str, text: str) -> None:
         if kind == "match_finished":
@@ -420,16 +443,6 @@ class PublicTableDisplay:
             self._terminal = f"{name}: {text}" if text != "" else f"{name}: {kind.replace('_', ' ')}"
         elif kind == "decision_finished" and record.get("status") == "accepted":
             self._terminal = ""
-
-    def _add_operator_line(self, line: _OperatorLine) -> None:
-        if line.text == "" or not self.commentary:
-            return
-        if len(self._lines) > 0 and line.kind in ("model_text", "reasoning_summary"):
-            previous = self._lines[-1]
-            if previous.player_id == line.player_id and previous.kind == line.kind:
-                self._lines[-1] = replace(previous, text=(previous.text + line.text)[-_MAX_TEXT:])
-                return
-        self._lines.append(line)
 
     @staticmethod
     def _plain_frame(frame: _Frame) -> str:
@@ -442,7 +455,7 @@ class PublicTableDisplay:
         )
         return f"Hand {view.hand_number}, play {view.play_number}, {view.phase.value}\n{frame.caption}\nRows {rows}\nScores {scores}"
 
-    def render(self, width: int = 100) -> Group:
+    def render(self, width: int = 100, height: int | None = None) -> Group:
         now = monotonic()
         with self._lock:
             if len(self._pending) > 0 and now >= self._next_frame:
@@ -454,9 +467,11 @@ class PublicTableDisplay:
                 self._drained.set()
             frame = self._current
             activities = dict(self._activities)
-            lines = tuple(self._lines)
+            operator = self._commentary.snapshot()
             terminal = self._terminal
-        return _render_frame(frame, activities, lines, terminal, width=width, now=now, commentary=self.commentary)
+        return _render_frame(
+            frame, activities, operator, terminal, width=width, now=now, commentary=self.commentary, height=height
+        )
 
     def _plain_worker(self) -> None:
         while True:
@@ -468,10 +483,18 @@ class PublicTableDisplay:
                 self._plain_activity.clear()
                 self._wake.clear()
                 closing = self._closing
+                completed = self._commentary.drain_completed(final=closing) if self.commentary else ()
             for frame in frames:
                 self.report(self._plain_frame(frame))
             for message in messages:
                 self.report(message)
+            console = Console(width=100, color_system=None)
+            for decision in completed:
+                with console.capture() as capture:
+                    console.print(
+                        Panel(render_decision(decision, history=True), title="Operator decision · private information")
+                    )
+                self.report(capture.get().rstrip())
             if closing:
                 self._drained.set()
                 return
@@ -498,9 +521,12 @@ class PublicTableDisplay:
                     self.report(message)
                 self._drained.set()
                 return
-        with Live(console=console, get_renderable=lambda: self.render(console.width), auto_refresh=False) as live:
+        with Live(
+            console=console, get_renderable=lambda: self.render(console.width, console.height), auto_refresh=False
+        ) as live:
             closing_at: float | None = None
             while True:
+                self._print_completed(console)
                 live.refresh()
                 with self._lock:
                     self._wake.clear()
@@ -512,7 +538,16 @@ class PublicTableDisplay:
                         break
                 self._wake.wait(1 / 12)
             self._finish()
+            self._print_completed(console, final=True)
             live.refresh()
+
+    def _print_completed(self, console: Console, *, final: bool = False) -> None:
+        with self._lock:
+            completed = self._commentary.drain_completed(final=final) if self.commentary else ()
+        for decision in completed:
+            console.print(
+                Panel(render_decision(decision, history=True), title="Operator decision · private information")
+            )
 
     def _finish(self) -> None:
         with self._lock:
