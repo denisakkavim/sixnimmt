@@ -12,11 +12,10 @@ from sixnimmt.arena.bots.heuristics import (
     LowestCardBot,
     LowestFittingCardBot,
 )
+from sixnimmt.arena.bots.uncertainty.options import PolicyName
 from sixnimmt.engine.actions import SelectCardAction
 from sixnimmt.engine.state import Phase
 from sixnimmt.engine.views import MatchView, PlayerSelfView, RowView
-
-from .options import PolicyName
 
 _POLICIES: dict[str, Bot] = {
     "lowest_card": LowestCardBot(),

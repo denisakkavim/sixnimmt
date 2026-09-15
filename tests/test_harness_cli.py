@@ -74,6 +74,7 @@ def test_native_setup_times_out_without_starting_the_game(tmp_path: Path) -> Non
     )
     assert result.exit_code == 2, result.output
     assert "setup timed out" in result.output
+    assert "open a separate terminal and run" in result.output
     assert (directory / "seats" / "player_1" / "launch.sh").is_file()
     assert not (directory / "traces").exists()
 
@@ -122,12 +123,10 @@ def test_readiness_requires_every_external_seat(tmp_path: Path) -> None:
     second = seats[1].session
     assert first is not None and second is not None
     first.ready.set()
-    reports: list[str] = []
     with pytest.raises(SetupTimeout, match="claude 2"):
-        wait_for_ready(seats, 0.01, Event(), reports.append)
-    assert reports == ["codex 1: ready"]
+        wait_for_ready(seats, 0.01, Event())
     second.ready.set()
-    wait_for_ready(seats, 0.01, Event(), reports.append)
+    wait_for_ready(seats, 0.01, Event())
 
 
 def test_external_notebook_is_explicit_and_configured_for_each_seat(tmp_path: Path) -> None:
@@ -208,6 +207,10 @@ def test_managed_command_completes_a_real_match_without_provider_calls(tmp_path:
     assert result.exit_code == 0, result.output
     summary = json.loads((directory / "result.json").read_text())
     assert summary["outcome"] == "finished"
+    assert result.output.splitlines() == [
+        f"Match finished. Winners: {', '.join(summary['winners'])}",
+        f"Trace: {directory / 'traces' / 'table.jsonl'}",
+    ]
     replay = runner.invoke(app, ["replay", str(directory / "traces" / "table.jsonl")])
     assert "status=finished" in replay.output
 

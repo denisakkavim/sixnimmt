@@ -5,14 +5,18 @@ import random
 
 from sixnimmt.arena.bots.composed import HandAwareRowChoiceBot
 from sixnimmt.arena.bots.heuristics import HighestCardBot, cheapest_row
+from sixnimmt.arena.bots.uncertainty.inference import World
+from sixnimmt.arena.bots.uncertainty.options import (
+    ModelBasedBaitOptions,
+    PenaltyObjective,
+    RowPolicyOptions,
+    SimulationOptions,
+)
+from sixnimmt.arena.bots.uncertainty.policies import choose_card, observation
 from sixnimmt.engine.actions import ChooseRowAction
 from sixnimmt.engine.resolution import advance_resolution, choose_row
 from sixnimmt.engine.state import MatchState, Phase, PlayerState, ResolutionState, RowState
 from sixnimmt.engine.views import MatchView, RowView
-
-from .inference import World
-from .options import ModelBasedBaitOptions, PenaltyObjective, RowPolicyOptions, SimulationOptions
-from .policies import choose_card, observation
 
 
 def select_row(rows: tuple[RowView, ...], hand: tuple[int, ...], card: int, policy: RowPolicyOptions) -> int:

@@ -393,7 +393,9 @@ def table(
         float, typer.Option("--retain-seconds", help="Keep completed seat results available for reconnects.")
     ] = 30,
     match_action_limit: Annotated[int, typer.Option("--match-action-limit", min=1)] = 10_000,
-    quiet: Annotated[bool, typer.Option("--quiet", help="Omit board updates; keep setup and result messages.")] = False,
+    quiet: Annotated[
+        bool, typer.Option("--quiet", help="Omit board and activity output; keep launch instructions and results.")
+    ] = False,
     animation: Annotated[
         bool, typer.Option("--animation/--no-animation", help="Animate actual gameplay on interactive terminals.")
     ] = True,
@@ -437,7 +439,7 @@ def table(
                 managed_timeout_seconds=managed_timeout,
                 memory_enabled=memory,
                 memory_max_chars=memory_max_chars,
-                report=typer.echo,
+                report=display.message,
                 confirm_start=_confirm_table_start,
                 observer=display.observe,
                 on_activity=display.activity,

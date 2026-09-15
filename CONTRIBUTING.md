@@ -34,6 +34,9 @@ reports `redundant-condition` as an error, so provably constant conditions such 
 an uncalled function block pre-commit and CI checks. Tuple conditions/assertions
 and unsupported boolean conversions are also checked.
 Do not enable rules such as Ruff `PLC1901` that encourage implicit truthiness.
+Use absolute imports throughout the project, including imports between sibling
+modules; Ruff `TID252` rejects all relative imports. Keep `TYPE_CHECKING` imports
+with the other imports at the top of the file.
 
 The local `explicit-truthiness` hook additionally rejects typed non-boolean values
 in conditions, assertions, comprehension filters, match guards, `not`, and

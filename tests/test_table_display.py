@@ -32,10 +32,10 @@ def table_state() -> tuple[MatchState, tuple[Event, ...]]:
     return state, tuple(events)
 
 
-def _render(display: PublicTableDisplay, width: int = 100) -> str:
+def _render(display: PublicTableDisplay, width: int = 100, height: int | None = None) -> str:
     console = Console(width=width, color_system=None)
     with console.capture() as capture:
-        console.print(display.render(width))
+        console.print(display.render(width, height))
     return capture.get()
 
 
@@ -444,6 +444,140 @@ def test_completed_commentary_is_written_to_plain_scrollback_once(table_state, m
     assert "Accepted: select card 20" in output
 
 
+def test_interactive_decisions_replace_live_content_without_printing_history(
+    table_state, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    monkeypatch.setenv("TTY_COMPATIBLE", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    state, events = table_state
+    reports: list[str] = []
+    with table_display(report=reports.append) as display:
+        display.observe(state, events)
+        for number in range(1, 4):
+            display.activity({"type": "decision_started", "player_id": "alice", "decision_number": number})
+            display.activity({
+                "type": "model_text",
+                "player_id": "alice",
+                "text": f"Commentary for decision {number}.",
+                "complete": True,
+            })
+            display.activity({
+                "type": "decision_finished",
+                "player_id": "alice",
+                "decision_number": number,
+                "status": "accepted",
+                "actions": [{"type": "select_card", "card": 20 + number}],
+            })
+        display.activity({"type": "match_finished", "outcome": "completed"})
+        display.message("Match completed. Winners: alice")
+        display.message("Trace: /example/traces/table.jsonl")
+        display.message("Keeping seat results available for 30 seconds.")
+    output = capsys.readouterr().out
+    assert "Operator decision · private information" not in output
+    assert reports == []
+    assert "Match completed" in output
+    assert "Winners: alice" in output
+    assert "Trace: /example/traces/table.jsonl" in output
+    assert "Keeping seat results available" in output
+    assert "\x1b[?25h" in output
+    assert display._drained.is_set()
+
+
+def test_live_setup_messages_are_reported_before_the_game_starts(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    monkeypatch.setenv("TTY_COMPATIBLE", "1")
+    monkeypatch.setenv("TERM", "xterm")
+    reports: list[str] = []
+    with table_display(report=reports.append) as display:
+        display.message("Open a separate terminal and run /example/launch.sh")
+        assert reports == ["Open a separate terminal and run /example/launch.sh"]
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize("quiet", [True, False])
+def test_quiet_and_plain_control_messages_are_reported_directly(table_state, quiet: bool) -> None:
+    state, events = table_state
+    reports: list[str] = []
+    with table_display(enabled=False, quiet=quiet, report=reports.append) as display:
+        display.message("Launch instructions")
+        display.observe(state, events)
+        display.message("Final trace path")
+        assert reports.count("Launch instructions") == 1
+        assert reports.count("Final trace path") == 1
+
+
+def test_live_control_messages_replace_old_notices_without_expanding_frame(table_state) -> None:
+    state, events = table_state
+    reports: list[str] = []
+    display = PublicTableDisplay(report=reports.append)
+    display._animated = True
+    display.observe(state, events)
+    reports.clear()
+    for number in range(20):
+        display.message(f"Notice number {number}.")
+        assert len(_render(display, 100, 24).splitlines()) == 24
+    output = _render(display, 100, 24)
+    assert "Notice number 16." not in output
+    assert "Notice number 17." in output
+    assert "Notice number 18." in output
+    assert "Notice number 19." in output
+    assert reports == []
+
+
+@pytest.mark.parametrize(("width", "height"), [(40, 8), (40, 24), (100, 24), (100, 40)])
+@pytest.mark.parametrize("commentary", [True, False])
+def test_live_frame_occupies_same_height_as_decisions_and_public_messages_change(
+    table_state, width: int, height: int, commentary: bool
+) -> None:
+    state, events = table_state
+    display = PublicTableDisplay(report=lambda text: None, commentary=commentary)
+    frames = [_render(display, width, height)]
+    display.observe(state, events)
+    frames.append(_render(display, width, height))
+    display.activity({"type": "decision_started", "player_id": "alice", "decision_number": 1})
+    frames.append(_render(display, width, height))
+    display.activity({"type": "model_text", "player_id": "alice", "text": "Long commentary.\n\n" * 80})
+    frames.append(_render(display, width, height))
+    display.activity({
+        "type": "decision_finished",
+        "player_id": "alice",
+        "decision_number": 1,
+        "status": "accepted",
+        "actions": [{"type": "select_card", "card": 20}],
+    })
+    display.activity({"type": "decision_started", "player_id": "alice", "decision_number": 2})
+    frames.append(_render(display, width, height))
+    display.observe(
+        state,
+        (
+            MessageSentEvent(
+                match_id=state.match_id,
+                audience="public",
+                data={"from": "alice", "visibility": "table", "body": "A public table message. " * 10},
+            ),
+        ),
+    )
+    frames.append(_render(display, width, height))
+    display.observe(state, _capture_events())
+    frames.append(_render(display, width, height))
+    display.activity({"type": "match_finished", "outcome": "completed"})
+    frames.append(_render(display, width, height))
+    assert all(len(frame.splitlines()) == height for frame in frames)
+    assert all(len(line) <= width for frame in frames for line in frame.splitlines())
+
+
+def test_live_frame_adapts_to_terminal_resizing_and_preserves_final_status(table_state) -> None:
+    state, events = table_state
+    display = PublicTableDisplay(report=lambda text: None)
+    display.observe(state, events)
+    display.activity({"type": "model_text", "player_id": "alice", "text": "Long commentary.\n\n" * 80})
+    display.activity({"type": "match_finished", "outcome": "abandoned", "reason": "Operator stopped"})
+    for width, height in [(100, 40), (60, 24), (100, 50), (40, 8)]:
+        output = _render(display, width, height)
+        assert len(output.splitlines()) == height
+        assert all(len(line) <= width for line in output.splitlines())
+        assert "Match abandoned: Operator stopped" in output
+
+
 def test_commentary_uses_remaining_terminal_height_without_hiding_board(table_state) -> None:
     state, events = table_state
     display = PublicTableDisplay(report=lambda text: None)
@@ -458,7 +592,7 @@ def test_commentary_uses_remaining_terminal_height_without_hiding_board(table_st
     with console.capture() as capture:
         console.print(display.render(100, 24))
     output = capture.get()
-    assert len(output.splitlines()) <= 24
+    assert len(output.splitlines()) == 24
     assert "Four rows" in output
     assert "Operator commentary" in output
     assert "More" in output

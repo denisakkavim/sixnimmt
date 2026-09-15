@@ -8,11 +8,11 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.special import log_expit
 
-from . import inference
-from .policies import preferred_card
+from sixnimmt.arena.bots.uncertainty import inference
+from sixnimmt.arena.bots.uncertainty.policies import preferred_card
 
 if TYPE_CHECKING:
-    from .inference import Posterior
+    from sixnimmt.arena.bots.uncertainty.inference import Posterior
 
 
 class BatchedPosterior:

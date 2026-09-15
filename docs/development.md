@@ -53,9 +53,13 @@ event replay. Hiding commentary or board output does not disable model traces.
 Commentary is grouped by the arena's per-seat decision number and the managed
 client's decision, invocation, and item identifiers. The arena publishes action
 summaries after settlement; arbitrary model text cannot mark a move accepted.
-The output thread renders Markdown, fits commentary to the available terminal
-height, and moves completed decisions into normal terminal scrollback. Its
-bounded presentation state excludes raw offers and notebook contents.
+The output thread renders Markdown within a fixed terminal region that adapts
+to resizing. The interactive display updates decisions in place; plain output
+retains completed decision summaries. Its bounded presentation state excludes
+raw offers and notebook contents.
+The CLI routes controller reports through the same display: native launch
+instructions print before play, while results and control notices update the
+live region during and after play.
 
 Managed workers derive structured-output schemas from each offer's shared
 action tools. The schemas constrain available actions, card/row values, message

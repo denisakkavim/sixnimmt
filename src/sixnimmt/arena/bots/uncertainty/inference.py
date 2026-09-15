@@ -10,12 +10,11 @@ import numpy as np
 from numpy.typing import NDArray
 from scipy.special import expit, log_expit, logit
 
+from sixnimmt.arena.bots.uncertainty.history import HandHistory, InferenceError, PublicHistory
+from sixnimmt.arena.bots.uncertainty.likelihood import BatchedPosterior
+from sixnimmt.arena.bots.uncertainty.options import OpponentModelOptions, PolicyName
+from sixnimmt.arena.bots.uncertainty.policies import probability
 from sixnimmt.engine.views import MatchView
-
-from .history import HandHistory, InferenceError, PublicHistory
-from .likelihood import BatchedPosterior
-from .options import OpponentModelOptions, PolicyName
-from .policies import probability
 
 
 class ChoiceFeatures(NamedTuple):

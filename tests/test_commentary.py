@@ -357,9 +357,22 @@ def test_commentary_fits_height_with_explicit_truncation(width: int, height: int
     _start(book)
     _text(book, "\n\n".join(["An entire readable paragraph about the board."] * 30), complete=True)
     output = _render(book, width=width, height=height)
-    assert len(output.splitlines()) <= height
+    assert len(output.splitlines()) == height
     assert all(len(line) <= width for line in output.splitlines())
-    assert "More" in output
+    assert "More content; expand terminal" in output
+    assert "scrollback" not in output
+
+
+def test_commentary_reserves_the_same_height_before_and_after_text_arrives() -> None:
+    book = CommentaryBook()
+    snapshots = [_render(book, height=12)]
+    _start(book)
+    snapshots.append(_render(book, height=12))
+    _text(book, "A short explanation.", complete=True)
+    snapshots.append(_render(book, height=12))
+    _text(book, "\n\nMore context." * 30)
+    snapshots.append(_render(book, height=12))
+    assert all(len(snapshot.splitlines()) == 12 for snapshot in snapshots)
 
 
 def test_long_message_is_preserved_for_scrollback_and_bounded_at_storage_limit() -> None:

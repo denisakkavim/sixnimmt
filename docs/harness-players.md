@@ -27,6 +27,10 @@ tool-approval prompts there. The agent calls `get_game_info`, then waits in
 `play` to mark its seat ready. Once every external seat is ready, the controller
 asks you to start the game. Use `--auto-start` to start immediately at that point.
 
+Setup prints native launch instructions when needed. Once the seats are ready,
+the game display starts without directory, waiting-room, or per-seat readiness
+announcements. The final result includes the trace path.
+
 Watch the agents' work in those terminals. The controller animates the actual
 board and scores as the game progresses. It does not launch terminal windows
 automatically. A native UI that supports the same workspace and MCP settings can
@@ -78,17 +82,20 @@ repeated tool updates into a compact status line. Simulation comparisons show
 the best candidates and chosen card, the scoring objective and units, the number
 of simulated plays, and the sample count.
 
-The live panel fits the space below the board. Completed decisions are printed
-once into normal terminal scrollback, including messages from repair attempts;
-scroll up to read commentary that did not fit on screen. Stored message length
-and history are bounded, with truncation marked. Complete available diagnostics
-remain in the bounded model trace.
+The animated table occupies one fixed terminal region throughout the match and
+adjusts when the terminal is resized. Commentary fits below the board, showing
+the current decision and a compact previous outcome. Completed decisions do not
+append panels above the animation. Truncation is marked; expand the terminal to
+show more content. Available model output remains in the bounded model trace.
+Match results, the trace path, and stop/recovery notices appear inside the live
+region. Plain or redirected output keeps completed decision summaries in its
+transcript.
 
 | Option | Behavior |
 | --- | --- |
 | `--animation` / `--no-animation` | Enable live animation (default) or use plain updates |
 | `--commentary` / `--no-commentary` | Show or hide the private operator panel and detailed text (default: show) |
-| `--quiet` | Suppress board and activity output; keep setup and final result messages |
+| `--quiet` | Suppress board and activity output; keep native launch instructions and final results |
 
 These display options do not disable saved traces. To watch the Sonnet, Terra,
 and Lookahead example, choose a new output directory:

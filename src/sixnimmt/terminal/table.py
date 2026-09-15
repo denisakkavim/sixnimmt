@@ -11,9 +11,10 @@ from threading import Lock, Thread
 from time import monotonic
 from typing import Any
 
-from rich.console import Console, Group
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.live import Live
 from rich.panel import Panel
+from rich.segment import Segment
 from rich.table import Table
 from rich.text import Text
 
@@ -89,6 +90,28 @@ class _SeatActivity:
     view_id: str = ""
     decision_number: int | None = None
     settled: bool = False
+
+
+@dataclass(frozen=True)
+class _Viewport:
+    contents: RenderableType
+    height: int
+    overflow: str
+
+    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
+        # Bound the renderable itself: Rich deliberately stops cropping when Live
+        # closes, so relying on its overflow setting would expand the final frame.
+        lines = console.render_lines(self.contents, options.update(height=None), pad=True)
+        if len(lines) > self.height:
+            lines = lines[: self.height - 1]
+            notice = Text(self.overflow, style="dim", no_wrap=True, overflow="ellipsis")
+            lines.append(console.render_lines(notice, options.update(height=None), pad=True)[0])
+        for index in range(self.height):
+            if index < len(lines):
+                yield from lines[index]
+            else:
+                yield Segment(" " * options.max_width)
+            yield Segment.line()
 
 
 def _event_frame(view: MatchView, event: Event) -> _Frame:  # noqa: C901 - exhaustive public event captions
@@ -197,12 +220,13 @@ def _render_frame(
     activities: dict[str, _SeatActivity],
     operator: CommentarySnapshot,
     terminal: str,
+    notices: tuple[str, ...],
     *,
     width: int,
     now: float,
     commentary: bool,
     height: int | None = None,
-) -> Group:
+) -> RenderableType:
     view = frame.view
     title = f"6 nimmt! · Hand {view.hand_number} · Play {view.play_number} · {view.phase.value.replace('_', ' ')}"
     contents = [
@@ -218,20 +242,28 @@ def _render_frame(
         contents.extend([Text("Public table messages", style="bold"), *messages])
     board = Panel(Group(*contents), title=Text(title), border_style="red" if frame.captured else "cyan", width=width)
     panels = [board]
-    if terminal != "":
-        panels.append(Panel(Text(terminal), title="Operator status", border_style="red", width=width))
-    if commentary:
-        if height is None:
+    status = ([Text(terminal)] if terminal != "" else []) + [Text(notice) for notice in notices]
+    if len(status) > 0:
+        panels.append(Panel(Group(*status), title="Operator status", border_style="red", width=width))
+    if height is None:
+        if commentary:
             panels.append(render_commentary(operator, width=width))
-        else:
-            console = Console(width=width, height=height, color_system=None)
-            used = len(console.render_lines(Group(*panels), console.options))
-            remaining = height - used
-            if remaining >= 4:
-                panels.append(render_commentary(operator, width=width, height=remaining))
-            elif remaining > 0:
-                return Group(*panels, Text("Operator commentary in terminal scrollback", style="dim"))
-    return Group(*panels)
+        return Group(*panels)
+    viewport_height = max(1, height)
+    if commentary:
+        console = Console(width=width, height=viewport_height, color_system=None)
+        used = len(console.render_lines(Group(*panels), console.options))
+        remaining = viewport_height - used
+        if remaining >= 4:
+            panels.append(render_commentary(operator, width=width, height=remaining))
+        elif remaining > 0:
+            panels.append(Text("Operator commentary: expand terminal to view", style="dim"))
+    overflow = "Expand terminal to show the full table"
+    if terminal != "":
+        overflow = terminal
+    elif len(notices) > 0:
+        overflow = notices[-1]
+    return _Viewport(Group(*panels), viewport_height, overflow)
 
 
 def _deadline(value: object) -> datetime | None:
@@ -329,7 +361,10 @@ class PublicTableDisplay:
         self._commentary = CommentaryBook()
         self._plain_activity: deque[str] = deque(maxlen=32)
         self._terminal = ""
+        self._notices: deque[str] = deque(maxlen=3)
         self._queued = False
+        self._animated = False
+        self._started = False
         self._next_frame = 0.0
         self._closing = False
         self._wake = ThreadEvent()
@@ -344,6 +379,7 @@ class PublicTableDisplay:
                 self.folder.apply((event,))
                 if event.type not in _FRAME_EVENTS:
                     continue
+                self._started = True
                 frame = _event_frame(self.folder.view(), event)
                 self._latest = frame
                 if self.quiet:
@@ -356,6 +392,16 @@ class PublicTableDisplay:
             self._wake.set()
         for message in output:
             self.report(message)
+
+    def message(self, text: str) -> None:
+        """Keep live control and result notices in the viewport; print setup and plain reports."""
+        notice = _safe_text(text, 1000)
+        with self._lock:
+            if self._animated and self._started:
+                self._notices.append(notice)
+                self._wake.set()
+                return
+        self.report(notice)
 
     def activity(self, record: dict[str, Any]) -> None:
         if self.quiet:
@@ -455,7 +501,7 @@ class PublicTableDisplay:
         )
         return f"Hand {view.hand_number}, play {view.play_number}, {view.phase.value}\n{frame.caption}\nRows {rows}\nScores {scores}"
 
-    def render(self, width: int = 100, height: int | None = None) -> Group:
+    def render(self, width: int = 100, height: int | None = None) -> RenderableType:
         now = monotonic()
         with self._lock:
             if len(self._pending) > 0 and now >= self._next_frame:
@@ -469,8 +515,17 @@ class PublicTableDisplay:
             activities = dict(self._activities)
             operator = self._commentary.snapshot()
             terminal = self._terminal
+            notices = tuple(self._notices)
         return _render_frame(
-            frame, activities, operator, terminal, width=width, now=now, commentary=self.commentary, height=height
+            frame,
+            activities,
+            operator,
+            terminal,
+            notices,
+            width=width,
+            now=now,
+            commentary=self.commentary,
+            height=height,
         )
 
     def _plain_worker(self) -> None:
@@ -505,8 +560,8 @@ class PublicTableDisplay:
             self._wake.set()
 
     def _live_worker(self, console: Console) -> None:
-        # Waiting-room prompts precede the first event, so they never compete
-        # with a live region for the terminal or its cursor.
+        # Native launch instructions precede the first event, so they never
+        # compete with a live region for the terminal or its cursor.
         while True:
             self._wake.wait(0.1)
             with self._lock:
@@ -521,12 +576,15 @@ class PublicTableDisplay:
                     self.report(message)
                 self._drained.set()
                 return
+        # Leave a row for the cursor when Live exits. Its final newline must not
+        # scroll an otherwise screen-height frame off the terminal.
         with Live(
-            console=console, get_renderable=lambda: self.render(console.width, console.height), auto_refresh=False
+            console=console,
+            get_renderable=lambda: self.render(console.width, max(1, console.height - 1)),
+            auto_refresh=False,
         ) as live:
             closing_at: float | None = None
             while True:
-                self._print_completed(console)
                 live.refresh()
                 with self._lock:
                     self._wake.clear()
@@ -538,16 +596,7 @@ class PublicTableDisplay:
                         break
                 self._wake.wait(1 / 12)
             self._finish()
-            self._print_completed(console, final=True)
             live.refresh()
-
-    def _print_completed(self, console: Console, *, final: bool = False) -> None:
-        with self._lock:
-            completed = self._commentary.drain_completed(final=final) if self.commentary else ()
-        for decision in completed:
-            console.print(
-                Panel(render_decision(decision, history=True), title="Operator decision · private information")
-            )
 
     def _finish(self) -> None:
         with self._lock:
@@ -568,6 +617,7 @@ def table_display(
     display._queued = True
     console = Console(highlight=False)
     animated = enabled and console.is_terminal and not console.is_dumb_terminal
+    display._animated = animated
     worker = Thread(
         target=display._live_worker if animated else display._plain_worker,
         args=(console,) if animated else (),

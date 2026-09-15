@@ -604,16 +604,14 @@ class _HeightLimited:
     lines: int
 
     def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        rendered = console.render_lines(self.contents, options, pad=False)
+        rendered = console.render_lines(self.contents, options.update(height=None), pad=False)
         truncated = len(rendered) > self.lines
         limit = max(0, self.lines - 1) if truncated else self.lines
         for line in rendered[:limit]:
             yield from line
             yield Segment.line()
         if truncated:
-            yield Text(
-                "… More in terminal scrollback after this decision", style="dim", no_wrap=True, overflow="ellipsis"
-            )
+            yield Text("… More content; expand terminal", style="dim", no_wrap=True, overflow="ellipsis")
 
 
 def render_commentary(snapshot: CommentarySnapshot, *, width: int, height: int | None = None) -> Panel:
@@ -631,5 +629,9 @@ def render_commentary(snapshot: CommentarySnapshot, *, width: int, height: int |
     if height is not None:
         contents = _HeightLimited(contents, max(1, height - 2))
     return Panel(
-        contents, title="Operator commentary · may include private information", border_style="magenta", width=width
+        contents,
+        title="Operator commentary · may include private information",
+        border_style="magenta",
+        width=width,
+        height=height,
     )

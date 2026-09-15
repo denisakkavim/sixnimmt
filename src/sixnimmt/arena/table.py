@@ -197,7 +197,6 @@ def wait_for_ready(
     seats: Sequence[TableSeat],
     timeout_seconds: float,
     stopped: Event,
-    report: Callable[[str], None],
 ) -> None:
     """Wait without running the arena or starting any decision deadline."""
     deadline = time.monotonic() + timeout_seconds
@@ -208,7 +207,6 @@ def wait_for_ready(
             raise SetupTimeout(msg)
         for player_id, seat in tuple(pending.items()):
             if seat.session is not None and seat.session.ready.is_set():
-                report(f"{seat.seat.display_name}: ready")
                 del pending[player_id]
         if len(pending) == 0:
             return
@@ -318,12 +316,10 @@ def _serve_table(
         stack.callback(_close_table, seats, workers, stopped)
         for worker in workers:
             worker.start()
-        report("Waiting room: waiting for each external agent to call play().")
-        wait_for_ready(seats, setup_timeout, stopped, report)
+        wait_for_ready(seats, setup_timeout, stopped)
         if not auto_start and not confirm_start():
             msg = "table start cancelled"
             raise SetupTimeout(msg)
-        report("Starting table.")
         result = _watch_match(seats, seed, rules, protocol, config, observer, stopped, report, on_activity)
         _report_result(result, directory, report)
         for worker in workers:
@@ -404,7 +400,6 @@ def run_table(
         memory_max_chars=memory_max_chars,
     )
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
-    report(f"Table directory: {directory}")
     return _serve_table(
         seats,
         directory,

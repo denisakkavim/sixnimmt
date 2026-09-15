@@ -7,13 +7,12 @@ from typing import TYPE_CHECKING, Any
 
 from sixnimmt.arena.bots.base import ActionBatch, Bot, BotOptions, Rejection, ResolveStrategy, StrategyConstruction
 from sixnimmt.arena.bots.heuristics import applicable_row
+from sixnimmt.arena.bots.uncertainty.history import InferenceError, PublicHistory
+from sixnimmt.arena.bots.uncertainty.inference import OpponentModel
+from sixnimmt.arena.bots.uncertainty.options import ModelBasedBaitOptions, SimulationOptions
+from sixnimmt.arena.bots.uncertainty.rollouts import penalty_value, rollout, select_row
 from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, SelectCardAction
 from sixnimmt.engine.views import MatchView
-
-from .uncertainty.history import InferenceError, PublicHistory
-from .uncertainty.inference import OpponentModel
-from .uncertainty.options import ModelBasedBaitOptions, SimulationOptions
-from .uncertainty.rollouts import penalty_value, rollout, select_row
 
 if TYPE_CHECKING:
     from sixnimmt.arena.players import ResolvedPlayer
