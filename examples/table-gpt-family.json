@@ -1,0 +1,51 @@
+{
+  "catalogue": [
+    {
+      "key": "astra",
+      "bot": "codex-headless",
+      "label": "GPT-6 Astra",
+      "options": {
+        "model": "gpt-6-astra",
+        "reasoning_effort": "medium"
+      }
+    },
+    {
+      "key": "sol",
+      "bot": "codex-headless",
+      "label": "GPT-5.6 Sol",
+      "options": {
+        "model": "gpt-5.6-sol",
+        "reasoning_effort": "medium"
+      }
+    },
+    {
+      "key": "terra",
+      "bot": "codex-headless",
+      "label": "GPT-5.6 Terra",
+      "options": {
+        "model": "gpt-5.6-terra",
+        "reasoning_effort": "medium"
+      }
+    },
+    {
+      "key": "luna",
+      "bot": "codex-headless",
+      "label": "GPT-5.6 Luna",
+      "options": {
+        "model": "gpt-5.6-luna",
+        "reasoning_effort": "medium"
+      }
+    }
+  ],
+  "lineup": [
+    "astra",
+    "sol",
+    "terra",
+    "luna"
+  ],
+  "seed": 166,
+  "protocol": {
+    "end_condition": "fixed_hands",
+    "hands": 1
+  }
+}

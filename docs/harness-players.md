@@ -154,6 +154,20 @@ uv run sixnimmt play --watch --config examples/table-models.json \
   --auto-start --trace --output-dir runs/model-table
 ```
 
+For a four-player Codex table, use [the GPT-family example](../examples/table-gpt-family.json).
+It seats GPT-6 Astra and GPT-5.6 Sol, Terra, and Luna through `codex-headless`,
+with explicit `medium` reasoning effort for every seat. It plays one hand with
+seed 166 and uses the normal live table display:
+
+```bash
+uv run sixnimmt play --watch --config examples/table-gpt-family.json \
+  --auto-start --trace --output-dir runs/gpt-family
+```
+
+Choose a new output directory for each run. The model IDs must be available to
+your Codex account; explicit effort prevents a saved client effort setting from
+changing this lineup's requested reasoning level.
+
 Each catalogue entry accepts `bot`, `key`, `label`, `family`, and `options`, just
 as every run does. `key` defaults to `bot`; `label` defaults to the key. Give
 different configurations of the same bot distinct keys. `lineup` lists those
