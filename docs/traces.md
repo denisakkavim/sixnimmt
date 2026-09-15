@@ -164,7 +164,7 @@ When the runner creates its own sink, it closes it on completion.
 
 ## Model diagnostics
 
-Model logs associate attempts using `decision_id` and unique `request_id` values.
+Existing LLM adapter logs associate attempts using `decision_id` and unique `request_id` values.
 Records include requests, responses/provider errors, parsing results, and repair
 attempts. `request.payload` holds messages, tools, and generation settings;
 `response.body` is a string containing the raw response body. It may include
@@ -174,6 +174,36 @@ An `action_parsed` or `batch_parsed` record means parsing succeeded, not that th
 arena accepted the action. Consult action/event logs for acceptance. Late model
 calls can append diagnostics after game logs close, and interrupted requests can
 remain without response records.
+
+Managed external harnesses use the same model-log file. A `sixnimmt table` run
+writes it as `traces/table.model.jsonl`, alongside the event and action logs.
+Records carry `player_id`, `display_name`, `client`, configured `model`,
+`invocation`, `decision_id`, and a timestamp. Worker records additionally carry
+the offered `view_id` and attempt number.
+
+| Record type | Contents |
+| --- | --- |
+| `decision_request` | This seat's filtered offer and decision-specific proposal schema |
+| `invocation_started`, `invocation_completed` | Managed process activity |
+| `model_text`, `reasoning_summary`, `tool_activity`, `stderr` | Available CLI output while the process runs |
+| `invocation_output` | Bounded completed output for diagnosis |
+| `proposal` | Parsed final proposal, before broker or arena acceptance |
+| `proposal_rejected`, `protocol_repair` | Validation error, previous proposal or bounded excerpt, and retry context |
+| `invocation_failed` | Process failure with bounded stdout/stderr diagnostics |
+| `cleanup_failed` | Process cleanup failure; an existing invocation error remains the reported cause of failure |
+
+The generic command contract still requires exactly one proposal on stdout;
+its stderr can supply live diagnostic text. Vendor stream records are never
+submissions. A repair retains the same decision identifiers, schema, and work
+deadline, while getting a new invocation number. Inspect the action log and
+receipts to determine whether a proposal was accepted.
+
+These diagnostics survive failed games and are saved even when the operator
+uses `--quiet` or `--no-commentary`. Large output is bounded and truncation is
+marked. Known credential values are redacted from managed records, but the
+files remain privileged: they include a player's observation, notebook, and
+potentially private commentary. Native terminal transcripts are not collected.
+Streamed reasoning summaries are only those exposed by the client.
 
 Sources: [persistence](../src/sixnimmt/persistence/sink.py),
 [manifest](../src/sixnimmt/persistence/manifest.py),

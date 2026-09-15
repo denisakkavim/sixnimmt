@@ -51,6 +51,13 @@ every seat uses the adapter. Add `--communication` to offer messages and explici
 commitment. Give different models or prompts using the same bot distinct `key`
 values, as in the OpenRouter examples.
 
+For one fixed lineup mixing LLM adapters with Codex or Claude Code, use
+[`sixnimmt table --config`](harness-players.md#configure-models-and-a-lineup).
+Its file uses the same catalogue entries, and every model is selected through
+`options.model`. LLM entries retain the endpoint options below; headless harness
+entries use their installed CLI's authentication. The
+[mixed-model example](../examples/table-models.json) includes all three adapters.
+
 ## Options
 
 Unknown options are rejected. `llm_memory` accepts all of these as well.
@@ -79,6 +86,13 @@ checks argument types, unknown fields, and legality. `provider_options` cannot
 override standard generation options, messages, tools, streaming, or credentials.
 The adapter passes supported extra fields through without translating provider
 dialects; check your endpoint's documentation for their meaning.
+
+For endpoints accepting a `reasoning_effort` request field, add it to
+`provider_options`, for example `"provider_options": {"reasoning_effort": "high"}`.
+The adapter passes the value through and the endpoint validates supported levels.
+Headless Codex and Claude seats use `options.reasoning_effort` alongside
+`options.model`; their drivers translate it to client settings rather than an
+HTTP request. See [headless options](harness-players.md#headless-options).
 
 Set the arena `--decision-timeout` above the adapter's `decision_budget_seconds`.
 The provider timeout and adapter budget are useful bounds, but the arena deadline

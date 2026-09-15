@@ -7,15 +7,14 @@ from rich.console import Console
 
 from sixnimmt.arena.players import PlayerConfig
 from sixnimmt.engine.cards import bull_heads
-from sixnimmt.terminal import (
+from sixnimmt.terminal import analysis_animation, arena_animation
+from sixnimmt.terminal.animations import (
     _analysis_frame,
     _animation_frame,
     _board,
     _caption,
     _doodle_deal,
     _statistics_draw,
-    analysis_animation,
-    arena_animation,
 )
 
 

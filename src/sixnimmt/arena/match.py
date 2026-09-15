@@ -2,12 +2,13 @@
 
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from threading import Event as ThreadEvent
 from types import MappingProxyType
-from typing import Literal
+from typing import Any, Literal
 
-from sixnimmt.arena.bots.base import ActionBatch, Bot, Rejection, memory_bot, traced_bot
+from sixnimmt.arena.bots.base import ActionBatch, Bot, Rejection, memory_bot, statistics_bot, traced_bot
 from sixnimmt.arena.bots.lifecycle import (
     BotContext,
     BotMatchEnd,
@@ -42,6 +43,7 @@ from sixnimmt.persistence.sink import ActionRecord, EventSink, JsonlEventSink, N
 
 ActionOutcome = Literal["accepted", "rejected", "timeout", "error"]
 Observer = Callable[[MatchState, tuple[Event, ...]], None]
+ActivityObserver = Callable[[dict[str, Any]], None]
 
 
 class ArenaError(RuntimeError):
@@ -117,6 +119,7 @@ class _Match:
         config: RunConfig,
         sink: EventSink,
         observer: Observer | None,
+        on_activity: ActivityObserver | None = None,
     ) -> None:
         self.seed = seed
         self.rules = rules
@@ -124,6 +127,7 @@ class _Match:
         self.config = config
         self.sink = sink
         self.observer = observer
+        self.on_activity = on_activity
         self.state, initial = create_match(match_id, seats, seed, rules=rules, protocol=protocol)
         self.events: list[Event] = []
         self.folders = [ViewFolder(Viewer(ViewRole.PLAYER, seat.player_id)) for seat in seats]
@@ -204,12 +208,22 @@ class _Match:
         player_id = self.state.players[seat].player_id
         while True:
             view = self.folders[seat].view()
+            started = datetime.now(UTC)
+            timeout = self.config.decision_timeout_seconds
+            deadline = None if timeout is None else (started + timedelta(seconds=timeout)).isoformat()
+            self.activity(seat, "decision_started", deadline=deadline)
             decision = decide(bot, view, rejection, self.config.decision_timeout_seconds, abandoned, stop_event)
             if decision.timed_out:
                 self.lifecycle.cancel(bot, player_id, "decision_timeout")
             elif isinstance(decision.error, ControllerStopped):
                 self.lifecycle.cancel(bot, player_id, "operator_stop")
-            result, rejection = self.publish_decision(bot, seat, decision)
+            result, rejection, outcome = self.publish_decision(bot, seat, decision)
+            reason = decision_reason(decision, rejection)
+            if reason is None and outcome.status == "failed":
+                reason = result.reason if result is not None else outcome.reason
+            self.activity(seat, "decision_finished", status=outcome.status, text=reason)
+            if outcome.status == "accepted" and decision.error is None and not decision.timed_out:
+                self.report_evaluation(bot, seat, decision)
             if result is not None or rejection is None:
                 return result
             rejections += 1
@@ -218,7 +232,43 @@ class _Match:
                 return terminal
             rejection = replace(rejection, legal_actions=self.folders[seat].view().legal_actions)
 
-    def publish_decision(self, bot: Bot, seat: int, decision: Decision) -> tuple[MatchResult | None, Rejection | None]:
+    def activity(self, seat: int, kind: str, **data: Any) -> None:
+        if self.on_activity is None:
+            return
+        player = self.state.players[seat]
+        self.on_activity({
+            "type": kind,
+            "player_id": player.player_id,
+            "display_name": player.display_name,
+            "timestamp": datetime.now(UTC).isoformat(),
+            **data,
+        })
+
+    def report_evaluation(self, bot: Bot, seat: int, decision: Decision) -> None:
+        if self.on_activity is None:
+            return
+        action = decision.action
+        if isinstance(action, ActionBatch):
+            selected_card = any(item.type == "select_card" for item in action.actions)
+        else:
+            selected_card = action is not None and action.type == "select_card"
+        if not selected_card:
+            return
+        statistics = statistics_bot(bot)
+        if statistics is None:
+            return
+        try:
+            stats = statistics.stats()
+        except Exception:
+            # Optional presentation statistics cannot invalidate a published move.
+            return
+        candidates = stats.get("candidate_values")
+        if isinstance(candidates, dict) and len(candidates) > 0:
+            self.activity(seat, "simulation_evaluation", candidate_values=dict(candidates))
+
+    def publish_decision(
+        self, bot: Bot, seat: int, decision: Decision
+    ) -> tuple[MatchResult | None, Rejection | None, DecisionOutcome]:
         accepted_before = self.accepted[seat]
         player_id = self.state.players[seat].player_id
         try:
@@ -243,7 +293,7 @@ class _Match:
             reason = result.reason if result is not None else decision_reason(decision, None)
             outcome = DecisionOutcome("failed", reason=_safe_reason(reason))
         self.notify_decision(bot, player_id, outcome)
-        return result, rejection
+        return result, rejection, outcome
 
     def notify_decision(self, bot: Bot, player_id: str, outcome: DecisionOutcome, *, propagate: bool = True) -> None:
         try:
@@ -433,15 +483,37 @@ def decision_reason(decision: Decision, refused: Rejection | None) -> str | None
     return None
 
 
-def _attach_bot_traces(bots: Sequence[Bot], seats: Sequence[PlayerSeat], sink: EventSink) -> None:
+def _record_bot_trace(
+    payload: dict[str, Any],
+    *,
+    record_model: Callable[..., None] | None,
+    on_activity: ActivityObserver | None,
+    player_id: str,
+    display_name: str,
+) -> None:
+    if record_model is not None:
+        record_model(payload, player_id=player_id, display_name=display_name)
+    if on_activity is not None:
+        on_activity({**payload, "player_id": player_id, "display_name": display_name})
+
+
+def _attach_bot_traces(
+    bots: Sequence[Bot], seats: Sequence[PlayerSeat], sink: EventSink, on_activity: ActivityObserver | None = None
+) -> None:
     record_model = getattr(sink, "record_model", None)
     for bot, player in zip(bots, seats, strict=True):
         traced = traced_bot(bot)
         if traced is None:
             continue
         callback = None
-        if record_model is not None:
-            callback = partial(record_model, player_id=player.player_id, display_name=player.name_or_id)
+        if record_model is not None or on_activity is not None:
+            callback = partial(
+                _record_bot_trace,
+                record_model=record_model,
+                on_activity=on_activity,
+                player_id=player.player_id,
+                display_name=player.name_or_id,
+            )
         traced.set_trace(callback)
 
 
@@ -481,6 +553,7 @@ def _run_match(
     config: RunConfig | None = None,
     seats: Sequence[PlayerSeat] | None = None,
     observer: Observer | None = None,
+    on_activity: ActivityObserver | None = None,
     max_actions: int | None = None,
     sink: EventSink | None = None,
     stop_event: ThreadEvent | None = None,
@@ -511,10 +584,10 @@ def _run_match(
     abandoned = AbandonedDecisions(resolved_abandoned_limit(config)) if _abandoned is None else _abandoned
     scheduler = RoundRobinScheduler() if config.scheduler == "round_robin" else SequentialScheduler()
     try:
-        match = _Match(seed, match_id, seats, rules, protocol, config, sink, observer)
+        match = _Match(seed, match_id, seats, rules, protocol, config, sink, observer, on_activity)
         result = None
         try:
-            _attach_bot_traces(bots, seats, sink)
+            _attach_bot_traces(bots, seats, sink, on_activity)
             result = _run_bots(match, bots, scheduler, abandoned, stop_event)
         finally:
             if result is None:
@@ -522,6 +595,14 @@ def _run_match(
                     match.lifecycle.cancel(bot, seats[seat].player_id, "match_failed")
             match.lifecycle.close(match, result)
         result = replace(result, lifecycle_errors=tuple(match.lifecycle.errors))
+        if on_activity is not None:
+            on_activity({
+                "type": "match_finished",
+                "outcome": result.outcome.value,
+                "reason": result.reason,
+                "winners": result.winners,
+                "timestamp": datetime.now(UTC).isoformat(),
+            })
         if owned and config.trace_dir is not None:
             write_standalone_manifest(result, bots, seats, rules, protocol, config, abandoned.total)
         return result
@@ -540,6 +621,7 @@ def run_match(
     config: RunConfig | None = None,
     seats: Sequence[PlayerSeat] | None = None,
     observer: Observer | None = None,
+    on_activity: ActivityObserver | None = None,
     max_actions: int | None = None,
     sink: EventSink | None = None,
     stop_event: ThreadEvent | None = None,
@@ -552,6 +634,7 @@ def run_match(
     Optional bot lifecycle hooks run within this match's ownership. Setting
     stop_event abandons the match and asks the active bot to cancel its work.
     A blocked Python decision is detached; its late result is never applied.
+    on_activity receives privileged diagnostics and must be fast and thread-safe.
     """
     return _run_match(
         bots,
@@ -562,6 +645,7 @@ def run_match(
         config=config,
         seats=seats,
         observer=observer,
+        on_activity=on_activity,
         max_actions=max_actions,
         sink=sink,
         stop_event=stop_event,

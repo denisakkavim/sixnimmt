@@ -284,11 +284,21 @@ class SeatSession:
         if len(self._receipts) >= 10_000:
             self.fail(RuntimeError("harness_submission_limit"))
             raise HarnessError("submission_limit", "This session reached its submission limit")
-        if proposal.memory is not None and (not self.memory_enabled or len(proposal.memory) > self.memory_max_chars):
-            raise HarnessError("invalid_memory", "Notebook updates are disabled or exceed memory_max_chars")
+        if proposal.memory is not None:
+            if not self.memory_enabled:
+                raise HarnessError("invalid_memory", "Notebook updates are disabled; memory must be null.")
+            if len(proposal.memory) > self.memory_max_chars:
+                raise HarnessError(
+                    "invalid_memory", f"Notebook update exceeds memory_max_chars ({self.memory_max_chars} characters)."
+                )
         available = {tool["function"]["name"] for tool in self._offer["action_tools"]}
-        if any(action.type not in available for action in proposal.actions):
-            raise HarnessError("unavailable_action", "Use action types listed in this offer's action_tools")
+        unavailable = {action.type for action in proposal.actions if action.type not in available}
+        if len(unavailable) > 0:
+            raise HarnessError(
+                "unavailable_action",
+                f"Unavailable action types: {', '.join(sorted(unavailable))}. "
+                f"Allowed action types for this decision: {', '.join(sorted(available))}.",
+            )
 
     def _record_protocol_error(self) -> None:
         if self._offer is None or self._terminal is not None:

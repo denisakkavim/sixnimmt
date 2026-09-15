@@ -12,7 +12,7 @@ from sixnimmt.engine.cards import bull_heads
 from sixnimmt.engine.rules import MatchProtocol
 from sixnimmt.engine.views import MatchView, MessageView, PrivateMessageView
 
-PROMPT_VERSION = "7"
+PROMPT_VERSION = "8"
 
 
 OBSERVATION_VERSION = "3"
@@ -36,7 +36,7 @@ Your decisions:
 - Return one to eight typed tool calls together. Game actions execute in returned order, before any other player acts.
 - The entire response is atomic: all actions and any memory update succeed together, or none are applied. On rejection, submit a corrected complete transaction.
 - Commitment, row choice, or a change of play or phase must end the game-action sequence. A memory update may appear anywhere.
-- You may send messages then select a card, or select a card then commit. Commit requires a selection, possibly made earlier in this response.
+- Use only the actions available in the current decision. Mode-specific selection and commitment rules follow below.
 - Select a card value from your current hand, not a hand position, table card, or previously played card.
 - For row choices, use the displayed index (0-3).
 - Use the current observation and correct rejected actions using its feedback.
@@ -54,11 +54,17 @@ def match_instructions(protocol: MatchProtocol, target_score: int, rules_prompt:
             "Communication enabled: You may send messages and select or change your card before committing. "
             "Messaging is optional. "
             "Selection alone does not commit, unless your action budget forces commitment. "
+            "You may send messages then select a card, or select a card then commit. "
+            "Commit requires a selection, possibly made earlier in this response. "
             "Use commit to finalise your selection. Once committed, the scheduler offers you no further "
             "decisions that play. Everyone must commit for play to proceed."
         )
     else:
-        mode = "Classic mode: Selecting a card commits it immediately. You cannot change it afterward. Messaging is unavailable."
+        mode = (
+            "Classic mode: Selecting a card commits it immediately. Submit one select_card action, without a "
+            "separate commit action. You cannot change it afterward. Messaging is unavailable. "
+            "When asked to take a row, submit one choose_row action instead."
+        )
     if protocol.end_condition == "fixed_hands":
         settings = f"Match ends after {protocol.hands} hands; lowest score wins (ties share victory)."
     else:

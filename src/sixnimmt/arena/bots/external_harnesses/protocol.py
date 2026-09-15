@@ -1,6 +1,7 @@
 """Strict, transport-independent proposals; the engine still owns move legality."""
 
 import json
+from copy import deepcopy
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
@@ -117,6 +118,52 @@ class Proposal(_Payload):
 
 
 PROPOSAL_SCHEMA: dict[str, Any] = Proposal.model_json_schema()
+
+
+def decision_proposal_schema(offer: dict[str, Any], *, memory_enabled: bool, memory_max_chars: int) -> dict[str, Any]:
+    """Constrain model output to the same actions and values offered to LLM bots."""
+    schema = deepcopy(PROPOSAL_SCHEMA)
+    schema.pop("$defs", None)
+    alternatives: list[dict[str, Any]] = []
+    for tool in offer["action_tools"]:
+        function = tool["function"]
+        parameters = deepcopy(function["parameters"])
+        parameters["properties"] = {"type": {"type": "string", "const": function["name"]}, **parameters["properties"]}
+        parameters["required"] = ["type", *parameters["required"]]
+        if function["name"] == "send_message":
+            alternatives.extend(_message_schemas(parameters))
+        else:
+            alternatives.append(parameters)
+    actions = schema["properties"]["actions"]
+    actions["items"] = {"anyOf": alternatives}
+    if not memory_enabled:
+        actions["minItems"] = 1
+        schema["properties"]["memory"] = {"type": "null", "description": "Notebook updates are disabled."}
+    else:
+        schema["properties"]["memory"] = {
+            "anyOf": [{"type": "string", "maxLength": memory_max_chars}, {"type": "null"}],
+            "description": "Null preserves the notebook. An update counts as one of the eight allowed operations.",
+        }
+    for field in ("protocol_version", "session_id", "decision_id", "view_id"):
+        schema["properties"][field]["const"] = offer[field]
+    return schema
+
+
+def _message_schemas(parameters: dict[str, Any]) -> list[dict[str, Any]]:
+    """Keep table and direct recipient constraints aligned with their visibility."""
+    alternatives: list[dict[str, Any]] = []
+    properties = parameters["properties"]
+    recipients = [recipient for recipient in properties["to_player"]["enum"] if recipient is not None]
+    for visibility in properties["visibility"]["enum"]:
+        message = deepcopy(parameters)
+        message["properties"]["visibility"] = {"type": "string", "const": visibility}
+        message["properties"]["to_player"] = (
+            {"type": "null"} if visibility == "table" else {"type": "string", "enum": recipients}
+        )
+        if visibility == "direct" and "to_player" not in message["required"]:
+            message["required"].append("to_player")
+        alternatives.append(message)
+    return alternatives
 
 
 def parse_proposal(value: object) -> Proposal:

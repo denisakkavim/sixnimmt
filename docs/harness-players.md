@@ -27,14 +27,15 @@ tool-approval prompts there. The agent calls `get_game_info`, then waits in
 `play` to mark its seat ready. Once every external seat is ready, the controller
 asks you to start the game. Use `--auto-start` to start immediately at that point.
 
-Watch the agents' work in those terminals. The controller prints the public
+Watch the agents' work in those terminals. The controller animates the actual
 board and scores as the game progresses. It does not launch terminal windows
 automatically. A native UI that supports the same workspace and MCP settings can
 be attached manually; the generated launchers target the CLIs.
 
 Add `--communication` for table/direct messages, revised selections, and explicit
 commitment. Omit `--hands` to play until a completed hand brings someone to 66
-points. Between two and ten explicit `--seat` options are required.
+points. A table needs two to ten seats, supplied through `--seat` or a
+configuration file.
 
 Press Ctrl-C in the controller to stop a running match. This records an
 `abandoned` result with reason `operator_stop` and wakes waiting agents. Their
@@ -45,7 +46,113 @@ under the table directory and can be replayed without calling a model:
 uv run sixnimmt replay runs/watched-table/traces/table.jsonl
 ```
 
-## Choose a lineup
+## Watch the live game
+
+Interactive terminals show card reveals, placements, highlighted row captures,
+and each player's score as total (banked + this hand). Cards stay face-down on
+the board until the game reveals them. Public table messages appear when
+communication is enabled. Each seat also shows whether it is deciding,
+retrying, accepted, or failed, with elapsed time and the applicable decision deadline.
+
+The animation consumes actual game events on a separate output thread. Its
+bounded frame queue catches up when bots play quickly; animation does not add a
+delay to a player's decision. Redirected output uses plain board and activity
+updates.
+
+An **operator commentary** panel is enabled by default. It can contain private
+card analysis or planned moves. Headless Codex and Claude sessions stream
+assistant text, tool activity, and reasoning summaries when their CLI exposes
+them. Existing LLM bots supply their response text after the provider response
+completes; simulation and Lookahead bots report candidate values after accepted
+card selections. Native sessions keep their transcripts in their own terminal or UI.
+The controller does not request or reconstruct hidden reasoning.
+
+| Option | Behavior |
+| --- | --- |
+| `--animation` / `--no-animation` | Enable live animation (default) or use plain updates |
+| `--commentary` / `--no-commentary` | Show or hide the private operator panel and detailed text (default: show) |
+| `--quiet` | Suppress board and activity output; keep setup and final result messages |
+
+These display options do not disable saved traces. To watch the Sonnet, Terra,
+and Lookahead example, choose a new output directory:
+
+```bash
+uv run sixnimmt table --config examples/table-sonnet-terra-lookahead.json \
+  --auto-start --output-dir runs/sonnet-terra-lookahead-live
+```
+
+## Configure models and a lineup
+
+Use one JSON file to configure a mixed table. It uses the same `catalogue`
+entries and `rules`, `protocol`, and `execution` sections as the
+[arena](arena.md#configuration). Set each model through its entry's
+`options.model`, whether it uses the existing LLM adapter or a headless harness:
+
+```json
+{
+  "catalogue": [
+    {
+      "key": "api-player",
+      "bot": "llm",
+      "options": {
+        "model": "YOUR_TOOL_CAPABLE_MODEL",
+        "base_url": "https://your-provider.example/v1",
+        "api_key_env": "ARENA_MODEL_KEY"
+      }
+    },
+    {
+      "key": "codex-player",
+      "bot": "codex-headless",
+      "options": {"model": "YOUR_CODEX_MODEL"}
+    },
+    {
+      "key": "claude-player",
+      "bot": "claude-headless",
+      "options": {"model": "YOUR_CLAUDE_MODEL"}
+    },
+    {"key": "baseline", "bot": "lowest_fitting_card"}
+  ],
+  "lineup": ["api-player", "codex-player", "claude-player", "baseline"],
+  "seed": 66,
+  "protocol": {"end_condition": "fixed_hands", "hands": 1}
+}
+```
+
+Edit the model IDs, endpoint, and credential environment variable in
+[the complete example](../examples/table-models.json), then run:
+
+```bash
+uv run sixnimmt table --config examples/table-models.json \
+  --auto-start --output-dir runs/model-table
+```
+
+Each catalogue entry accepts `bot`, `key`, `label`, `family`, and `options`, just
+as arena entries do. `key` defaults to `bot`; `label` defaults to the key. Give
+different configurations of the same bot distinct keys. `lineup` lists those
+keys in seat order. Repeating a key creates independent players with the same
+configuration; listing an entry in the catalogue alone does not seat it.
+
+The table uses a fixed lineup. Arena comparison settings such as game budgets,
+populations, and replacement comparisons do not belong in a table file. Its
+`execution` section accepts the arena's `RunConfig` fields, but requires
+`backend: "thread"` and `concurrency: 1`. For example,
+`"execution": {"decision_timeout_seconds": 180}` bounds each decision.
+The controller saves traces in the table's output directory under `traces/`.
+Omitted sections use `GameRules`, `MatchProtocol`, and `RunConfig` defaults;
+the default seed is 66.
+
+Explicit CLI options override the corresponding saved seed, protocol, and
+execution settings; omitted options preserve them. Supplying `--seat` replaces
+the entire configured lineup. Seat values resolve catalogue keys first, so a
+smaller table can reuse the same file:
+
+```bash
+uv run sixnimmt table --config examples/table-models.json \
+  --seat codex-player --seat baseline --auto-start \
+  --output-dir runs/codex-table
+```
+
+### Seat shorthand
 
 Seats appear in command-line order; each gets a distinct identity.
 
@@ -55,12 +162,13 @@ Seats appear in command-line order; each gets a distinct identity.
 | `codex-headless`, `claude-headless` | Managed CLI process for each decision, final JSON output |
 | A registered bot, such as `lowest_fitting_card` | Existing in-process arena bot |
 | `llm:/absolute/path/options.json` | Existing LLM player with its normal options |
-| `command:/absolute/path/profile.json` | Managed custom command using the JSON contract below |
+| `command:/absolute/path/options.json` | Managed custom command using the JSON contract below |
 
 Registered bots accept an options file after `:`. The file contains that bot's
 options object, as described in [Writing bots](bots.md) and [LLM players](llm-players.md).
-Named headless seats also accept a command profile after `:` to select executable
-arguments and execution limits.
+Named headless seats also accept an options file after `:`. This shorthand uses
+the same options object as a catalogue entry; a separate command file is not
+needed when using `--config`.
 
 For example, this runs a mixed table:
 
@@ -69,11 +177,80 @@ uv run sixnimmt table --seat codex --seat claude-headless --seat lowest_card \
   --hands 1 --communication --memory --output-dir runs/mixed-table
 ```
 
-Both headless profiles need the corresponding installed and authenticated CLI.
-Codex uses `exec --ephemeral`, a supplied output schema, and its designated final
-message file. Claude uses print mode, no session persistence, and its
-`structured_output` result. Intermediate transcript text is never treated as a
-move. Each invocation has its own temporary working directory, removed afterward.
+### Headless options
+
+Both headless harnesses need the corresponding installed and authenticated CLI.
+They accept these options; unknown keys are rejected:
+
+| Option | Default | Behavior |
+| --- | --- | --- |
+| `model` | Unset | Requested model ID, passed to the harness's `--model` flag; when omitted, the CLI chooses its configured default |
+| `reasoning_effort` | Unset | Requested thinking effort for every invocation, including repairs; omitted or null preserves normal client defaults |
+| `command` | `["codex"]` or `["claude"]` | Optional executable and argument prefix |
+| `timeout_seconds` | `--managed-timeout` (120 seconds) | Positive deadline for a managed decision, including format repair |
+| `max_output_bytes` | 1,048,576 | Positive output size limit |
+
+`options.model` takes precedence over the harness's configured default. Use this
+field to select models for headless seats; the controller supplies the required
+execution and output-format arguments. Native `codex` and `claude` seats retain
+their own model configuration and accept no nonempty options.
+
+Set `reasoning_effort` alongside `model` in the catalogue entry. For example,
+these entries request high effort for Sonnet and Terra:
+
+```json
+{
+  "catalogue": [
+    {
+      "key": "sonnet",
+      "bot": "claude-headless",
+      "options": {"model": "sonnet", "reasoning_effort": "high"}
+    },
+    {
+      "key": "terra",
+      "bot": "codex-headless",
+      "options": {"model": "gpt-5.6-terra", "reasoning_effort": "high"}
+    }
+  ],
+  "lineup": ["sonnet", "terra"],
+  "protocol": {"end_condition": "fixed_hands", "hands": 1}
+}
+```
+
+Codex receives `-c 'model_reasoning_effort="high"'`. Its documented common
+levels are `minimal`, `low`, `medium`, `high`, and `xhigh`; the installed client's
+schema also permits other nonempty model-advertised names. Sixnimmt leaves those
+names and model support to Codex. See the [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+Claude receives `--effort high`. Accepted values are `low`, `medium`, `high`,
+`xhigh`, and `max`. An explicit seat value also replaces
+`CLAUDE_CODE_EFFORT_LEVEL` in that child process, so an inherited environment
+default cannot override the table file. Native sessions and the parent shell's
+environment are unaffected. The client can cap effort according to its model or
+organization settings. See [Claude's effort configuration](https://code.claude.com/docs/en/model-config#adjust-effort-level)
+and [environment-variable precedence](https://code.claude.com/docs/en/env-vars#precedence).
+
+Effort names express a provider request, not a comparable token or time budget
+across models. Existing LLM bots pass the same request field through
+`options.provider_options.reasoning_effort` when their endpoint supports it.
+Custom `command` seats reject `reasoning_effort`; configure a custom process
+through its own command arguments instead.
+
+Codex uses `exec --ephemeral --json`, a supplied output schema, and its designated
+final message file. Claude uses print mode with streamed JSON, no session
+persistence, and its final `structured_output` result. The controller displays
+available intermediate text and tool activity; only the completed final proposal
+can become a move. Each invocation has its own temporary working directory,
+removed afterward.
+
+Each decision gets a schema built from its offered action tools: the current
+hand's card values, available rows, permitted message recipients and lengths,
+and the configured notebook limit. With memory disabled, `memory` must be null.
+The invocation's `game_info.proposal_schema` contains the same decision-specific
+constraints supplied to the harness's structured-output mode. In classic mode,
+the only card-selection action is `select_card`; selection commits immediately,
+so a separate `commit` is unavailable. The broker and arena remain authoritative
+even when a process ignores the schema.
 
 `--memory` enables an arena-accepted notebook for external seats. Its default
 limit is 4,000 characters; `--memory-max-chars` accepts 1–16,000. A proposal's
@@ -163,7 +340,8 @@ Only one delivery wait per seat is allowed.
 
 ## Managed command contract
 
-A profile is a strict JSON object:
+For a custom process, use `"bot": "command"` and put the following options in
+its catalogue entry. `command` is required for custom processes:
 
 ```json
 {
@@ -178,11 +356,15 @@ The command runs without a shell. It reads one JSON object from stdin containing
 stdout and exits successfully. Stderr is diagnostic output. Duplicate JSON keys,
 partial output, code fences, and additional stdout text are rejected.
 
-The controller permits one format/protocol repair using the same offer and safe
-error feedback. Both attempts share the original work deadline. Game rejections
-follow the arena's normal corrective-decision loop. Process failure or timeout
-fails the match; no fallback move is invented. The driver bounds output and
-terminates/reaps its process group on success, failure, or cancellation.
+The controller permits one format/protocol repair using the same offer and
+schema. Error feedback identifies unavailable action types and the allowed
+alternatives, or the invalid fields or memory setting. When a proposal was
+parsed, feedback includes that rejected proposal or a bounded excerpt. Both
+attempts share the original work deadline. Requests, proposals, and both failed
+attempts are retained in the private model trace. Game rejections follow the
+arena's normal corrective-decision loop. Process failure or timeout fails the
+match; no fallback move is invented. The driver bounds output and terminates/reaps
+its process group on success, failure, or cancellation.
 
 ## Timing and compatibility
 
@@ -215,9 +397,11 @@ models still need a manual smoke test; native UI attachment is not yet verified.
 
 The broker passes only the arena's player-filtered `MatchView`. Opponents' hands,
 hidden selections/messages, and deal seeds are not supplied through game tools.
-The controller display uses a public spectator view. Seat bundles contain private
-connection configuration, instructions, and a starting prompt; credentials are
-kept out of prompts and process arguments.
+The controller's board uses a public spectator view. Its separately labelled
+operator commentary is privileged and can reveal a model's own cards or plans;
+use `--no-commentary` to hide it. Seat bundles contain private connection
+configuration, instructions, and a starting prompt; credentials are kept out of
+prompts and process arguments.
 
 This is a trusted local setup. Native harnesses retain their own filesystem and
 tool permissions; private directories do not isolate agents running as the same
@@ -227,6 +411,20 @@ traces contain privileged state and are intended for the operator.
 The output directory contains `seats/`, `traces/`, and a public `result.json`.
 Traces record accepted game events, attempted actions, timing, seat metadata,
 and final statistics, including notebook settings and shared instruction/schema
-versions. The controller does not collect native transcripts or
-claim to expose hidden reasoning. Detailed model/version/usage provenance,
-connection-status diagnostics, and credential rotation are future work.
+versions. Managed sessions also write `traces/table.model.jsonl`: filtered
+decision requests, proposal schemas, streamed output, final proposals, repair
+feedback, and bounded stdout/stderr diagnostics on failure. These records include
+seat, client, requested model, invocation, and decision identifiers. Known
+credential values are redacted; the trace still contains private gameplay and
+model output. It remains available with `--quiet` or `--no-commentary`.
+
+The controller does not collect native transcripts. Provider-served model/version
+and complete usage provenance, connection-status diagnostics, and credential
+rotation are future work. See [model diagnostics](traces.md#model-diagnostics)
+for record types and their relationship to accepted game events.
+
+When supplied, a headless seat's requested model and effort are recorded in
+`agent_metadata.bot_options.model` and
+`agent_metadata.bot_options.reasoning_effort`, and in managed model-trace records.
+These fields record configuration; they do not verify which underlying model,
+version, or effective effort the provider actually served.

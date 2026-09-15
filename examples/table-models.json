@@ -1,0 +1,46 @@
+{
+  "catalogue": [
+    {
+      "key": "api-player",
+      "bot": "llm",
+      "label": "API model",
+      "options": {
+        "model": "YOUR_TOOL_CAPABLE_MODEL",
+        "base_url": "https://your-provider.example/v1",
+        "api_key_env": "ARENA_MODEL_KEY"
+      }
+    },
+    {
+      "key": "codex-player",
+      "bot": "codex-headless",
+      "label": "Codex model",
+      "options": {
+        "model": "YOUR_CODEX_MODEL"
+      }
+    },
+    {
+      "key": "claude-player",
+      "bot": "claude-headless",
+      "label": "Claude model",
+      "options": {
+        "model": "YOUR_CLAUDE_MODEL"
+      }
+    },
+    {
+      "key": "baseline",
+      "bot": "lowest_fitting_card",
+      "label": "Lowest fitting card"
+    }
+  ],
+  "lineup": [
+    "api-player",
+    "codex-player",
+    "claude-player",
+    "baseline"
+  ],
+  "seed": 66,
+  "protocol": {
+    "end_condition": "fixed_hands",
+    "hands": 1
+  }
+}

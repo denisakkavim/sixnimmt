@@ -9,17 +9,18 @@ from pathlib import Path
 from queue import Queue
 from threading import Event, Thread
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field, JsonValue, model_validator
 
 from sixnimmt.arena.bots.base import Bot
-from sixnimmt.arena.bots.external import HarnessBot, ManagedHarnessBot
+from sixnimmt.arena.bots.external import CommandOptions, HarnessBot, HeadlessOptions, ManagedHarnessBot
 from sixnimmt.arena.bots.external_harnesses.broker import SeatSession
 from sixnimmt.arena.bots.external_harnesses.connection import write_connection_bundle
 from sixnimmt.arena.bots.external_harnesses.drivers import CommandProfile, ManagedCommandDriver
 from sixnimmt.arena.bots.external_harnesses.managed import ManagedSeatWorker
 from sixnimmt.arena.bots.external_harnesses.transport import ControllerServer
+from sixnimmt.arena.catalogue import CandidateConfig, FrozenModel
 from sixnimmt.arena.config import RunConfig
-from sixnimmt.arena.match import Observer, run_match
+from sixnimmt.arena.match import ActivityObserver, Observer, run_match
 from sixnimmt.arena.players import PlayerConfig, resolve_players
 from sixnimmt.arena.results import MatchResult
 from sixnimmt.engine.rules import GameRules, MatchProtocol
@@ -30,12 +31,65 @@ class SetupTimeout(RuntimeError):
     """Required external seats did not enter the waiting room in time."""
 
 
-class _CommandSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
+class TableConfig(FrozenModel):
+    """Arena-style strategy definitions and one ordered lineup of catalogue keys."""
 
-    command: list[str] = Field(min_length=1)
-    timeout_seconds: float | None = Field(default=None, gt=0)
-    max_output_bytes: int = Field(default=1_048_576, ge=1)
+    catalogue: tuple[CandidateConfig, ...] = ()
+    lineup: tuple[str, ...] = ()
+    seed: int = 66
+    rules: GameRules = Field(default_factory=GameRules)
+    protocol: MatchProtocol = Field(default_factory=MatchProtocol)
+    execution: RunConfig = Field(default_factory=RunConfig)
+
+    @model_validator(mode="after")
+    def check_table(self) -> "TableConfig":
+        keys = [candidate.bot if candidate.key is None else candidate.key for candidate in self.catalogue]
+        if len(set(keys)) != len(keys):
+            msg = "duplicate catalogue key"
+            raise ValueError(msg)
+        for key in self.lineup:
+            if key not in keys:
+                msg = f"unknown catalogue key in lineup: {key}"
+                raise ValueError(msg)
+        if len(self.lineup) > 0:
+            self._check_player_count(len(self.lineup))
+        if self.execution.backend != "thread" or self.execution.concurrency != 1:
+            msg = "tables require execution.backend='thread' and execution.concurrency=1"
+            raise ValueError(msg)
+        return self
+
+    def _check_player_count(self, count: int) -> None:
+        if not self.rules.min_players <= count <= self.rules.max_players:
+            msg = f"a table requires between {self.rules.min_players} and {self.rules.max_players} players"
+            raise ValueError(msg)
+
+    def players(self, specifications: Sequence[str] | None = None) -> tuple[PlayerConfig, ...]:
+        """Resolve fixed seats, or replace the lineup with CLI keys and seat shortcuts."""
+        catalogue = {
+            candidate.bot if candidate.key is None else candidate.key: candidate for candidate in self.catalogue
+        }
+        requested = self.lineup if specifications is None else specifications
+        self._check_player_count(len(requested))
+        players = []
+        for specification in requested:
+            candidate = catalogue.get(specification)
+            if candidate is None:
+                players.append(_seat_config(specification))
+                continue
+            label = specification if candidate.label is None else candidate.label
+            players.append(PlayerConfig(bot=candidate.bot, options=candidate.options, display_name=label))
+        return tuple(players)
+
+
+def _seat_config(specification: str | PlayerConfig) -> PlayerConfig:
+    if isinstance(specification, PlayerConfig):
+        return specification
+    name, separator, path = specification.partition(":")
+    if name in ("codex", "claude") and separator != "":
+        msg = "native seats use generated per-seat configuration and do not accept an options file"
+        raise ValueError(msg)
+    options = {} if separator == "" else json.loads(Path(path).read_text(encoding="utf-8"))
+    return PlayerConfig(bot=name, options=options)
 
 
 @dataclass
@@ -49,7 +103,7 @@ class TableSeat:
 
 
 def create_seats(
-    specifications: Sequence[str],
+    specifications: Sequence[str | PlayerConfig],
     *,
     seed: int,
     directory: Path,
@@ -61,23 +115,24 @@ def create_seats(
     memory_max_chars: int = 4000,
 ) -> list[TableSeat]:
     """Construct an exact lineup without sampling or starting any processes."""
-    if not 2 <= len(specifications) <= 10:
-        msg = "a table requires between 2 and 10 explicit --seat options"
+    if not rules.min_players <= len(specifications) <= rules.max_players:
+        msg = f"a table requires between {rules.min_players} and {rules.max_players} players"
         raise ValueError(msg)
     result = []
     for index, specification in enumerate(specifications, start=1):
-        name, separator, settings_path = specification.partition(":")
+        player = _seat_config(specification)
+        name = player.bot
         player_id = f"player_{index}"
-        seat = PlayerSeat(player_id=player_id, display_name=f"{name} {index}")
+        display_name = f"{name} {index}" if player.display_name is None else player.display_name
+        seat = PlayerSeat(player_id=player_id, display_name=display_name)
         if name not in ("codex", "claude", "codex-headless", "claude-headless", "command"):
-            options = {} if separator == "" else json.loads(Path(settings_path).read_text(encoding="utf-8"))
-            resolved = resolve_players([PlayerConfig(bot=name, options=options)])[0]
+            resolved = resolve_players([player])[0]
             seat = seat.model_copy(update={"agent_metadata": resolved.metadata})
             result.append(TableSeat(seat, resolved.build(seed + index)))
             continue
         native = name in ("codex", "claude")
-        if native and separator != "":
-            msg = "native seats use generated per-seat configuration and do not accept an options file"
+        if native and len(player.options) > 0:
+            msg = "native seats use client configuration and do not accept bot options"
             raise ValueError(msg)
         session = SeatSession(
             player_id,
@@ -91,6 +146,7 @@ def create_seats(
         seat = seat.model_copy(
             update={
                 "agent_metadata": {
+                    **player.agent_metadata,
                     "harness": name,
                     "ownership": "attached" if native else "managed",
                     "context": "match" if native else "fresh",
@@ -102,7 +158,15 @@ def create_seats(
         worker = None
         bot = HarnessBot(session)
         if not native:
-            profile = _command_profile(name, settings_path, managed_timeout_seconds)
+            profile = _command_profile(name, player.options, managed_timeout_seconds)
+            recorded_options: dict[str, JsonValue] = {
+                "timeout_seconds": profile.timeout_seconds,
+                "max_output_bytes": profile.max_output_bytes,
+            }
+            if name != "command":
+                recorded_options["model"] = profile.model
+                recorded_options["reasoning_effort"] = profile.reasoning_effort
+            seat = seat.model_copy(update={"agent_metadata": {**seat.agent_metadata, "bot_options": recorded_options}})
             driver = ManagedCommandDriver(profile, directory / "seats" / player_id / "work")
             worker = ManagedSeatWorker(session, driver)
             bot = ManagedHarnessBot(session, worker)
@@ -110,20 +174,23 @@ def create_seats(
     return result
 
 
-def _command_profile(name: str, path: str, timeout: float) -> CommandProfile:
+def _command_profile(name: str, options: dict[str, JsonValue], timeout: float) -> CommandProfile:
     if name == "command":
-        if path == "":
-            msg = "command seats require command:/absolute/path/to/profile.json"
-            raise ValueError(msg)
-        settings = _CommandSettings.model_validate_json(Path(path).read_text(encoding="utf-8"))
+        settings = CommandOptions.model_validate(options)
         resolved_timeout = timeout if settings.timeout_seconds is None else settings.timeout_seconds
         return CommandProfile(tuple(settings.command), "command", resolved_timeout, settings.max_output_bytes)
     kind = "codex" if name == "codex-headless" else "claude"
-    if path != "":
-        settings = _CommandSettings.model_validate_json(Path(path).read_text(encoding="utf-8"))
-        resolved_timeout = timeout if settings.timeout_seconds is None else settings.timeout_seconds
-        return CommandProfile(tuple(settings.command), kind, resolved_timeout, settings.max_output_bytes)
-    return CommandProfile((kind,), kind, timeout)
+    headless = HeadlessOptions.model_validate(options)
+    resolved_timeout = timeout if headless.timeout_seconds is None else headless.timeout_seconds
+    command = (kind,) if headless.command is None else tuple(headless.command)
+    return CommandProfile(
+        command,
+        kind,
+        resolved_timeout,
+        headless.max_output_bytes,
+        model=headless.model,
+        reasoning_effort=headless.reasoning_effort,
+    )
 
 
 def wait_for_ready(
@@ -161,6 +228,7 @@ def _execute_match(
     observer: Observer | None,
     stopped: Event,
     outcome: Queue[MatchResult | BaseException],
+    on_activity: ActivityObserver | None = None,
 ) -> None:
     try:
         result = run_match(
@@ -172,6 +240,7 @@ def _execute_match(
             config=config,
             seats=[seat.seat for seat in seats],
             observer=observer,
+            on_activity=on_activity,
             stop_event=stopped,
         )
         outcome.put(result)
@@ -188,11 +257,12 @@ def _watch_match(
     observer: Observer | None,
     stopped: Event,
     report: Callable[[str], None],
+    on_activity: ActivityObserver | None = None,
 ) -> MatchResult:
     outcome: Queue[MatchResult | BaseException] = Queue()
     thread = Thread(
         target=_execute_match,
-        args=(seats, seed, rules, protocol, config, observer, stopped, outcome),
+        args=(seats, seed, rules, protocol, config, observer, stopped, outcome, on_activity),
         daemon=True,
     )
     thread.start()
@@ -238,6 +308,7 @@ def _serve_table(
     report: Callable[[str], None],
     confirm_start: Callable[[], bool],
     observer: Observer | None,
+    on_activity: ActivityObserver | None = None,
 ) -> MatchResult:
     stopped = Event()
     sessions = [seat.session for seat in seats if seat.session is not None and seat.native_client is not None]
@@ -253,7 +324,7 @@ def _serve_table(
             msg = "table start cancelled"
             raise SetupTimeout(msg)
         report("Starting table.")
-        result = _watch_match(seats, seed, rules, protocol, config, observer, stopped, report)
+        result = _watch_match(seats, seed, rules, protocol, config, observer, stopped, report, on_activity)
         _report_result(result, directory, report)
         for worker in workers:
             worker.close()
@@ -300,7 +371,7 @@ def _retain_results(seconds: float, report: Callable[[str], None]) -> None:
 
 
 def run_table(
-    seatspecs: Sequence[str],
+    seatspecs: Sequence[str | PlayerConfig],
     directory: Path,
     seed: int,
     rules: GameRules,
@@ -317,6 +388,7 @@ def run_table(
     report: Callable[[str], None],
     confirm_start: Callable[[], bool],
     observer: Observer | None = None,
+    on_activity: ActivityObserver | None = None,
 ) -> MatchResult:
     """Run an explicit table with caller-provided reporting and start confirmation."""
     directory = directory.resolve()
@@ -346,4 +418,5 @@ def run_table(
         report,
         confirm_start,
         observer,
+        on_activity,
     )

@@ -17,12 +17,15 @@
 | `arena/bots/agent_contract.py` | Shared game instructions, observations, and action schemas for LLM and harness bots |
 | `arena/bots/external.py` | `HarnessBot` and `ManagedHarnessBot` implementations |
 | `arena/bots/external_harnesses/` | Supporting sessions, proposal protocol, MCP connections, and managed harness processes |
-| `arena/table.py` | Mixed-table assembly, readiness, match execution, and shutdown |
+| `arena/table.py` | Table configuration, fixed-lineup assembly, readiness, match execution, and shutdown |
 | `arena/tracing.py`, `persistence/` | Experiment provenance and durable JSONL/manifest output |
 | `analytics/` | Shared outcome metrics, trace summaries, population/comparison estimates, uncertainty, and report rendering |
 | `common/text.py` | Shared text validation |
 | `cli.py` | Application commands, argument parsing, and CLI-specific comparison orchestration |
-| `terminal.py` | Terminal rendering, including the public table display |
+| `terminal/__init__.py` | Shared terminal presentation entry points |
+| `terminal/animations.py` | Arena progress and analysis animations |
+| `terminal/table.py` | Queued animation of actual public game events and a separate private operator activity pane |
+| `terminal/board.py` | Shared card rows, penalty totals, and capture/placement highlights |
 
 The engine owns rules and hidden state. It does not call bots, write files, or
 invoke model providers. The arena drives the engine and owns experiment
@@ -37,7 +40,28 @@ support lives in `uncertainty/`. Shared LLM/harness presentation belongs in
 The mixed-table runtime belongs in `arena/table.py` because it coordinates
 harness, LLM, and baseline seats. It accepts reporting, confirmation, and observer
 callbacks without depending on Typer or Rich. `cli.py` is the single application
-CLI; it supplies terminal interaction through `terminal.py`.
+CLI; it supplies terminal interaction through the `terminal` package.
+
+`run_match` and `run_table` expose a fast, thread-safe `on_activity` callback for
+privileged decision and model diagnostics. The live table renderer folds public
+events into its board and queues frames for a separate output thread; it never
+uses the authoritative state's hidden cards for rendering. Activity records
+feed a labelled operator pane and do not participate in engine transitions or
+event replay. Hiding commentary or board output does not disable model traces.
+
+Managed workers derive structured-output schemas from each offer's shared
+action tools. The schemas constrain available actions, card/row values, message
+permissions, and notebook settings; the broker's complete protocol parser and
+the arena's atomic preflight still decide acceptance. Vendor stream parsers in
+`bots/external_harnesses/streaming.py` extract displayable text and tool activity;
+only the designated final output is submitted. Private model logs retain
+bounded requests, output, proposal errors, and repair context after an invocation
+workspace is removed.
+
+`TableConfig` reuses the arena's `CandidateConfig` catalogue entries and
+`GameRules`, `MatchProtocol`, and `RunConfig` sections. Its `lineup` resolves
+catalogue keys into ordered `PlayerConfig` seats. Model selection stays in each
+bot's `options`, including headless harness models.
 
 Arena runs select a thread pool or a spawned process pool through `RunConfig`.
 Both use bounded submission and the same aggregation and failure policy. Process

@@ -1,6 +1,6 @@
 """Terminal progress and entertainment while the arena runs."""
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -15,12 +15,8 @@ from rich.table import Table
 from rich.text import Text
 
 from sixnimmt.arena.players import PlayerConfig
-from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.cards import bull_heads
-from sixnimmt.engine.events import Event
-from sixnimmt.engine.fold import ViewFolder
-from sixnimmt.engine.state import MatchState
-from sixnimmt.engine.views import ViewRole
+from sixnimmt.terminal.board import render_board
 
 _TIPS = (
     "55 carries seven bull heads. A tiny card with a big attitude.",
@@ -78,23 +74,7 @@ def _caption(play: _DoodlePlay, placed: bool) -> str:
 
 def _board(play: _DoodlePlay, placed: bool) -> Table:
     rows = play.placed_rows() if placed else play.rows
-    table = Table.grid(padding=(0, 1))
-    table.add_column(style="dim", no_wrap=True)
-    table.add_column()
-    table.add_column(justify="right", no_wrap=True)
-    for index, cards in enumerate(rows, start=1):
-        style = "bold red" if play.takes_row and index == play.target + 1 else "cyan"
-        slots = Text()
-        for slot in range(5):
-            if slot > 0:
-                slots.append(" ")
-            if slot < len(cards):
-                slots.append(f"[{cards[slot]:3}]", style=style)
-            else:
-                slots.append("[ · ]", style="dim")
-        heads = sum(bull_heads(card) for card in cards)
-        table.add_row(str(index), slots, Text(f"{heads} ^", style=style))
-    return table
+    return render_board(rows, highlighted_row=play.target, captured=play.takes_row)
 
 
 def _player_table(names: tuple[str, ...], play: _DoodlePlay) -> Table:
@@ -280,25 +260,3 @@ def analysis_animation(
     animation = _AnalysisAnimation(console, games, strategies, seed)
     with Live(console=console, get_renderable=animation.render, refresh_per_second=4, transient=True):
         yield animation
-
-
-class PublicTableDisplay:
-    """Render only a spectator's folded events, never authoritative hands or seeds."""
-
-    def __init__(self, quiet: bool = False, report: Callable[[str], None] = print) -> None:
-        self.folder = ViewFolder(Viewer(ViewRole.PUBLIC_SPECTATOR))
-        self.previous = ""
-        self.quiet = quiet
-        self.report = report
-
-    def observe(self, state: MatchState, events: tuple[Event, ...]) -> None:
-        self.folder.apply(events)
-        if self.quiet:
-            return
-        view = self.folder.view()
-        rows = " | ".join(f"{row.index}: " + ",".join(map(str, row.cards)) for row in view.rows)
-        scores = ", ".join(f"{player.display_name}={player.total_score}" for player in view.players)
-        message = f"Hand {view.hand_number}, play {view.play_number}, {view.phase.value}\nRows {rows}\nScores {scores}"
-        if message != self.previous:
-            self.report(message)
-            self.previous = message

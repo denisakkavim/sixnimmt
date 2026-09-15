@@ -1,12 +1,33 @@
 """Bot implementations for attached and managed external harnesses."""
 
+from collections.abc import Callable
 from typing import Any
 
-from sixnimmt.arena.bots.base import ActionBatch, Rejection
+from pydantic import Field
+
+from sixnimmt.arena.bots.base import ActionBatch, BotOptions, Rejection
 from sixnimmt.arena.bots.external_harnesses.broker import SeatSession
 from sixnimmt.arena.bots.external_harnesses.managed import ManagedSeatWorker
 from sixnimmt.arena.bots.lifecycle import BotContext, BotMatchEnd, DecisionContext, DecisionOutcome
 from sixnimmt.engine.views import MatchView
+
+
+class CommandOptions(BotOptions):
+    """Operator-supplied command implementing the managed JSON contract."""
+
+    command: list[str] = Field(min_length=1)
+    timeout_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    max_output_bytes: int = Field(default=1_048_576, ge=1)
+
+
+class HeadlessOptions(BotOptions):
+    """Model and invocation settings shared by headless Codex and Claude seats."""
+
+    model: str | None = Field(default=None, min_length=1)
+    reasoning_effort: str | None = Field(default=None, min_length=1)
+    command: list[str] | None = Field(default=None, min_length=1)
+    timeout_seconds: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    max_output_bytes: int = Field(default=1_048_576, ge=1)
 
 
 class HarnessBot:
@@ -47,6 +68,10 @@ class ManagedHarnessBot(HarnessBot):
     def __init__(self, session: SeatSession, worker: ManagedSeatWorker) -> None:
         super().__init__(session)
         self.worker = worker
+
+    def set_trace(self, callback: Callable[[dict[str, Any]], None] | None) -> None:
+        """Record private invocation output through the arena's model trace sink."""
+        self.worker.driver.set_trace(callback)
 
     def start(self, context: BotContext) -> None:
         super().start(context)

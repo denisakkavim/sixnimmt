@@ -188,6 +188,15 @@ For model seats, use `PlayerConfig(bot="llm", options={...})` or
 needed, `api_key_env` in options. Provider calls can incur costs; the package does
 not calculate monetary totals. [LLM players](llm-players.md) documents the options.
 
+For mixed native, headless, and registered-bot tables, `TableConfig` in
+`sixnimmt.arena.table` validates the [table configuration file](harness-players.md#configure-models-and-a-lineup).
+Its `players()` method resolves the ordered lineup into `PlayerConfig` objects;
+passing seat specifications to that method replaces the saved lineup. The
+module's `create_seats` and `run_table` accept these objects as well as CLI-style
+seat strings. Headless models use `PlayerConfig(bot="codex-headless",
+options={"model": "YOUR_CODEX_MODEL"})` or the corresponding `claude-headless`
+entry. These external bot names are supported by the table controller.
+
 ## Save, replay, and summarize a trace
 
 This self-contained example uses a temporary directory and removes it afterward.
@@ -285,6 +294,21 @@ also assign canonical event/action sequence numbers using `assign_sequence` from
 An optional runner `observer(state, events)` callback receives privileged state
 and each appended batch, including setup. Use it for instrumentation, not bot
 observations. It must be thread-safe when matches run concurrently.
+
+`run_match` and `sixnimmt.arena.table.run_table` also accept
+`on_activity(record)`. The callback receives dictionaries for decision start and
+completion, match completion, model output, managed invocation/repair activity,
+and available simulation candidate values. It can be called from decision or
+output threads, so it must be fast and thread-safe. Queue work for a display
+thread if rendering or writing it could block.
+
+Activity records are privileged diagnostics and can reveal cards or plans.
+They do not change game state and are not input to event replay. Use public
+event filtering for a spectator board, and label any activity pane as operator
+information. Attaching a callback is independent of saving a model trace;
+`run_table` saves managed diagnostics in its output directory even when the CLI
+display is hidden. See [the live table display](harness-players.md#watch-the-live-game)
+and [model diagnostics](traces.md#model-diagnostics).
 
 `run_arena(..., on_progress=callback)` calls `callback(completed)` after each
 collected match result, including non-finished outcomes. Counts start at 1 and

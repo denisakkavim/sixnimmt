@@ -1,0 +1,60 @@
+{
+  "catalogue": [
+    {
+      "key": "sonnet",
+      "bot": "claude-headless",
+      "label": "Claude Sonnet",
+      "options": {
+        "model": "sonnet"
+      }
+    },
+    {
+      "key": "terra",
+      "bot": "codex-headless",
+      "label": "GPT-5.6 Terra",
+      "options": {
+        "model": "gpt-5.6-terra"
+      }
+    },
+    {
+      "key": "lookahead",
+      "bot": "simulation",
+      "label": "Lookahead",
+      "options": {
+        "model": {
+          "policies": [
+            "lowest_card",
+            "highest_card",
+            "closest_gap"
+          ],
+          "mode": "learned_mixture",
+          "particle_count": 64,
+          "chain_count": 64,
+          "draw_interval": 1,
+          "burn_in_steps": 5000,
+          "epsilon_proposal_scale": 2.5
+        },
+        "sample_count": 512,
+        "horizon": 2,
+        "continuation_policy": "closest_gap",
+        "row_policy": {
+          "policy": "cheapest"
+        },
+        "objective": {
+          "kind": "mean"
+        },
+        "cutoff_evaluation": "zero"
+      }
+    }
+  ],
+  "lineup": [
+    "sonnet",
+    "terra",
+    "lookahead"
+  ],
+  "seed": 66,
+  "protocol": {
+    "end_condition": "fixed_hands",
+    "hands": 1
+  }
+}

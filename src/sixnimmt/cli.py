@@ -22,12 +22,12 @@ from sixnimmt.arena.match import ArenaError
 from sixnimmt.arena.planned import run_plan
 from sixnimmt.arena.planning import LineupConfig, build_arena_plan
 from sixnimmt.arena.results import MatchOutcome
-from sixnimmt.arena.table import SetupTimeout, run_table
+from sixnimmt.arena.table import SetupTimeout, TableConfig, run_table
 from sixnimmt.engine.replay import ReplayedMatch, replay_events
-from sixnimmt.engine.rules import EndCondition, GameRules, MatchProtocol
+from sixnimmt.engine.rules import EndCondition
 from sixnimmt.persistence.manifest import ManifestMatch
 from sixnimmt.persistence.sink import read_action_log, read_event_log
-from sixnimmt.terminal import PublicTableDisplay, analysis_animation, arena_animation
+from sixnimmt.terminal import analysis_animation, arena_animation, table_display
 
 app = typer.Typer(help="Run deterministic 6 nimmt! tools.", no_args_is_help=True)
 
@@ -320,15 +320,47 @@ def _confirm_table_start() -> bool:
     return typer.confirm("All seats ready. Start the match?", default=True)
 
 
+def _table_settings(
+    ctx: typer.Context,
+    config_file: Path | None,
+    seed: int,
+    hands: int | None,
+    communication: bool,
+    execution: RunConfig,
+) -> TableConfig:
+    settings = (
+        TableConfig()
+        if config_file is None
+        else TableConfig.model_validate_json(config_file.read_text(encoding="utf-8"))
+    )
+    values = settings.model_dump()
+    if _provided(ctx, "seed"):
+        values["seed"] = seed
+    protocol = settings.protocol.model_dump()
+    if _provided(ctx, "hands"):
+        protocol["hands"] = hands
+        protocol["end_condition"] = EndCondition.FIXED_HANDS
+    if _provided(ctx, "communication"):
+        protocol["communication_enabled"] = communication
+    values["protocol"] = protocol
+    values["execution"] = _execution_settings(ctx, settings.execution, execution)
+    return TableConfig.model_validate(values)
+
+
 @app.command()
 def table(
+    ctx: typer.Context,
     seat: Annotated[
-        list[str],
+        list[str] | None,
         typer.Option(
             "--seat",
-            help="Exact seat: codex, claude, a registered bot, codex-headless, claude-headless, or command:PROFILE.json.",
+            help="Replace the lineup with these catalogue keys, bot names, or bot:OPTIONS.json seats, in order.",
         ),
-    ],
+    ] = None,
+    config_file: Annotated[
+        Path | None,
+        typer.Option("--config", help="JSON catalogue, fixed lineup, game rules, and execution settings."),
+    ] = None,
     output_dir: Annotated[
         Path | None, typer.Option("--output-dir", help="New directory for private seat bundles and replay traces.")
     ] = None,
@@ -362,6 +394,15 @@ def table(
     ] = 30,
     match_action_limit: Annotated[int, typer.Option("--match-action-limit", min=1)] = 10_000,
     quiet: Annotated[bool, typer.Option("--quiet", help="Omit board updates; keep setup and result messages.")] = False,
+    animation: Annotated[
+        bool, typer.Option("--animation/--no-animation", help="Animate actual gameplay on interactive terminals.")
+    ] = True,
+    commentary: Annotated[
+        bool,
+        typer.Option(
+            "--commentary/--no-commentary", help="Show private operator commentary from agents and simulations."
+        ),
+    ] = True,
 ) -> None:
     """Watch one game with fixed seats in their native terminals or supervised processes."""
     try:
@@ -371,39 +412,36 @@ def table(
         _validate_duration("retain_seconds", retain_seconds, allow_zero=True)
         directory = output_dir if output_dir is not None else Path.cwd() / f"sixnimmt-table-{uuid.uuid4().hex[:8]}"
         directory = directory.resolve()
-        rules = GameRules()
-        protocol = MatchProtocol(
-            communication_enabled=communication,
-            hands=hands,
-            end_condition=EndCondition.TARGET_SCORE if hands is None else EndCondition.FIXED_HANDS,
-        )
-        config = resolve(
-            RunConfig(
-                decision_timeout_seconds=decision_timeout,
-                match_action_limit=match_action_limit,
-                trace_dir=directory / "traces",
-            ),
-            protocol,
-        )
-        display = PublicTableDisplay(quiet=quiet, report=typer.echo)
-        result = run_table(
-            seat,
-            directory,
+        settings = _table_settings(
+            ctx,
+            config_file,
             seed,
-            rules,
-            protocol,
-            config,
-            setup_timeout=setup_timeout,
-            auto_start=auto_start,
-            retain_seconds=retain_seconds,
-            wait_timeout_seconds=wait_timeout,
-            managed_timeout_seconds=managed_timeout,
-            memory_enabled=memory,
-            memory_max_chars=memory_max_chars,
-            report=typer.echo,
-            confirm_start=_confirm_table_start,
-            observer=display.observe,
+            hands,
+            communication,
+            RunConfig(decision_timeout_seconds=decision_timeout, match_action_limit=match_action_limit),
         )
+        players = settings.players(seat)
+        config = resolve(replace(settings.execution, trace_dir=directory / "traces"), settings.protocol)
+        with table_display(enabled=animation, quiet=quiet, commentary=commentary, report=typer.echo) as display:
+            result = run_table(
+                players,
+                directory,
+                settings.seed,
+                settings.rules,
+                settings.protocol,
+                config,
+                setup_timeout=setup_timeout,
+                auto_start=auto_start,
+                retain_seconds=retain_seconds,
+                wait_timeout_seconds=wait_timeout,
+                managed_timeout_seconds=managed_timeout,
+                memory_enabled=memory,
+                memory_max_chars=memory_max_chars,
+                report=typer.echo,
+                confirm_start=_confirm_table_start,
+                observer=display.observe,
+                on_activity=display.activity,
+            )
         if result.reason == "operator_stop":
             raise typer.Exit(code=130)
         if result.outcome == MatchOutcome.FAILED:
