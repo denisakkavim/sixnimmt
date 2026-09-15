@@ -12,6 +12,9 @@ from sixnimmt.engine.actions import Action, ChooseRowAction, CommitAction, Selec
 from sixnimmt.engine.cards import bull_heads
 from sixnimmt.engine.views import MatchView, RowView
 
+if TYPE_CHECKING:
+    from sixnimmt.arena.players import ResolvedPlayer
+
 
 class ControlledBurnOptions(BotOptions):
     K: int = Field(ge=0)
@@ -161,10 +164,6 @@ class HandAwareRowChoiceBot:
         if card_bot is None:
             raise AttributeError(name)
         return getattr(card_bot, name)
-
-
-if TYPE_CHECKING:
-    from sixnimmt.arena.players import ResolvedPlayer
 
 
 def resolve_composed(options: BotOptions, resolve: ResolveStrategy) -> StrategyConstruction:

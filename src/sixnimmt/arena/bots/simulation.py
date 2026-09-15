@@ -15,6 +15,9 @@ from .uncertainty.inference import OpponentModel
 from .uncertainty.options import ModelBasedBaitOptions, SimulationOptions
 from .uncertainty.rollouts import penalty_value, rollout, select_row
 
+if TYPE_CHECKING:
+    from sixnimmt.arena.players import ResolvedPlayer
+
 
 class SimulationBot:
     def __init__(self, seed: int, options: SimulationOptions | ModelBasedBaitOptions) -> None:
@@ -117,10 +120,6 @@ def _targets_full_row(card: int, view: MatchView) -> bool:
 
 def build_simulation(seed: int, **settings: Any) -> SimulationBot:
     return SimulationBot(seed, SimulationOptions.model_validate(settings))
-
-
-if TYPE_CHECKING:
-    from sixnimmt.arena.players import ResolvedPlayer
 
 
 def resolve_simulation(options: BotOptions, resolve: ResolveStrategy) -> StrategyConstruction:
