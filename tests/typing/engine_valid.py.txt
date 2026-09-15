@@ -1,0 +1,20 @@
+"""Accepted public models and checked engine transitions; never executed."""
+
+from sixnimmt.engine.actions import Action, ChooseRowAction, SelectCardAction
+from sixnimmt.engine.events import PlayerCommittedEvent
+from sixnimmt.engine.state import MatchState, Phase, PlayerSeat, PlayerState, ResolutionState, replace_match, replace_player, replace_resolution
+from sixnimmt.engine.transition import _public_player_event
+
+player = PlayerState(player_id="alice")
+state = MatchState(match_id="m", players=(player,))
+resolution = ResolutionState()
+seat = PlayerSeat(player_id="alice", agent_metadata={"model": "example", "settings": {"seed": 1}})
+
+replace_player(player, committed=True, selection=None)
+replace_match(state, phase=Phase.SELECTING, play_number=2)
+replace_resolution(resolution, awaiting_player="alice", next_index=1)
+_public_player_event(state, PlayerCommittedEvent, "alice")
+
+selection = SelectCardAction(card=2)
+action: Action = ChooseRowAction(row_index=0)
+seat.agent_metadata["samples"] = [1, "example", None]

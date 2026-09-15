@@ -1,0 +1,36 @@
+"""Rejected constructor and bot capability mistakes; never executed."""
+
+from sixnimmt.arena.bots.base import Bot, BotOptions, BotSpec
+from sixnimmt.arena.bots.composed import ControlledBurnBot
+from sixnimmt.arena.bots.heuristics import RandomBot
+from sixnimmt.arena.bots.llm import LLMBot
+from sixnimmt.engine.views import MatchView
+
+
+class FirstOptions(BotOptions):
+    count: int = 1
+
+
+class OtherOptions(BotOptions):
+    label: str = "other"
+
+
+def wrong_seed(seed: str) -> Bot:
+    return RandomBot(len(seed))
+
+
+def wrong_options(seed: int, options: OtherOptions) -> Bot:
+    return RandomBot(seed + len(options.label))
+
+
+BotSpec("wrong_seed", wrong_seed, True, {})  # expect: invalid-argument-type
+BotSpec.typed("wrong_options", FirstOptions, wrong_options, True, {})  # expect: invalid-argument-type
+
+
+def inspect_missing_capability(bot: ControlledBurnBot) -> None:
+    bot.no_such_method()  # expect: unresolved-attribute
+
+
+def inspect_incorrect_response(bot: LLMBot, view: MatchView) -> None:
+    bot._request([], view, 1.0, {}).no_such_field  # expect: unresolved-attribute
+    bot.stats()["response_models"].upper()  # expect: unresolved-attribute

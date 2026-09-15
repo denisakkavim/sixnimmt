@@ -12,6 +12,7 @@ check: ## Run code quality tools.
 	@uv run pre-commit run -a
 	@echo "🚀 Static type checking: Running ty"
 	@uv run ty check
+	@uv run python scripts/check_typing.py
 
 .PHONY: test
 test: ## Test the code with pytest

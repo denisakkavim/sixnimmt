@@ -1,0 +1,31 @@
+"""Accepted strategy constructors, delegates and SDK output; never executed."""
+
+from sixnimmt.arena.bots.base import Bot, BotOptions, BotSpec
+from sixnimmt.arena.bots.composed import ControlledBurnBot
+from sixnimmt.arena.bots.heuristics import RandomBot
+from sixnimmt.arena.bots.llm import LLMBot
+from sixnimmt.engine.views import MatchView
+
+
+class ExampleOptions(BotOptions):
+    offset: int = 0
+
+
+def construct(seed: int, options: ExampleOptions) -> Bot:
+    return RandomBot(seed + options.offset)
+
+
+specification = BotSpec.typed("example", ExampleOptions, construct, True, {})
+
+
+def inspect_delegate(bot: ControlledBurnBot) -> Bot:
+    return bot.delegate_bot()
+
+
+def inspect_response(bot: LLMBot, view: MatchView) -> str:
+    response = bot._request([], view, 1.0, {})
+    return response.id
+
+
+def inspect_statistics(bot: LLMBot) -> list[str]:
+    return bot.stats()["response_models"]

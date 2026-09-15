@@ -1,0 +1,21 @@
+"""Rejected public inputs and update mistakes; never executed."""
+
+from sixnimmt.engine.actions import Action, SelectCardAction
+from sixnimmt.engine.events import MatchEndedEvent
+from sixnimmt.engine.state import MatchState, PlayerSeat, PlayerState, ResolutionState, replace_match, replace_player, replace_resolution
+from sixnimmt.engine.transition import _public_player_event
+
+player = PlayerState(player_id="alice")
+state = MatchState(match_id="m", players=(player,))
+resolution = ResolutionState()
+seat = PlayerSeat(player_id="alice")
+
+replace_player(player, committed="yes")  # expect: invalid-argument-type
+replace_player(player, commited=True)  # expect: unknown-argument
+replace_match(state, play_numer=2)  # expect: unknown-argument
+replace_resolution(resolution, awaiting_player=3)  # expect: invalid-argument-type
+_public_player_event(state, MatchEndedEvent, "alice")  # expect: invalid-argument-type
+
+SelectCardAction(card="2")  # expect: invalid-argument-type
+action: Action = "select_card"  # expect: invalid-assignment
+seat.agent_metadata["unsupported"] = object()  # expect: invalid-assignment

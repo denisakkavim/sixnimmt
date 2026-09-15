@@ -30,7 +30,8 @@ Preserve deterministic seed vectors and legacy replay fixtures unless the change
 deliberately changes that compatibility.
 
 Ruff and `ty` are the project's lint/type-checking stack. The locked `ty` version
-reports `redundant-condition` as an error, so provably constant conditions such as
+reports `redundant-condition`, `missing-type-argument`,
+`unsound-return-statement`, and `unsound-assignment` as errors, so provably constant conditions such as
 an uncalled function block pre-commit and CI checks. Tuple conditions/assertions
 and unsupported boolean conversions are also checked.
 Do not enable rules such as Ruff `PLC1901` that encourage implicit truthiness.
@@ -82,7 +83,11 @@ uv run pytest
 make check
 ```
 
-`make check` checks lockfile consistency, runs pre-commit hooks, and checks types.
+`make check` checks lockfile consistency, runs pre-commit hooks, checks types, and
+checks positive/negative static API fixtures. The fixtures under `tests/typing`
+use `.py.txt` names so intentional errors do not enter the normal type check.
+Each negative case must produce the expected diagnostic on its marked line;
+missing and unexpected diagnostics both fail.
 Some hooks format files automatically; review their changes before committing.
 To run formatting, linting, and type checks individually:
 
@@ -90,6 +95,7 @@ To run formatting, linting, and type checks individually:
 uv run ruff format --check .
 uv run ruff check . --no-fix
 uv run ty check
+uv run python scripts/check_typing.py
 ```
 
 `make test` runs the default suite with coverage. Both it and `uv run pytest`

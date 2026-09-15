@@ -56,6 +56,9 @@ packages = ["src/sixnimmt"]
 
 [tool.ty.rules]
 redundant-condition = "error"
+missing-type-argument = "error"
+unsound-return-statement = "error"
+unsound-assignment = "error"
 
 [tool.ty.environment]
 python = "./.venv"
