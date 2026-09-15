@@ -18,6 +18,7 @@ from sixnimmt.arena.bots.external_harnesses.drivers import (
     structured_proposal_schema,
 )
 from sixnimmt.arena.bots.external_harnesses.managed import ManagedSeatWorker
+from sixnimmt.arena.bots.external_harnesses.messages import DecisionOffer
 from sixnimmt.arena.bots.external_harnesses.protocol import (
     MAX_EXPLANATION_CHARS,
     PROPOSAL_SCHEMA,
@@ -27,8 +28,9 @@ from sixnimmt.arena.bots.external_harnesses.protocol import (
     parse_proposal,
 )
 from sixnimmt.arena.bots.heuristics import LowestCardBot
+from sixnimmt.arena.config import RunConfig
+from sixnimmt.arena.match import run_match
 from sixnimmt.arena.results import MatchOutcome, MatchResult
-from sixnimmt.arena.runner import RunConfig, run_match
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.fold import build_view
 from sixnimmt.engine.rules import GameRules, MatchProtocol
@@ -245,9 +247,18 @@ def test_delivery_cancellation_is_not_reported_as_proposal_rejection(tmp_path: P
     view = build_view(events, Viewer(ViewRole.PLAYER, "a"))
     session = SeatSession("a", "A", GameRules(), MatchProtocol())
     proposal.update(session_id=session.session_id, view_id=view.view_id, explanation="I choose the low card.")
-    offer = {
-        **{key: proposal[key] for key in ("protocol_version", "session_id", "decision_id", "view_id")},
+    offer: DecisionOffer = {
+        "protocol_version": 1,
+        "session_id": session.session_id,
+        "decision_id": proposal["decision_id"],
+        "view_id": view.view_id,
+        "view": view.model_dump(mode="json"),
+        "observation": "",
+        "instructions": "",
         "action_tools": action_tools(view, strict=False),
+        "rejection": None,
+        "memory": None,
+        "deadline": None,
     }
     command = (sys.executable, "-c", f"print({json.dumps(proposal)!r})")
     driver = ManagedCommandDriver(CommandProfile(command), tmp_path / "work")

@@ -1,15 +1,28 @@
 """Strict, transport-independent proposals; the engine still owns move legality."""
 
 import json
+from collections.abc import Mapping
 from copy import deepcopy
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    JsonValue,
+    PlainSerializer,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from sixnimmt.arena.bots.agent_contract import ACTION_ADAPTER
-from sixnimmt.arena.bots.base import ActionBatch, Rejection
+from sixnimmt.arena.bots.base import MAX_BATCH_OPERATIONS, ActionBatch, Rejection
+from sixnimmt.arena.bots.external_harnesses.messages import ProtocolVersion, RejectionData
 from sixnimmt.common.text import check_representable
+from sixnimmt.engine.actions import Action
 
 PROTOCOL_VERSION = 1
 MAX_PROPOSAL_BYTES = 131_072
@@ -29,67 +42,51 @@ class _Payload(BaseModel):
     model_config = ConfigDict(frozen=True, strict=True, extra="forbid")
 
 
-class _SelectCard(_Payload):
-    type: Literal["select_card"]
-    card: int = Field(ge=1, le=104)
+_ENVELOPE_FIELDS = {"action_id", "from_view", "expected_view_version"}
 
 
-class _Commit(_Payload):
-    type: Literal["commit"]
+def _action_payload_fields() -> dict[str, frozenset[str]]:
+    fields: dict[str, frozenset[str]] = {}
+    for schema in ACTION_ADAPTER.json_schema()["$defs"].values():
+        properties = schema.get("properties", {})
+        name = properties.get("type", {}).get("const")
+        if isinstance(name, str):
+            fields[name] = frozenset(properties) - _ENVELOPE_FIELDS
+    return fields
 
 
-class _Uncommit(_Payload):
-    type: Literal["uncommit"]
+_ACTION_FIELDS = _action_payload_fields()
 
 
-class _ChooseRow(_Payload):
-    type: Literal["choose_row"]
-    row_index: int
+def _parse_action_payload(value: object) -> Action:
+    """Keep the harness envelope strict while sharing the engine's payload rules."""
+    if not isinstance(value, dict):
+        msg = "game action must be an object"
+        raise ValueError(msg)  # noqa: TRY004 -- Pydantic wraps ValueError as a validation failure.
+    name = value.get("type")
+    allowed = _ACTION_FIELDS.get(name) if isinstance(name, str) else None
+    if allowed is None or len(value.keys() - allowed) > 0:
+        msg = "game action has an unknown type or unsupported fields"
+        raise ValueError(msg)
+    return ACTION_ADAPTER.validate_json(json.dumps(value, allow_nan=False), strict=True)
 
 
-class _SendMessage(_Payload):
-    type: Literal["send_message"]
-    visibility: Literal["table", "direct"]
-    body: str
-    to_player: str | None = None
-
-    @field_validator("body", "to_player")
-    @classmethod
-    def check_text(cls, value: str | None) -> str | None:
-        check_representable(value)
-        return value
-
-    @model_validator(mode="after")
-    def check_recipient(self) -> "_SendMessage":
-        if self.visibility == "direct" and self.to_player is None:
-            msg = "Direct messages require a recipient"
-            raise ValueError(msg)
-        if self.visibility == "table" and self.to_player is not None:
-            msg = "Table messages cannot name a recipient"
-            raise ValueError(msg)
-        return self
+def _action_payload_json(action: Action) -> dict[str, JsonValue]:
+    return action.model_dump(mode="json", exclude=_ENVELOPE_FIELDS)
 
 
-ActionPayload = Annotated[_SelectCard | _Commit | _Uncommit | _ChooseRow | _SendMessage, Field(discriminator="type")]
+ActionPayload = Annotated[Action, BeforeValidator(_parse_action_payload), PlainSerializer(_action_payload_json)]
 Identifier = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")]
 
 
 class Proposal(_Payload):
-    protocol_version: Literal[1]
+    protocol_version: ProtocolVersion
     session_id: Identifier
     decision_id: Identifier
     submission_id: Identifier
     view_id: Identifier
-    actions: list[ActionPayload] = Field(max_length=8)
+    actions: list[ActionPayload] = Field(max_length=MAX_BATCH_OPERATIONS)
     memory: str | None = Field(max_length=16_000)
-
-    @field_validator("protocol_version", mode="before")
-    @classmethod
-    def check_version_type(cls, value: object) -> object:
-        if type(value) is not int:
-            msg = "protocol_version must be an integer"
-            raise ValueError(msg)
-        return value
 
     @field_validator("memory")
     @classmethod
@@ -99,7 +96,7 @@ class Proposal(_Payload):
 
     @model_validator(mode="after")
     def check_operation_count(self) -> "Proposal":
-        if not 1 <= len(self.actions) + int(self.memory is not None) <= 8:
+        if not 1 <= len(self.actions) + int(self.memory is not None) <= MAX_BATCH_OPERATIONS:
             msg = "A proposal must contain one to eight operations, including any memory update"
             raise ValueError(msg)
         return self
@@ -118,7 +115,24 @@ class Proposal(_Payload):
         return ActionBatch(actions=actions, memory=self.memory)
 
 
-PROPOSAL_SCHEMA: dict[str, Any] = Proposal.model_json_schema()
+def _proposal_schema(model: type[Proposal]) -> dict[str, Any]:
+    schema = model.model_json_schema()
+    for definition in schema.get("$defs", {}).values():
+        properties = definition.get("properties", {})
+        name = properties.get("type", {}).get("const")
+        if name not in _ACTION_FIELDS:
+            continue
+        for field in _ENVELOPE_FIELDS:
+            properties.pop(field, None)
+        properties["type"].pop("default", None)
+        required = definition.setdefault("required", [])
+        if "type" not in required:
+            required.append("type")
+        definition["additionalProperties"] = False
+    return schema
+
+
+PROPOSAL_SCHEMA: dict[str, Any] = _proposal_schema(Proposal)
 
 
 class ManagedProposal(Proposal):
@@ -141,10 +155,12 @@ class ManagedProposal(Proposal):
         return self.model_dump(mode="json", exclude={"explanation"})
 
 
-MANAGED_PROPOSAL_SCHEMA: dict[str, Any] = ManagedProposal.model_json_schema()
+MANAGED_PROPOSAL_SCHEMA: dict[str, Any] = _proposal_schema(ManagedProposal)
 
 
-def decision_proposal_schema(offer: dict[str, Any], *, memory_enabled: bool, memory_max_chars: int) -> dict[str, Any]:
+def decision_proposal_schema(
+    offer: Mapping[str, Any], *, memory_enabled: bool, memory_max_chars: int
+) -> dict[str, Any]:
     """Constrain model output to the same actions and values offered to LLM bots."""
     schema = deepcopy(PROPOSAL_SCHEMA)
     schema.pop("$defs", None)
@@ -173,7 +189,7 @@ def decision_proposal_schema(offer: dict[str, Any], *, memory_enabled: bool, mem
     return schema
 
 
-def managed_proposal_schema(offer: dict[str, Any], *, memory_enabled: bool, memory_max_chars: int) -> dict[str, Any]:
+def managed_proposal_schema(offer: Mapping[str, Any], *, memory_enabled: bool, memory_max_chars: int) -> dict[str, Any]:
     """Add optional commentary without extending the native MCP proposal contract."""
     schema = decision_proposal_schema(offer, memory_enabled=memory_enabled, memory_max_chars=memory_max_chars)
     schema["properties"]["explanation"] = deepcopy(MANAGED_PROPOSAL_SCHEMA["properties"]["explanation"])
@@ -220,7 +236,7 @@ def _parse_proposal[ProposalType: Proposal](value: object, model: type[ProposalT
         raise HarnessError("invalid_proposal", f"Proposal does not match the schema; check fields: {fields}") from error
 
 
-def rejection_data(rejection: Rejection | None) -> dict[str, Any] | None:
+def rejection_data(rejection: Rejection | None) -> RejectionData | None:
     if rejection is None:
         return None
     action = None

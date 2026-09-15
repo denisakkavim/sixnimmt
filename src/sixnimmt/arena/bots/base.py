@@ -14,6 +14,9 @@ if TYPE_CHECKING:
     from sixnimmt.arena.players import ResolvedPlayer
 
 
+MAX_BATCH_OPERATIONS = 8
+
+
 class BotOptions(BaseModel):
     """Reject unsupported keys and preserve explicit configuration types."""
 

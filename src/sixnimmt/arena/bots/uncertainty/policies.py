@@ -12,12 +12,12 @@ from sixnimmt.arena.bots.heuristics import (
     LowestCardBot,
     LowestFittingCardBot,
 )
-from sixnimmt.arena.bots.uncertainty.options import PolicyName
+from sixnimmt.arena.bots.uncertainty.options import DeterministicPolicyName, PolicyName
 from sixnimmt.engine.actions import SelectCardAction
 from sixnimmt.engine.state import Phase
 from sixnimmt.engine.views import MatchView, PlayerSelfView, RowView
 
-_POLICIES: dict[str, Bot] = {
+_POLICIES: dict[DeterministicPolicyName, Bot] = {
     "lowest_card": LowestCardBot(),
     "highest_card": HighestCardBot(),
     "closest_gap": ClosestGapBot(),
@@ -44,7 +44,7 @@ def observation(rows: tuple[RowView, ...], hand: tuple[int, ...]) -> MatchView:
     )
 
 
-def preferred_card(policy: PolicyName, rows: tuple[RowView, ...], hand: tuple[int, ...]) -> int:
+def preferred_card(policy: DeterministicPolicyName, rows: tuple[RowView, ...], hand: tuple[int, ...]) -> int:
     action = _POLICIES[policy].act(observation(rows, hand))
     if not isinstance(action, SelectCardAction):
         msg = "card policy did not select a card"

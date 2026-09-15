@@ -8,7 +8,14 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
+from pydantic import ValidationError
 
+from sixnimmt.arena.bots.external_harnesses.messages import (
+    GAME_INFO_ADAPTER,
+    PLAY_REPLY_ADAPTER,
+    DecisionReply,
+    GameInfo,
+)
 from sixnimmt.arena.bots.external_harnesses.protocol import HarnessError
 from sixnimmt.arena.bots.external_harnesses.transport import MAX_FRAME_BYTES, ControllerServer, SeatClient
 
@@ -22,19 +29,47 @@ class BlockingSeat:
         self.cancelled = threading.Event()
         self.proposals: list[dict[str, Any] | None] = []
 
-    def get_game_info(self, session_id: str) -> dict[str, Any]:
-        return {"session_id": session_id, "player_id": self.session_id}
+    def get_game_info(self, session_id: str) -> GameInfo:
+        return {
+            "protocol_version": 1,
+            "session_id": session_id,
+            "player_id": self.session_id,
+            "name": self.session_id,
+            "rules": {},
+            "protocol": {},
+            "instructions": "Choose an action.",
+            "proposal_schema": {},
+            "memory_enabled": False,
+            "memory_max_chars": 4000,
+        }
 
     def play(
         self, session_id: str, proposal: dict[str, Any] | None = None, cancel: threading.Event | None = None
-    ) -> dict[str, Any]:
+    ) -> DecisionReply:
         self.proposals.append(proposal)
         self.started.set()
         while not self.released.wait(0.01):
             if cancel is not None and cancel.is_set():
                 self.cancelled.set()
                 raise HarnessError("cancelled", "The wait was cancelled.")
-        return {"status": "decision", "offer": {"session_id": session_id}}
+        return {
+            "status": "decision",
+            "receipt": None,
+            "result": None,
+            "offer": {
+                "protocol_version": 1,
+                "session_id": session_id,
+                "decision_id": "decision-1",
+                "view_id": "view-1",
+                "view": {},
+                "observation": "",
+                "instructions": "",
+                "action_tools": [],
+                "rejection": None,
+                "memory": None,
+                "deadline": None,
+            },
+        }
 
 
 def send_raw(endpoint: str, payload: bytes) -> dict[str, Any]:
@@ -50,7 +85,10 @@ def test_returns_only_the_authenticated_seat_information() -> None:
     seats = [BlockingSeat(), BlockingSeat("seat-b", "credential-b")]
     with ControllerServer(seats) as controller:
         client = SeatClient(controller.endpoint, "credential-a")
-        assert client.get_game_info("seat-a") == {"session_id": "seat-a", "player_id": "seat-a"}
+        info = client.get_game_info("seat-a")
+        assert info["session_id"] == "seat-a"
+        assert info["player_id"] == "seat-a"
+        assert "seat-b" not in json.dumps(info)
 
 
 @pytest.mark.parametrize(
@@ -76,7 +114,9 @@ def test_holds_play_until_a_decision_is_available() -> None:
         assert seat.started.wait(2)
         assert not pending.done()
         seat.released.set()
-        assert pending.result(timeout=2) == {"status": "decision", "offer": {"session_id": seat.session_id}}
+        response = pending.result(timeout=2)
+        assert response["status"] == "decision"
+        assert response["offer"]["session_id"] == seat.session_id
     assert seat.proposals == [proposal]
 
 
@@ -147,3 +187,35 @@ def test_rejects_unknown_authenticated_operations() -> None:
     with ControllerServer([BlockingSeat()]) as controller:
         response = send_raw(controller.endpoint, json.dumps(request).encode() + b"\n")
     assert response["error"]["code"] == "invalid_request"
+
+
+@pytest.mark.parametrize("method", ["get_game_info", "play"])
+def test_client_rejects_malformed_response_before_exposing_it(monkeypatch: pytest.MonkeyPatch, method: str) -> None:
+    client = SeatClient("tcp://127.0.0.1:123", "credential")
+    # Replace only the external wire response, retaining client validation.
+    monkeypatch.setattr(client, "_request", lambda *args: {"status": "decision", "offer": None})
+    with pytest.raises(HarnessError) as error:
+        if method == "get_game_info":
+            client.get_game_info("seat-a")
+        else:
+            client.play("seat-a")
+    assert error.value.code == "invalid_response"
+
+
+@pytest.mark.parametrize("version", [True, 1.0, "1", 2])
+@pytest.mark.parametrize("response_type", ["game_info", "decision"])
+def test_response_protocol_version_rejects_noninteger_or_unsupported_values(
+    version: object, response_type: str
+) -> None:
+    seat = BlockingSeat()
+    seat.released.set()
+    if response_type == "game_info":
+        info: dict[str, Any] = dict(seat.get_game_info(seat.session_id))
+        info["protocol_version"] = version
+        with pytest.raises(ValidationError):
+            GAME_INFO_ADAPTER.validate_python(info, strict=True)
+    else:
+        response: dict[str, Any] = dict(seat.play(seat.session_id))
+        response["offer"]["protocol_version"] = version
+        with pytest.raises(ValidationError):
+            PLAY_REPLY_ADAPTER.validate_python(response, strict=True)

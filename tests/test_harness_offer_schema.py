@@ -20,8 +20,9 @@ from sixnimmt.arena.bots.external_harnesses.drivers import (
 from sixnimmt.arena.bots.external_harnesses.managed import ManagedSeatWorker
 from sixnimmt.arena.bots.external_harnesses.protocol import PROPOSAL_SCHEMA, decision_proposal_schema
 from sixnimmt.arena.bots.heuristics import LowestFittingCardBot
+from sixnimmt.arena.config import RunConfig
+from sixnimmt.arena.match import run_match
 from sixnimmt.arena.results import MatchOutcome, MatchResult
-from sixnimmt.arena.runner import RunConfig, run_match
 from sixnimmt.engine.audience import Viewer
 from sixnimmt.engine.fold import build_view
 from sixnimmt.engine.rules import GameRules, MatchProtocol

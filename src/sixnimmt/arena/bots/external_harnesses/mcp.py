@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import threading
+from collections.abc import Mapping
 from functools import partial
 from typing import Any, BinaryIO
 
@@ -74,10 +75,10 @@ def game_tools() -> list[types.Tool]:
     ]
 
 
-def _tool_result(value: dict[str, Any], *, is_error: bool = False) -> types.CallToolResult:
+def _tool_result(value: Mapping[str, Any], *, is_error: bool = False) -> types.CallToolResult:
     return types.CallToolResult(
         content=[types.TextContent(type="text", text=json.dumps(value, ensure_ascii=True, allow_nan=False))],
-        structured_content=value,
+        structured_content=dict(value),
         is_error=is_error,
     )
 

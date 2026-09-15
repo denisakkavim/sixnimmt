@@ -15,7 +15,7 @@ from sixnimmt.arena.bots.uncertainty.history import HandHistory, InferenceError,
 from sixnimmt.arena.bots.uncertainty.inference import BatchedLegalProposal, ChoiceFeatures, OpponentModel, Posterior
 from sixnimmt.arena.bots.uncertainty.likelihood import BatchedPosterior
 from sixnimmt.arena.bots.uncertainty.options import ModelBasedBaitOptions, OpponentModelOptions, SimulationOptions
-from sixnimmt.arena.runner import run_match
+from sixnimmt.arena.match import run_match
 from sixnimmt.engine.actions import Action, SelectCardAction
 from sixnimmt.engine.rules import GameRules
 from sixnimmt.engine.views import MatchView, RowView

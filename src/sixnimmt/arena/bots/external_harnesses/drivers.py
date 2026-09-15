@@ -8,7 +8,7 @@ import signal
 import subprocess
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -18,6 +18,7 @@ from threading import Event, Lock, Thread
 from typing import IO, Any, Literal
 
 from sixnimmt.arena.bots.external_harnesses.streaming import VendorEvents
+from sixnimmt.arena.bots.lifecycle import DecisionDeadlineExceeded
 
 _DIAGNOSTIC_BYTES = 32_768
 
@@ -28,6 +29,10 @@ class DriverError(RuntimeError):
 
 class DriverFormatError(DriverError):
     """A successfully completed invocation returned an unusable final payload."""
+
+
+class DriverDeadlineExceeded(DriverError, DecisionDeadlineExceeded):
+    """A managed decision exhausted its effective deadline."""
 
 
 @dataclass(frozen=True)
@@ -380,8 +385,8 @@ class ManagedCommandDriver:
 
     def invoke(
         self,
-        offer: dict[str, Any],
-        game_info: dict[str, Any],
+        offer: Mapping[str, Any],
+        game_info: Mapping[str, Any],
         schema: dict[str, Any],
         *,
         deadline: float | None = None,
@@ -432,8 +437,8 @@ class ManagedCommandDriver:
 
     def _invoke(
         self,
-        offer: dict[str, Any],
-        game_info: dict[str, Any],
+        offer: Mapping[str, Any],
+        game_info: Mapping[str, Any],
         schema: dict[str, Any],
         deadline: float | None,
     ) -> dict[str, Any]:
@@ -511,7 +516,7 @@ class ManagedCommandDriver:
             invocation_deadline = min(invocation_deadline, deadline)
         if invocation_deadline <= time.monotonic():
             msg = "managed_decision_timeout"
-            raise DriverError(msg)
+            raise DriverDeadlineExceeded(msg)
         environment = None
         if self.profile.kind == "claude" and self.profile.reasoning_effort is not None:
             # Claude gives its environment effort setting precedence over saved
@@ -595,7 +600,7 @@ class ManagedCommandDriver:
                 raise DriverError(msg)
             if time.monotonic() >= deadline:
                 msg = "managed_decision_timeout"
-                raise DriverError(msg)
+                raise DriverDeadlineExceeded(msg)
             status = process.poll()
             if status is not None:
                 if status != 0:

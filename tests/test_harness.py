@@ -12,16 +12,18 @@ import pytest
 from sixnimmt.arena.bots.agent_contract import action_tools, observation_text
 from sixnimmt.arena.bots.external import HarnessBot
 from sixnimmt.arena.bots.external_harnesses.broker import SeatSession
+from sixnimmt.arena.bots.external_harnesses.messages import DecisionOffer, TerminalReply
 from sixnimmt.arena.bots.external_harnesses.protocol import HarnessError
 from sixnimmt.arena.bots.heuristics import LowestFittingCardBot
+from sixnimmt.arena.config import RunConfig
+from sixnimmt.arena.match import run_match
 from sixnimmt.arena.results import MatchOutcome, MatchResult
-from sixnimmt.arena.runner import RunConfig, run_match
 from sixnimmt.engine.rules import GameRules, MatchProtocol
 from sixnimmt.engine.state import PlayerSeat
 from sixnimmt.engine.views import MatchView
 
 
-def proposal_for(offer: dict[str, Any], actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def proposal_for(offer: DecisionOffer, actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     if actions is None:
         view = MatchView.model_validate(offer["view"])
         action = LowestFittingCardBot().act(view)
@@ -101,10 +103,13 @@ def test_game_info_does_not_expose_a_deal_or_mark_ready(table: RunningTable) -> 
 
 def test_offer_uses_existing_llm_observation_and_action_schemas(table: RunningTable) -> None:
     offer = table.a.play(table.a.session_id)["offer"]
+    assert offer is not None
     view = MatchView.model_validate(offer["view"])
     assert offer["observation"] == observation_text(view)
     assert offer["action_tools"] == action_tools(view, strict=False)
-    assert all("hand" not in player for player in offer["view"]["players"])
+    players = offer["view"]["players"]
+    assert isinstance(players, list)
+    assert all(isinstance(player, dict) and "hand" not in player for player in players)
     assert "seed" not in offer["view"]
 
 
@@ -112,33 +117,39 @@ def test_recovery_returns_same_unsubmitted_offer_and_deadline(table: RunningTabl
     first = table.a.play(table.a.session_id)
     recovered = table.a.play(table.a.session_id)
     assert recovered == first
+    assert first["status"] == "decision"
     assert first["offer"]["deadline"] is not None
 
 
 def test_staging_advances_arena_while_submitter_waits(table: RunningTable) -> None:
     first = table.a.play(table.a.session_id)["offer"]
+    assert first is not None
     with ThreadPoolExecutor(max_workers=1) as workers:
         pending = workers.submit(table.a.play, table.a.session_id, proposal_for(first))
         other_offer = table.b.play(table.b.session_id)["offer"]
-        assert other_offer["view"]["you"]["player_id"] == "b"
+        assert other_offer is not None
+        assert MatchView.model_validate(other_offer["view"]).you.player_id == "b"
         assert not pending.done()
         table.stopped.set()
         table.a.stop()
         table.b.stop()
         response = pending.result(timeout=3)
     assert response["status"] == "terminal"
+    assert response["receipt"] is not None
     assert response["receipt"]["status"] == "accepted"
     assert response["result"]["outcome"] == "abandoned"
 
 
 def test_duplicate_during_wait_does_not_stage_another_proposal(table: RunningTable) -> None:
     first = table.a.play(table.a.session_id)["offer"]
+    assert first is not None
     proposal = proposal_for(first)
     with ThreadPoolExecutor(max_workers=1) as workers:
         pending = workers.submit(table.a.play, table.a.session_id, proposal)
         table.b.play(table.b.session_id)
         duplicate = table.a.play(table.a.session_id, proposal)
         assert duplicate["status"] == "already_waiting"
+        assert duplicate["receipt"] is not None
         assert duplicate["receipt"]["submission_id"] == proposal["submission_id"]
         table.a.stop()
         table.b.stop()
@@ -148,6 +159,7 @@ def test_duplicate_during_wait_does_not_stage_another_proposal(table: RunningTab
 
 def test_rpc_cancellation_keeps_published_move_and_allows_recovery(table: RunningTable) -> None:
     first = table.a.play(table.a.session_id)["offer"]
+    assert first is not None
     cancel = Event()
     with ThreadPoolExecutor(max_workers=1) as workers:
         pending = workers.submit(table.a.play, table.a.session_id, proposal_for(first), cancel)
@@ -159,6 +171,7 @@ def test_rpc_cancellation_keeps_published_move_and_allows_recovery(table: Runnin
     table.b.stop()
     recovered = table.a.play(table.a.session_id)
     assert recovered["status"] == "terminal"
+    assert recovered["receipt"] is not None
     assert recovered["receipt"]["status"] == "accepted"
 
 
@@ -166,11 +179,14 @@ def test_rejection_returns_new_offer_without_applying_memory() -> None:
     table = RunningTable(memory=True)
     try:
         first = table.a.play(table.a.session_id)["offer"]
-        missing = next(card for card in range(1, 105) if card not in first["view"]["you"]["hand"])
+        assert first is not None
+        hand = MatchView.model_validate(first["view"]).you.hand
+        missing = next(card for card in range(1, 105) if card not in hand)
         proposal = proposal_for(first, [{"type": "select_card", "card": missing}])
         proposal["memory"] = "This must not stick."
         correction = table.a.play(table.a.session_id, proposal)
         assert correction["status"] == "decision"
+        assert correction["receipt"] is not None
         assert correction["receipt"]["status"] == "rejected"
         assert correction["offer"]["decision_id"] != first["decision_id"]
         assert correction["offer"]["rejection"] is not None
@@ -183,10 +199,12 @@ def test_completed_retry_uses_current_offer_and_original_receipt() -> None:
     table = RunningTable(baseline_opponent=True)
     try:
         first = table.a.play(table.a.session_id)["offer"]
+        assert first is not None
         proposal = proposal_for(first)
         response = table.a.play(table.a.session_id, proposal)
         recovered = table.a.play(table.a.session_id, proposal)
         assert recovered == response
+        assert recovered["status"] == "decision"
         assert recovered["offer"]["decision_id"] != first["decision_id"]
         conflicting = {**proposal, "memory": "different"}
         with pytest.raises(HarnessError) as error:
@@ -201,6 +219,7 @@ def test_mismatched_session_cannot_read_or_submit(table: RunningTable) -> None:
         table.a.get_game_info(table.b.session_id)
     assert error.value.code == "invalid_session"
     first = table.a.play(table.a.session_id)["offer"]
+    assert first is not None
     proposal = proposal_for(first)
     proposal["session_id"] = table.b.session_id
     with pytest.raises(HarnessError) as error:
@@ -212,19 +231,23 @@ def test_mismatched_session_cannot_read_or_submit(table: RunningTable) -> None:
 def test_wait_expiry_returns_receipt_and_preserves_submission(table: RunningTable) -> None:
     table.a.wait_timeout_seconds = 0.02
     first = table.a.play(table.a.session_id)["offer"]
+    assert first is not None
     proposal = proposal_for(first)
     expired = table.a.play(table.a.session_id, proposal)
     assert expired["status"] == "wait_expired"
+    assert expired["receipt"] is not None
     assert expired["receipt"]["status"] == "accepted"
     recovered = table.a.play(table.a.session_id)
     assert recovered["status"] == "wait_expired"
     assert recovered["offer"] is None
+    assert recovered["receipt"] is not None
     assert recovered["receipt"]["submission_id"] == proposal["submission_id"]
     assert table.a.stats()["submissions"] == 1
 
 
 def test_stale_view_is_rejected_without_changing_current_offer(table: RunningTable) -> None:
     first = table.a.play(table.a.session_id)["offer"]
+    assert first is not None
     proposal = proposal_for(first)
     proposal["view_id"] = "old-view"
     with pytest.raises(HarnessError) as error:
@@ -236,6 +259,7 @@ def test_stale_view_is_rejected_without_changing_current_offer(table: RunningTab
 
 def test_cancelled_request_before_staging_has_no_game_effect(table: RunningTable) -> None:
     first = table.a.play(table.a.session_id)["offer"]
+    assert first is not None
     cancel = Event()
     cancel.set()
     with pytest.raises(HarnessError) as error:
@@ -260,6 +284,7 @@ def test_decision_timeout_closes_offer_and_wakes_waiting_harness() -> None:
     table = RunningTable(decision_timeout=0.05)
     try:
         first = table.a.play(table.a.session_id)["offer"]
+        assert first is not None
         result = table.results.get(timeout=2)
         assert isinstance(result, MatchResult)
         assert result.outcome == MatchOutcome.FAILED
@@ -277,16 +302,19 @@ def test_accepted_notebook_is_in_next_offer() -> None:
     table = RunningTable(baseline_opponent=True, memory=True)
     try:
         first = table.a.play(table.a.session_id)["offer"]
+        assert first is not None
         proposal = proposal_for(first)
         proposal["memory"] = "Accepted note."
         response = table.a.play(table.a.session_id, proposal)
+        assert response["receipt"] is not None
         assert response["receipt"]["status"] == "accepted"
+        assert response["status"] == "decision"
         assert response["offer"]["memory"] == "Accepted note."
     finally:
         table.close()
 
 
-def play_to_end(session: SeatSession) -> dict[str, Any]:
+def play_to_end(session: SeatSession) -> TerminalReply:
     response = session.play(session.session_id)
     for _ in range(100):
         if response["status"] == "terminal":
@@ -303,13 +331,16 @@ def test_terminal_recovery_preserves_receipts_but_rejects_new_proposals() -> Non
     table = RunningTable(baseline_opponent=True)
     try:
         first = table.a.play(table.a.session_id)["offer"]
+        assert first is not None
         proposal = proposal_for(first)
         table.a.play(table.a.session_id, proposal)
         terminal = play_to_end(table.a)
         retry = table.a.play(table.a.session_id, proposal)
         assert retry["status"] == "terminal"
         assert retry["result"] == terminal["result"]
+        assert retry["receipt"] is not None
         assert retry["receipt"]["submission_id"] == proposal["submission_id"]
+        assert retry["receipt"] is not None
         assert retry["receipt"]["status"] == "accepted"
         unknown = {**proposal, "submission_id": "unknown"}
         with pytest.raises(HarnessError) as error:
@@ -322,7 +353,7 @@ def test_terminal_recovery_preserves_receipts_but_rejects_new_proposals() -> Non
 @pytest.mark.parametrize("communication", [False, True], ids=["classic", "communication"])
 def test_two_harnesses_finish_with_final_receipts_and_baseline_equivalent_state(communication: bool) -> None:
     table = RunningTable(communication=communication)
-    futures: list[Future[dict[str, Any]]] = []
+    futures: list[Future[TerminalReply]] = []
     try:
         with ThreadPoolExecutor(max_workers=2) as workers:
             futures = [workers.submit(play_to_end, session) for session in (table.a, table.b)]
@@ -332,6 +363,7 @@ def test_two_harnesses_finish_with_final_receipts_and_baseline_equivalent_state(
         assert result.outcome == MatchOutcome.FINISHED
         for response in responses:
             assert response["result"]["outcome"] == "finished"
+            assert response["receipt"] is not None
             assert response["receipt"]["status"] == "accepted"
             assert "seed" not in response["result"]
         baseline = run_match(

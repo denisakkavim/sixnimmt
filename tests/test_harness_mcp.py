@@ -13,6 +13,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from sixnimmt.arena.bots.external_harnesses.mcp import MCP_PROTOCOL_VERSION, game_tools
+from sixnimmt.arena.bots.external_harnesses.messages import GameInfo, TerminalReply
 from sixnimmt.arena.bots.external_harnesses.protocol import HarnessError
 from sixnimmt.arena.bots.external_harnesses.transport import ControllerServer
 
@@ -25,15 +26,37 @@ class MCPSeat:
         self.started = threading.Event()
         self.cancelled = threading.Event()
 
-    def get_game_info(self, session_id: str) -> dict[str, Any]:
-        return {"session_id": session_id, "rules": "sixnimmt rules"}
+    def get_game_info(self, session_id: str) -> GameInfo:
+        return {
+            "protocol_version": 1,
+            "session_id": session_id,
+            "player_id": "a",
+            "name": "A",
+            "rules": {},
+            "protocol": {},
+            "instructions": "sixnimmt rules",
+            "proposal_schema": {},
+            "memory_enabled": False,
+            "memory_max_chars": 4000,
+        }
 
     def play(
         self, session_id: str, proposal: dict[str, Any] | None = None, cancel: threading.Event | None = None
-    ) -> dict[str, Any]:
+    ) -> TerminalReply:
         self.started.set()
         if proposal is not None:
-            return {"status": "terminal", "result": {"reason": "finished"}}
+            return {
+                "status": "terminal",
+                "offer": None,
+                "receipt": None,
+                "result": {
+                    "outcome": "finished",
+                    "reason": "finished",
+                    "winners": [],
+                    "scores": {},
+                    "final_view": None,
+                },
+            }
         assert cancel is not None
         assert cancel.wait(10)
         self.cancelled.set()
@@ -141,7 +164,7 @@ def test_tool_schema_resolves_nested_proposal_definitions() -> None:
 def test_reads_authorized_game_info_as_structured_and_text_content(peer: WirePeer) -> None:
     peer.request(1, "tools/call", {"name": "get_game_info", "arguments": {"session_id": peer.seat.session_id}})
     response = peer.receive()["result"]
-    expected = {"session_id": peer.seat.session_id, "rules": "sixnimmt rules"}
+    expected = peer.seat.get_game_info(peer.seat.session_id)
     assert response["structuredContent"] == expected
     assert json.loads(response["content"][0]["text"]) == expected
     assert response["resultType"] == "complete"

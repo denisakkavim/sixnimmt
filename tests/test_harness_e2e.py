@@ -15,8 +15,9 @@ from sixnimmt.arena.bots.external_harnesses.broker import SeatSession
 from sixnimmt.arena.bots.external_harnesses.mcp import MCP_PROTOCOL_VERSION
 from sixnimmt.arena.bots.external_harnesses.transport import ControllerServer
 from sixnimmt.arena.bots.heuristics import LowestFittingCardBot
+from sixnimmt.arena.config import RunConfig
+from sixnimmt.arena.match import run_match
 from sixnimmt.arena.results import MatchOutcome
-from sixnimmt.arena.runner import RunConfig, run_match
 from sixnimmt.engine.replay import replay_events
 from sixnimmt.engine.rules import GameRules, MatchProtocol
 from sixnimmt.engine.state import PlayerSeat

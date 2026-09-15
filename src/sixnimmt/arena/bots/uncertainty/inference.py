@@ -3,9 +3,8 @@
 import math
 import random
 from dataclasses import dataclass, field
-from typing import NamedTuple
+from typing import Literal, NamedTuple, TypedDict
 
-import emcee
 import numpy as np
 from numpy.typing import NDArray
 from scipy.special import expit, log_expit, logit
@@ -14,6 +13,7 @@ from sixnimmt.arena.bots.uncertainty.history import HandHistory, InferenceError,
 from sixnimmt.arena.bots.uncertainty.likelihood import BatchedPosterior
 from sixnimmt.arena.bots.uncertainty.options import OpponentModelOptions, PolicyName
 from sixnimmt.arena.bots.uncertainty.policies import probability
+from sixnimmt.arena.bots.uncertainty.sampler import PosteriorSampler
 from sixnimmt.engine.views import MatchView
 
 
@@ -211,10 +211,28 @@ class BatchedLegalProposal:
         return proposed, np.zeros(count)
 
 
+class OpponentSummary(TypedDict):
+    policy_weights: dict[PolicyName, float]
+    epsilon_mean: float
+    epsilon_interval_90: list[float]
+
+
+class InferenceDiagnostics(TypedDict, total=False):
+    method: Literal["exact_prior", "emcee_batched_mh"]
+    particles: int
+    chains: int
+    burn_in_steps: int
+    draw_interval: int
+    retained_draws_per_chain: int
+    warm_start: bool
+    observed_plays: int
+    opponents: dict[str, OpponentSummary]
+
+
 class OpponentModel:
     def __init__(self, options: OpponentModelOptions) -> None:
         self.options = options
-        self.diagnostics: dict = {}
+        self.diagnostics: InferenceDiagnostics = {}
         self._rankings: RankingCache = {}
         self._completed: dict[CompletedHandKey, Features] = {}
         self._previous: PreviousInference | None = None
@@ -240,20 +258,15 @@ class OpponentModel:
         else:
             target = BatchedPosterior(posterior, self._rankings)
             proposal = BatchedLegalProposal(len(posterior.unseen), len(posterior.opponent_ids), self.options)
-            sampler = emcee.EnsembleSampler(
-                len(coordinates), coordinates.shape[1], target, moves=emcee.moves.MHMove(proposal), vectorize=True
-            )
-            sampler.random_state = sampling_rng.get_state()
+            sampler = PosteriorSampler(coordinates, target, proposal, sampling_rng)
             # Repaired previous worlds are warm starts, not posterior draws.
             # Always run the configured burn-in against the full current target.
-            state = sampler.run_mcmc(
-                coordinates, self.options.burn_in_steps, skip_initial_state_check=True, store=False
-            )
+            coordinates = sampler.advance(coordinates, self.options.burn_in_steps)
             worlds = []
             for _ in range(self.options.particle_count // self.options.chain_count):
-                state = sampler.run_mcmc(state, self.options.draw_interval, skip_initial_state_check=True, store=False)
-                worlds.extend(posterior.world(row) for row in state.coords)
-            endpoints = [posterior.world(row) for row in state.coords]
+                coordinates = sampler.advance(coordinates, self.options.draw_interval)
+                worlds.extend(posterior.world(row) for row in coordinates)
+            endpoints = [posterior.world(row) for row in coordinates]
             method = "emcee_batched_mh"
         self._previous = PreviousInference(
             view.match_id, view.hand_number, view.play_number, posterior.opponent_ids, tuple(endpoints)
@@ -361,8 +374,10 @@ def _partition(deck: list[int], sizes: tuple[int, ...]) -> tuple[tuple[tuple[int
     return tuple(hands), tuple(sorted(deck[offset:]))
 
 
-def _summaries(worlds: list[World], players: tuple[str, ...], options: OpponentModelOptions) -> dict:
-    summaries = {}
+def _summaries(
+    worlds: list[World], players: tuple[str, ...], options: OpponentModelOptions
+) -> dict[str, OpponentSummary]:
+    summaries: dict[str, OpponentSummary] = {}
     for index, player in enumerate(players):
         values = np.array([world.epsilons[index] for world in worlds])
         summaries[player] = {
@@ -371,6 +386,6 @@ def _summaries(worlds: list[World], players: tuple[str, ...], options: OpponentM
                 for number, name in enumerate(options.policies)
             },
             "epsilon_mean": float(np.mean(values)),
-            "epsilon_interval_90": np.quantile(values, [0.05, 0.95]).tolist(),
+            "epsilon_interval_90": [float(value) for value in np.quantile(values, [0.05, 0.95])],
         }
     return summaries

@@ -2,18 +2,19 @@
 
 import json
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from typing import Any
 
-from sixnimmt.arena.bots.external_harnesses.broker import PLAY_INSTRUCTIONS, SeatSession
+from sixnimmt.arena.bots.external_harnesses.broker import SeatSession
 from sixnimmt.arena.bots.external_harnesses.drivers import DriverError, DriverFormatError, ManagedCommandDriver
+from sixnimmt.arena.bots.external_harnesses.messages import DecisionOffer, GameInfo, PlayReply
 from sixnimmt.arena.bots.external_harnesses.protocol import (
     HarnessError,
     managed_proposal_schema,
     parse_managed_proposal,
 )
-from sixnimmt.arena.bots.lifecycle import DecisionDeadlineExceeded
 
 
 class ManagedSeatWorker:
@@ -23,12 +24,18 @@ class ManagedSeatWorker:
         self.session = session
         self.driver = driver
         self.stopped = Event()
+        self._close_lock = Lock()
+        self._closed = False
         self.thread = Thread(target=self._run, name=f"harness-{session.player_id}", daemon=True)
 
     def start(self) -> None:
         self.thread.start()
 
     def close(self) -> None:
+        with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
         self.stopped.set()
         self.driver.cancel()
         if self.thread.ident is not None:
@@ -43,15 +50,12 @@ class ManagedSeatWorker:
         except Exception as error:
             if self.stopped.is_set():
                 return
-            if isinstance(error, DriverError) and str(error) == "managed_decision_timeout":
-                error = DecisionDeadlineExceeded("managed_decision_timeout")
             self.session.fail(error)
 
     def _play_loop(self) -> None:
         info = self.session.get_game_info(self.session.session_id)
-        instructions = info["instructions"].removesuffix("\n\n" + PLAY_INSTRUCTIONS)
-        instructions += (
-            "\n\nReturn one final JSON proposal for the offered decision. Include protocol_version, "
+        instructions = self.session.instructions(
+            "Return one final JSON proposal for the offered decision. Include protocol_version, "
             "session_id, decision_id, submission_id, view_id, actions and memory. Copy the offered IDs "
             "and choose a fresh unique submission_id. The arena validates the complete proposal. "
             "Add an explanation of your proposed move in one or two concise sentences, at most 1000 characters. "
@@ -69,14 +73,13 @@ class ManagedSeatWorker:
             if response["status"] == "wait_expired":
                 response = self.session.play(self.session.session_id, cancel=self.stopped)
                 continue
-            offer = response.get("offer")
-            if response["status"] != "decision" or not isinstance(offer, dict):
+            if response["status"] != "decision":
                 msg = "managed worker received an unexpected broker response"
                 raise DriverError(msg)
-            offer = {**offer, "instructions": instructions}
+            offer: DecisionOffer = {**response["offer"], "instructions": instructions}
             response = self._submit_decision(offer, info)
 
-    def _submit_decision(self, offer: dict[str, Any], info: dict[str, Any]) -> dict[str, Any]:
+    def _submit_decision(self, offer: DecisionOffer, info: GameInfo) -> PlayReply:
         schema = managed_proposal_schema(
             offer, memory_enabled=info["memory_enabled"], memory_max_chars=info["memory_max_chars"]
         )
@@ -86,7 +89,7 @@ class ManagedSeatWorker:
         if isinstance(arena_deadline, str):
             remaining = (datetime.fromisoformat(arena_deadline) - datetime.now(UTC)).total_seconds()
             deadline = min(deadline, time.monotonic() + remaining)
-        request_offer = offer
+        request_offer: DecisionOffer = offer
         for attempt in range(2):
             context = {
                 "decision_id": offer["decision_id"],
@@ -142,9 +145,9 @@ class ManagedSeatWorker:
         raise DriverError(msg)
 
 
-def _bounded_data(name: str, value: dict[str, Any], max_bytes: int) -> dict[str, Any]:
+def _bounded_data(name: str, value: Mapping[str, object], max_bytes: int) -> dict[str, Any]:
     """Keep private diagnostics useful without unbounded prompts or trace records."""
-    encoded = json.dumps(value, ensure_ascii=True, separators=(",", ":"))
+    encoded = json.dumps(dict(value), ensure_ascii=True, separators=(",", ":"))
     if len(encoded) <= max_bytes:
         return {name: value}
     # A JSON excerpt is escaped again by the enclosing trace/prompt JSON.

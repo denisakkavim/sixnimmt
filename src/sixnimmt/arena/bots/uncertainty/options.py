@@ -6,8 +6,7 @@ from pydantic import BeforeValidator, Field, JsonValue, TypeAdapter, field_valid
 
 from sixnimmt.arena.bots.base import BotOptions
 
-PolicyName = Literal[
-    "random",
+DeterministicPolicyName = Literal[
     "lowest_card",
     "highest_card",
     "closest_gap",
@@ -16,6 +15,7 @@ PolicyName = Literal[
     "coldest_row",
     "hand_flexibility",
 ]
+PolicyName = Literal["random", DeterministicPolicyName]
 
 
 class OpponentModelOptions(BotOptions):
@@ -83,7 +83,7 @@ PenaltyObjective = Annotated[
     Field(discriminator="kind"),
     BeforeValidator(_normalize_objective),
 ]
-_OBJECTIVE_ADAPTER = TypeAdapter(PenaltyObjective)
+_OBJECTIVE_ADAPTER: TypeAdapter[PenaltyObjective] = TypeAdapter(PenaltyObjective)
 
 
 def parse_penalty_objective(value: object) -> PenaltyObjective:
@@ -108,7 +108,7 @@ def _normalize_row_policy(value: object) -> object:
 RowPolicyOptions = Annotated[
     CheapestRow | HandAwareRow, Field(discriminator="policy"), BeforeValidator(_normalize_row_policy)
 ]
-_ROW_POLICY_ADAPTER = TypeAdapter(RowPolicyOptions)
+_ROW_POLICY_ADAPTER: TypeAdapter[RowPolicyOptions] = TypeAdapter(RowPolicyOptions)
 
 
 def parse_row_policy(value: object) -> RowPolicyOptions:

@@ -19,6 +19,8 @@ from pydantic import Field, JsonValue, ValidationError, field_validator, model_v
 
 from sixnimmt.arena.bots.agent_contract import (
     ACTION_ADAPTER,
+    ActionTool,
+    ToolFunction,
 )
 from sixnimmt.arena.bots.agent_contract import (
     OBSERVATION_VERSION as OBSERVATION_VERSION,
@@ -220,7 +222,7 @@ class LLMBot(Bot):
     def _observation(self, view: MatchView, rejection: Rejection | None) -> str:
         return observation_text(view, rejection)
 
-    def _tools(self, view: MatchView) -> list[dict[str, Any]]:
+    def _tools(self, view: MatchView) -> list[ActionTool]:
         return action_tools(view, self.options.strict_tools)
 
     def _parse_memory(self, arguments: dict[str, Any]) -> str:
@@ -311,7 +313,7 @@ class LLMBot(Bot):
         msg = "model decision produced no action"
         raise ModelDecisionError(msg)
 
-    def _request_tools(self, view: MatchView) -> list[dict[str, Any]]:
+    def _request_tools(self, view: MatchView) -> list[ActionTool]:
         tools = self._tools(view)
         if self.options.simplified_tool_schemas:
             # Apply after subclasses add fields such as private memory. Local
@@ -434,9 +436,9 @@ class LLMMemoryBot(LLMBot):
             + json.dumps(self._memory, ensure_ascii=False)
         )
 
-    def _tools(self, view: MatchView) -> list[dict[str, Any]]:
+    def _tools(self, view: MatchView) -> list[ActionTool]:
         tools = super()._tools(view)
-        function = {
+        function: ToolFunction = {
             "name": "update_memory",
             "description": "Replace your private notebook if the whole transaction succeeds; omit to preserve it.",
             "parameters": {

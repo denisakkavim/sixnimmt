@@ -13,12 +13,20 @@ from uuid import uuid4
 from sixnimmt.arena.bots.agent_contract import (
     OBSERVATION_VERSION,
     PROMPT_VERSION,
-    SYSTEM_PROMPT,
     action_tools,
+    agent_instructions,
     match_instructions,
     observation_text,
 )
 from sixnimmt.arena.bots.base import ActionBatch, Rejection
+from sixnimmt.arena.bots.external_harnesses.messages import (
+    DecisionOffer,
+    GameInfo,
+    PlayReply,
+    ReplyStatus,
+    SubmissionReceipt,
+    TerminalResult,
+)
 from sixnimmt.arena.bots.external_harnesses.protocol import (
     PROPOSAL_SCHEMA,
     HarnessError,
@@ -37,10 +45,7 @@ from sixnimmt.arena.bots.lifecycle import (
 from sixnimmt.engine.rules import GameRules, MatchProtocol
 from sixnimmt.engine.views import MatchView
 
-HARNESS_PROMPT = SYSTEM_PROMPT.replace(
-    "Return one to eight typed tool calls together.",
-    "Submit a proposal containing one to eight operations (game actions plus an optional memory update).",
-).replace("A memory update may appear anywhere.", "The optional memory field is part of the same transaction.")
+HARNESS_PROMPT = agent_instructions("proposal")
 PLAY_INSTRUCTIONS = """Use play(session_id) to enter or recover this session. For each returned decision, submit
 one proposal with that offer's protocol_version, session_id, decision_id and view_id, a new unique submission_id,
 an actions array of typed game actions, and memory (null preserves the notebook). Do not include action envelope
@@ -83,23 +88,27 @@ class SeatSession:
         self.memory_max_chars = memory_max_chars
         self.ready = threading.Event()
         self._condition = threading.Condition()
-        self._instructions = match_instructions(protocol, rules.target_score, HARNESS_PROMPT, strategy_prompt)
-        self._instructions += "\n\n" + PLAY_INSTRUCTIONS
+        self._rules_instructions = match_instructions(protocol, rules.target_score, HARNESS_PROMPT, strategy_prompt)
+        self._instructions = self.instructions(PLAY_INSTRUCTIONS)
         self._match_id: str | None = None
         self._deadline: datetime | None = None
-        self._offer: dict[str, Any] | None = None
+        self._offer: DecisionOffer | None = None
         self._pending: tuple[Proposal, ActionBatch] | None = None
         self._active_submission: str | None = None
-        self._receipts: dict[str, dict[str, Any]] = {}
+        self._receipts: dict[str, SubmissionReceipt] = {}
         self._proposals: dict[str, str] = {}
         self._latest_submission: str | None = None
         self._waiting = False
         self._error: Exception | None = None
-        self._terminal: dict[str, Any] | None = None
+        self._terminal: TerminalResult | None = None
         self._memory: str | None = None
         self._protocol_errors = 0
 
-    def get_game_info(self, session_id: str) -> dict[str, Any]:
+    def instructions(self, delivery_instructions: str) -> str:
+        """Add transport delivery instructions without modifying rendered game rules."""
+        return self._rules_instructions + "\n\n" + delivery_instructions
+
+    def get_game_info(self, session_id: str) -> GameInfo:
         self._check_session(session_id)
         return {
             "protocol_version": 1,
@@ -184,7 +193,7 @@ class SeatSession:
 
     def play(
         self, session_id: str, proposal: dict[str, Any] | None = None, cancel: threading.Event | None = None
-    ) -> dict[str, Any]:
+    ) -> PlayReply:
         self._check_session(session_id)
         with self._condition:
             parsed = self._parse_submission(proposal) if proposal is not None else None
@@ -204,7 +213,7 @@ class SeatSession:
                 self._waiting = False
                 self._condition.notify_all()
 
-    def _wait_for_delivery(self, submission_id: str | None, cancel: threading.Event | None) -> dict[str, Any]:
+    def _wait_for_delivery(self, submission_id: str | None, cancel: threading.Event | None) -> PlayReply:
         expires = monotonic() + self.wait_timeout_seconds
         while True:
             if cancel is not None and cancel.is_set():
@@ -219,13 +228,22 @@ class SeatSession:
             # Checking RPC cancellation is local housekeeping, never a model/tool poll.
             self._condition.wait(timeout=remaining if cancel is None else min(remaining, 0.05))
 
-    def _reply(self, status: str, submission_id: str | None) -> dict[str, Any]:
-        return copy.deepcopy({
-            "status": status,
-            "offer": self._offer if status == "decision" else None,
-            "receipt": None if submission_id is None else self._receipts.get(submission_id),
-            "result": self._terminal if status == "terminal" else None,
-        })
+    def _reply(self, status: ReplyStatus, submission_id: str | None) -> PlayReply:
+        receipt = None if submission_id is None else self._receipts.get(submission_id)
+        reply: PlayReply
+        if status == "decision":
+            if self._offer is None:
+                msg = "a decision reply requires an offer"
+                raise RuntimeError(msg)
+            reply = {"status": "decision", "offer": self._offer, "receipt": receipt, "result": None}
+        elif status == "terminal":
+            if self._terminal is None:
+                msg = "a terminal reply requires a result"
+                raise RuntimeError(msg)
+            reply = {"status": "terminal", "offer": None, "receipt": receipt, "result": self._terminal}
+        else:
+            reply = {"status": status, "offer": None, "receipt": receipt, "result": None}
+        return copy.deepcopy(reply)
 
     def _actionable(self) -> bool:
         return (

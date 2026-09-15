@@ -326,7 +326,9 @@ def test_distinct_adapters_cannot_share_one_harness_session() -> None:
     assert "shared between seats" in result.lifecycle_errors[0][2]
     terminal = session.play(session.session_id)
     assert terminal["status"] == "terminal"
-    assert terminal["result"]["final_view"]["you"]["player_id"] == "player_1"
+    final_view = terminal["result"]["final_view"]
+    assert final_view is not None
+    assert MatchView.model_validate(final_view).you.player_id == "player_1"
 
 
 def test_controller_stop_is_abandonment_without_a_move() -> None:

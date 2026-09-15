@@ -12,9 +12,12 @@ import threading
 from collections.abc import Sequence
 from contextlib import suppress
 from types import TracebackType
-from typing import Any, Protocol, Self
+from typing import Any, Never, Protocol, Self
 from urllib.parse import urlsplit
 
+from pydantic import ValidationError
+
+from sixnimmt.arena.bots.external_harnesses.messages import GAME_INFO_ADAPTER, PLAY_REPLY_ADAPTER, GameInfo, PlayReply
 from sixnimmt.arena.bots.external_harnesses.protocol import HarnessError
 
 MAX_FRAME_BYTES = 4 * 1024 * 1024
@@ -29,11 +32,11 @@ class SeatEndpoint(Protocol):
     session_id: str
     credential: str
 
-    def get_game_info(self, session_id: str) -> dict[str, Any]: ...
+    def get_game_info(self, session_id: str) -> GameInfo: ...
 
     def play(
         self, session_id: str, proposal: dict[str, Any] | None = None, cancel: threading.Event | None = None
-    ) -> dict[str, Any]: ...
+    ) -> PlayReply: ...
 
 
 def _encode_frame(value: dict[str, Any]) -> bytes:
@@ -52,7 +55,7 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _reject_constant(value: str) -> Any:
+def _reject_constant(value: str) -> Never:
     raise HarnessError("invalid_request", "Non-finite JSON numbers are not allowed.")
 
 
@@ -63,7 +66,7 @@ def _finite_float(value: str) -> float:
     return number
 
 
-def decode_json(data: bytes) -> Any:
+def decode_json(data: bytes) -> object:
     """Decode strict JSON without accepting duplicate keys or NaN."""
     try:
         return json.loads(
@@ -136,7 +139,7 @@ class _ControllerTCPServer(socketserver.ThreadingTCPServer):
                 self.connections.discard(request)
             self.capacity.release()
 
-    def dispatch(self, request: dict[str, Any], cancel: threading.Event) -> dict[str, Any]:
+    def dispatch(self, request: dict[str, Any], cancel: threading.Event) -> GameInfo | PlayReply:
         session_id = request.get("session_id")
         credential = request.get("credential")
         if not isinstance(session_id, str) or not isinstance(credential, str):
@@ -289,13 +292,21 @@ class SeatClient:
         self._address = ("127.0.0.1", port)
         self._credential = credential
 
-    def get_game_info(self, session_id: str, cancel: threading.Event | None = None) -> dict[str, Any]:
-        return self._request("get_game_info", session_id, None, cancel)
+    def get_game_info(self, session_id: str, cancel: threading.Event | None = None) -> GameInfo:
+        response = self._request("get_game_info", session_id, None, cancel)
+        try:
+            return GAME_INFO_ADAPTER.validate_python(response, strict=True)
+        except ValidationError as error:
+            raise HarnessError("invalid_response", "The controller returned invalid game information.") from error
 
     def play(
         self, session_id: str, proposal: dict[str, Any] | None = None, cancel: threading.Event | None = None
-    ) -> dict[str, Any]:
-        return self._request("play", session_id, proposal, cancel)
+    ) -> PlayReply:
+        response = self._request("play", session_id, proposal, cancel)
+        try:
+            return PLAY_REPLY_ADAPTER.validate_python(response, strict=True)
+        except ValidationError as error:
+            raise HarnessError("invalid_response", "The controller returned an invalid play response.") from error
 
     def _request(
         self, method: str, session_id: str, proposal: dict[str, Any] | None, cancel: threading.Event | None

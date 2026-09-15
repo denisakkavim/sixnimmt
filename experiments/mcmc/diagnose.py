@@ -24,7 +24,7 @@ from sixnimmt.arena.bots.uncertainty.history import PublicHistory
 from sixnimmt.arena.bots.uncertainty.inference import LegalProposal, OpponentModel, Posterior
 from sixnimmt.arena.bots.uncertainty.options import OpponentModelOptions, PolicyName
 from sixnimmt.arena.bots.uncertainty.policies import choose_card
-from sixnimmt.arena.runner import run_match
+from sixnimmt.arena.match import run_match
 from sixnimmt.engine.actions import Action, SelectCardAction
 from sixnimmt.engine.rules import GameRules
 from sixnimmt.engine.views import MatchView

@@ -16,6 +16,7 @@ import pytest
 from sixnimmt.arena.bots.external_harnesses import drivers as harness_drivers
 from sixnimmt.arena.bots.external_harnesses.drivers import (
     CommandProfile,
+    DriverDeadlineExceeded,
     DriverError,
     ManagedCommandDriver,
     parse_final_json,
@@ -153,7 +154,7 @@ def test_output_limit_terminates_unbounded_output(tmp_path: Path) -> None:
 def test_managed_timeout_applies_without_an_arena_deadline(tmp_path: Path) -> None:
     driver = make_driver(tmp_path, "import time\ntime.sleep(10)\n", timeout_seconds=0.1)
     before = time.monotonic()
-    with pytest.raises(DriverError, match="managed_decision_timeout"):
+    with pytest.raises(DriverDeadlineExceeded, match="managed_decision_timeout"):
         driver.invoke({}, {}, {})
     assert time.monotonic() - before < 3
 
@@ -290,10 +291,10 @@ def test_claude_rejects_unsuccessful_or_unstructured_result(tmp_path: Path, resp
 
 def test_vendor_schema_requires_nullable_recipient_and_preserves_broker_schema() -> None:
     schema = structured_proposal_schema(PROPOSAL_SCHEMA)
-    message = schema["$defs"]["_SendMessage"]
+    message = schema["$defs"]["SendMessageAction"]
     assert "to_player" in message["required"]
     assert message["properties"]["to_player"]["anyOf"] == [{"type": "string"}, {"type": "null"}]
-    assert "to_player" not in PROPOSAL_SCHEMA["$defs"]["_SendMessage"]["required"]
+    assert "to_player" not in PROPOSAL_SCHEMA["$defs"]["SendMessageAction"]["required"]
     actions = schema["properties"]["actions"]["items"]
     assert "anyOf" in actions
     assert "oneOf" not in actions
