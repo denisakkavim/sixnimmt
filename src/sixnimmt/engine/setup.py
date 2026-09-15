@@ -18,7 +18,7 @@ from sixnimmt.engine.events import (
     audience_for_player,
 )
 from sixnimmt.engine.rules import GameRules, MatchProtocol
-from sixnimmt.engine.state import MatchState, Phase, PlayerSeat, PlayerState, RowState
+from sixnimmt.engine.state import MatchState, Phase, PlayerSeat, PlayerState, RowState, replace_player
 
 
 def _seats(players: Sequence[str | PlayerSeat]) -> tuple[PlayerSeat, ...]:
@@ -113,15 +113,14 @@ def _deal_hand(
     player_ids = [player.player_id for player in state.players]
     hands, row_starts, remainder = deal(shuffled_deck(state.match_seed, hand_number), player_ids)
     players = tuple(
-        player.model_copy(
-            update={
-                "hand": tuple(hands[player.player_id]),
-                "selection": None,
-                "committed": False,
-                "penalty_cards": (),
-                "score_this_hand": 0,
-                "actions_taken_this_play": 0,
-            }
+        replace_player(
+            player,
+            hand=tuple(hands[player.player_id]),
+            selection=None,
+            committed=False,
+            penalty_cards=(),
+            score_this_hand=0,
+            actions_taken_this_play=0,
         )
         for player in state.players
     )

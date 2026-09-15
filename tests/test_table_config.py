@@ -171,12 +171,16 @@ def test_llm_and_headless_models_use_the_same_catalogue_options_field(tmp_path: 
         assert isinstance(seat.bot, ManagedHarnessBot)
         assert seat.driver is not None
         assert seat.driver.profile.model == model
-        assert seat.seat.agent_metadata["bot_options"]["model"] == model
+        recorded = seat.seat.agent_metadata["bot_options"]
+        assert isinstance(recorded, dict)
+        assert recorded["model"] == model
         assert seat.worker is not None
         assert seat.worker.thread.ident is None
     assert isinstance(seats[2].bot, LLMBot)
     assert seats[2].bot.options.model == "api-example"
-    assert seats[2].seat.agent_metadata["bot_options"]["model"] == "api-example"
+    recorded = seats[2].seat.agent_metadata["bot_options"]
+    assert isinstance(recorded, dict)
+    assert recorded["model"] == "api-example"
 
 
 def test_repeated_catalogue_key_constructs_independent_headless_sessions(tmp_path: Path) -> None:

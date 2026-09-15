@@ -1,6 +1,7 @@
 """Game events. Each event names its audience, which alone decides who may see it."""
 
 import re
+from copy import deepcopy
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Literal, NotRequired, Self, TypedDict
@@ -248,6 +249,15 @@ class EventBase(EventEnvelope):
     """One concrete event type; subclasses fix the type discriminator."""
 
     model_config = ConfigDict(frozen=True)
+
+    def __getattribute__(self, name: str) -> object:
+        value: object = super().__getattribute__(name)
+        # Payloads retain their precise TypedDict API and JSON schema, while each
+        # read owns its nested dictionaries/lists. A caller cannot change a
+        # stored event or invalidate an audience check by editing a payload.
+        if name == "data":
+            return deepcopy(value)
+        return value
 
 
 class MatchCreatedEvent(EventBase):

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import JsonValue, ValidationError
 
 from sixnimmt.engine.actions import (
     ChooseRowAction,
@@ -84,7 +84,9 @@ def test_direct_message_emits_separate_content_copies_and_optional_occurrence(ex
         ({"max_actions_per_play": 1}, Phase.SELECTING, {}, ErrorCode.ACTION_BUDGET_EXHAUSTED),
     ],
 )
-def test_message_rejection_preserves_state(settings: dict, phase: Phase, message: dict, code: ErrorCode) -> None:
+def test_message_rejection_preserves_state(
+    settings: dict[str, JsonValue], phase: Phase, message: dict[str, JsonValue], code: ErrorCode
+) -> None:
     protocol = MatchProtocol.model_validate({"communication_enabled": True, **settings})
     state, _ = create_match("m", ["alice", "bob"], 12345, protocol=protocol)
     state = state.model_copy(

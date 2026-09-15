@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 from sixnimmt.common.text import check_representable
 
@@ -34,12 +34,12 @@ class ActionEnvelope(BaseModel):
     from_view: str | None = None
     # Retained compatibility metadata; the engine and arena do not enforce
     # an optimistic-concurrency guard on this value.
-    expected_view_version: int | None = None
+    expected_view_version: StrictInt | None = None
 
 
 class SelectCardAction(ActionEnvelope):
     type: Literal[ActionType.SELECT_CARD] = ActionType.SELECT_CARD
-    card: int = Field(ge=1, le=104)
+    card: StrictInt = Field(ge=1, le=104)
 
 
 class CommitAction(ActionEnvelope):
@@ -78,7 +78,7 @@ class ChooseRowAction(ActionEnvelope):
     # Unbounded here on purpose: which rows exist is a rule the engine owns and
     # the configuration can change, so it rejects a bad index rather than the
     # action model refusing to parse one.
-    row_index: int
+    row_index: StrictInt
 
 
 Action = Annotated[

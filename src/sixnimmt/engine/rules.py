@@ -1,9 +1,9 @@
 """Game configuration: fixed rules of 6 nimmt! plus per-match experiment settings."""
 
 from enum import StrEnum
-from typing import Literal
+from typing import ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class CardSelectionPolicy(StrEnum):
@@ -35,6 +35,7 @@ class GameRules(BaseModel):
     """The published rules of 6 nimmt!, not experimental parameters."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
+    _strict_scalar_inputs: ClassVar[bool] = True
 
     min_players: int = 2
     max_players: int = 10
@@ -43,6 +44,23 @@ class GameRules(BaseModel):
     row_capacity: Literal[5] = 5
     deck_size: Literal[104] = 104
     target_score: int = Field(default=66, gt=0)
+
+    @field_validator(
+        "min_players",
+        "max_players",
+        "cards_per_hand",
+        "row_count",
+        "row_capacity",
+        "deck_size",
+        "target_score",
+        mode="before",
+    )
+    @classmethod
+    def _check_integer_types(cls, value: object) -> object:
+        if cls._strict_scalar_inputs and type(value) is not int:
+            msg = "game rule values must be integers"
+            raise ValueError(msg)
+        return value
 
     @model_validator(mode="after")
     def _check_player_bounds(self) -> "GameRules":
@@ -63,6 +81,7 @@ class MatchProtocol(BaseModel):
 
     # A stale mode flag must not silently fall back to classic play.
     model_config = ConfigDict(frozen=True, extra="forbid")
+    _strict_scalar_inputs: ClassVar[bool] = True
 
     end_condition: EndCondition = EndCondition.TARGET_SCORE
     hands: int | None = None
@@ -74,6 +93,22 @@ class MatchProtocol(BaseModel):
     on_invalid_action: OnInvalidAction = OnInvalidAction.REJECT
     anonymise_display_names: bool = False
 
+    @field_validator("hands", "max_actions_per_play", "max_message_length", mode="before")
+    @classmethod
+    def _check_integer_types(cls, value: object) -> object:
+        if cls._strict_scalar_inputs and value is not None and type(value) is not int:
+            msg = "protocol counts and limits must be integers"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("communication_enabled", "allow_direct_messages", "anonymise_display_names", mode="before")
+    @classmethod
+    def _check_boolean_types(cls, value: object) -> object:
+        if cls._strict_scalar_inputs and type(value) is not bool:
+            msg = "protocol flags must be booleans"
+            raise ValueError(msg)
+        return value
+
     @model_validator(mode="after")
     def _check_fixed_hand_count(self) -> "MatchProtocol":
         if self.end_condition == EndCondition.FIXED_HANDS and (self.hands is None or self.hands < 1):
@@ -84,10 +119,12 @@ class MatchProtocol(BaseModel):
 
 class _RecordedRules(GameRules):
     # Historical values are facts about a recorded match, not new configuration.
+    _strict_scalar_inputs = False
     target_score: int = 66
 
 
 class _RecordedProtocol(MatchProtocol):
+    _strict_scalar_inputs = False
     max_message_length: int = 2000
 
 

@@ -45,6 +45,11 @@ mid-hand for reaching that threshold. All players sharing the lowest final score
 are winners. `MatchProtocol(end_condition="fixed_hands", hands=N)` instead plays
 exactly N hands, ignoring the target-score termination condition.
 
+New rule and protocol settings require integer counts and limits and boolean
+flags. Numeric strings, floats, and booleans used as counts are rejected.
+Recorded configurations use a separate compatibility decoder so older traces
+retain their original interpretation.
+
 ## Classic and communication modes
 
 In classic mode, selecting a card commits it automatically. Communication mode
@@ -72,6 +77,10 @@ block selection and messaging until answered.
 `MatchProtocol.max_actions_per_play` optionally limits each player's selections,
 commits, uncommits, and messages. Required row choices remain available at zero
 budget. This is separate from the arena's attempt limits; see [Running arenas](arena.md).
+
+Action card numbers, row indices, and optional view versions also require actual
+integers. Row indices remain unbounded when parsing an action: the engine checks
+whether the requested row exists when applying it.
 
 ## Information boundaries
 
@@ -102,6 +111,12 @@ These bounded windows are observations, not full experiment logs.
 the current state. An arena observer callback receives authoritative state and
 must be treated as privileged instrumentation. In-process bots are trusted
 Python code, not a security sandbox.
+
+Events expose `data` as a defensive snapshot, including nested dictionaries and
+lists. Reading it makes a copy; editing that copy changes neither the event nor
+its serialized trace. Consumers that inspect several payload fields should read
+`data` once and reuse that snapshot. Player metadata must contain JSON-compatible
+values, so unsupported objects are rejected when constructing `PlayerSeat`.
 
 Sources: [rules](../src/sixnimmt/engine/rules.py),
 [actions](../src/sixnimmt/engine/actions.py),

@@ -7,7 +7,7 @@ from sixnimmt.engine.events import ActionRejectedEvent, Event, MatchAbandonedEve
 from sixnimmt.engine.replay import replay_events
 from sixnimmt.engine.rules import GameRules, MatchProtocol
 from sixnimmt.engine.setup import create_match
-from sixnimmt.engine.state import MatchState, Phase, PlayerSeat
+from sixnimmt.engine.state import MatchState, Phase, PlayerSeat, replace_match
 from sixnimmt.engine.transition import transition
 
 CLASSIC = MatchProtocol()
@@ -45,15 +45,13 @@ def _checkpoints(
     return history
 
 
-def _comparable(state: MatchState) -> dict:
+def _comparable(state: MatchState) -> MatchState:
     """The live state in the form a log can reconstruct it.
 
     Only the undealt remainder is normalised: the deal records which cards went
     to hands and rows, but nothing records the order of the cards it never used.
     """
-    dumped = state.model_dump()
-    dumped["undealt_remainder"] = sorted(dumped["undealt_remainder"])
-    return dumped
+    return replace_match(state, undealt_remainder=tuple(sorted(state.undealt_remainder)))
 
 
 @pytest.mark.parametrize("player_count", [2, 3, 10])

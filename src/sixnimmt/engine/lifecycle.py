@@ -9,7 +9,7 @@ from sixnimmt.engine.events import (
 )
 from sixnimmt.engine.rules import EndCondition, GameRules, MatchProtocol
 from sixnimmt.engine.setup import start_hand
-from sixnimmt.engine.state import MatchState, Phase
+from sixnimmt.engine.state import MatchState, Phase, PlayerState, replace_match, replace_player
 
 
 def _play_penalties(state: MatchState) -> dict[str, int]:
@@ -20,34 +20,26 @@ def _play_penalties(state: MatchState) -> dict[str, int]:
     return {player.player_id: player.score_this_hand - before_scores[player.player_id] for player in state.players}
 
 
-def _reset_play_state(state: MatchState) -> tuple:
+def _reset_play_state(state: MatchState) -> tuple[PlayerState, ...]:
     return tuple(
-        player.model_copy(
-            update={
-                "selection": None,
-                "committed": False,
-                "actions_taken_this_play": 0,
-            }
-        )
-        for player in state.players
+        replace_player(player, selection=None, committed=False, actions_taken_this_play=0) for player in state.players
     )
 
 
 def _bank_hand_scores(state: MatchState) -> MatchState:
     players = tuple(
-        player.model_copy(
-            update={
-                "total_score": player.total_score + player.score_this_hand,
-                "score_this_hand": 0,
-                "penalty_cards": (),
-                "selection": None,
-                "committed": False,
-                "actions_taken_this_play": 0,
-            }
+        replace_player(
+            player,
+            total_score=player.total_score + player.score_this_hand,
+            score_this_hand=0,
+            penalty_cards=(),
+            selection=None,
+            committed=False,
+            actions_taken_this_play=0,
         )
         for player in state.players
     )
-    return state.model_copy(update={"players": players, "resolution": None})
+    return replace_match(state, players=players, resolution=None)
 
 
 def _should_end_match(state: MatchState, rules: GameRules, protocol: MatchProtocol) -> bool:
@@ -78,7 +70,7 @@ def _end_hand(
     if _should_end_match(banked, rules, protocol):
         lowest = min(totals.values())
         winners = sorted(player_id for player_id, total in totals.items() if total == lowest)
-        finished = banked.model_copy(update={"phase": Phase.FINISHED})
+        finished = replace_match(banked, phase=Phase.FINISHED)
         match_ended: Event = MatchEndedEvent(
             match_id=state.match_id,
             hand=state.hand_number,
@@ -115,13 +107,12 @@ def end_play(
         return next_state, [ended, *boundary_events]
 
     next_play_number = state.play_number + 1
-    next_play = state.model_copy(
-        update={
-            "phase": Phase.SELECTING,
-            "play_number": next_play_number,
-            "players": _reset_play_state(state),
-            "resolution": None,
-        }
+    next_play = replace_match(
+        state,
+        phase=Phase.SELECTING,
+        play_number=next_play_number,
+        players=_reset_play_state(state),
+        resolution=None,
     )
     started: Event = PlayStartedEvent(
         match_id=state.match_id,

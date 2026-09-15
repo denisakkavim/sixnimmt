@@ -34,7 +34,7 @@ def observation(rows: tuple[RowView, ...], hand: tuple[int, ...]) -> MatchView:
         match_id="simulation",
         view_version=0,
         view_id="simulation",
-        status="active",
+        status="in_progress",
         phase=Phase.SELECTING,
         hand_number=1,
         play_number=1,

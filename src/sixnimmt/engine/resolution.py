@@ -1,5 +1,7 @@
 """Card placement: tight fit, sixth-card capture, and the too-low pause."""
 
+from typing import Literal
+
 from sixnimmt.engine.cards import bull_heads
 from sixnimmt.engine.errors import EngineRejection, ErrorCode
 from sixnimmt.engine.events import (
@@ -9,7 +11,15 @@ from sixnimmt.engine.events import (
     RowChoiceRequiredEvent,
     RowTakenEvent,
 )
-from sixnimmt.engine.state import MatchState, Phase, ResolutionState, RowState
+from sixnimmt.engine.state import (
+    MatchState,
+    Phase,
+    ResolutionState,
+    RowState,
+    replace_match,
+    replace_player,
+    replace_resolution,
+)
 
 
 def eligible_row(rows: tuple[RowState, ...], card: int) -> int | None:
@@ -25,17 +35,16 @@ def eligible_row(rows: tuple[RowState, ...], card: int) -> int | None:
 
 
 def _capture_row(
-    state: MatchState, card: int, player_id: str, row_index: int, reason: str
+    state: MatchState, card: int, player_id: str, row_index: int, reason: Literal["sixth_card", "too_low"]
 ) -> tuple[MatchState, list[Event]]:
     row = next(row for row in state.rows if row.index == row_index)
     heads = sum(bull_heads(captured) for captured in row.cards)
     player_index = next(index for index, other in enumerate(state.players) if other.player_id == player_id)
     player = state.players[player_index]
-    updated_player = player.model_copy(
-        update={
-            "penalty_cards": player.penalty_cards + row.cards,
-            "score_this_hand": player.score_this_hand + heads,
-        }
+    updated_player = replace_player(
+        player,
+        penalty_cards=player.penalty_cards + row.cards,
+        score_this_hand=player.score_this_hand + heads,
     )
     players = tuple(updated_player if index == player_index else other for index, other in enumerate(state.players))
     rows = tuple(
@@ -63,7 +72,7 @@ def _capture_row(
             data={"card": card, "row": row_index, "row_cards": [card]},
         ),
     ]
-    new_state = state.model_copy(update={"players": players, "rows": rows})
+    new_state = replace_match(state, players=players, rows=rows)
     return new_state, events
 
 
@@ -79,7 +88,7 @@ def _append_card(state: MatchState, card: int, player_id: str, row_index: int) -
         audience="public",
         data={"card": card, "row": row_index, "row_cards": list(placed_row.cards)},
     )
-    return state.model_copy(update={"rows": rows}), [event]
+    return replace_match(state, rows=rows), [event]
 
 
 def _finish_card(state: MatchState, card: int, player_id: str, row_index: int) -> tuple[MatchState, list[Event]]:
@@ -105,11 +114,10 @@ def advance_resolution(state: MatchState) -> tuple[MatchState, list[Event]]:
     card, player_id = resolution.ordered_cards[resolution.next_index]
     target = eligible_row(state.rows, card)
     if target is None:
-        paused = state.model_copy(
-            update={
-                "phase": Phase.AWAITING_ROW_CHOICE,
-                "resolution": resolution.model_copy(update={"awaiting_player": player_id}),
-            }
+        paused = replace_match(
+            state,
+            phase=Phase.AWAITING_ROW_CHOICE,
+            resolution=replace_resolution(resolution, awaiting_player=player_id),
         )
         # Public: cards_revealed already published every card, so the only new
         # fact is who the game is now waiting for. Every viewer needs this
@@ -123,8 +131,8 @@ def advance_resolution(state: MatchState) -> tuple[MatchState, list[Event]]:
         )
         return paused, [event]
     new_state, events = _finish_card(state, card, player_id, target)
-    advanced = resolution.model_copy(update={"next_index": resolution.next_index + 1})
-    return new_state.model_copy(update={"resolution": advanced}), events
+    advanced = replace_resolution(resolution, next_index=resolution.next_index + 1)
+    return replace_match(new_state, resolution=advanced), events
 
 
 def choose_row(state: MatchState, player_id: str, row_index: int) -> tuple[MatchState, list[Event]]:
@@ -149,13 +157,10 @@ def choose_row(state: MatchState, player_id: str, row_index: int) -> tuple[Match
         data={"player_id": player_id, "row": row_index},
     )
     taken, placed = capture_events
-    continued = resumed.model_copy(
-        update={
-            "phase": Phase.RESOLVING,
-            "resolution": resolution.model_copy(
-                update={"awaiting_player": None, "next_index": resolution.next_index + 1}
-            ),
-        }
+    continued = replace_match(
+        resumed,
+        phase=Phase.RESOLVING,
+        resolution=replace_resolution(resolution, awaiting_player=None, next_index=resolution.next_index + 1),
     )
     # The choice causes the capture, so it is recorded before it: clients replay
     # this stream to animate the play, and a sweep must never precede its cause.

@@ -19,6 +19,8 @@ are not supported because matches cannot be resumed by another application versi
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from pydantic import JsonValue
+
 from sixnimmt.engine.cards import full_deck
 from sixnimmt.engine.events import Event, MatchCreatedEvent
 from sixnimmt.engine.state import (
@@ -27,7 +29,9 @@ from sixnimmt.engine.state import (
     PlayerState,
     ResolutionState,
     RowState,
+    replace_resolution,
 )
+from sixnimmt.engine.views import MatchStatus
 
 
 @dataclass
@@ -36,7 +40,7 @@ class _Seat:
 
     player_id: str
     display_name: str = ""
-    agent_metadata: dict = field(default_factory=dict)
+    agent_metadata: dict[str, JsonValue] = field(default_factory=dict)
     hand: list[int] = field(default_factory=list)
     selection: int | None = None
     committed: bool = False
@@ -84,7 +88,7 @@ class ReplayedMatch:
     abandoned: bool
 
     @property
-    def status(self) -> str:
+    def status(self) -> MatchStatus:
         if self.abandoned:
             return "abandoned"
         if self.state.phase == Phase.FINISHED:
@@ -162,7 +166,7 @@ def _place_card(replay: _Replay, row_index: int, row_cards: list[int]) -> None:
         raise ValueError(msg)
     # One `card_placed` per card, whether it fitted, capped a row, or was
     # chosen by a player, so this is the one place resolution advances.
-    replay.resolution = replay.resolution.model_copy(update={"next_index": replay.resolution.next_index + 1})
+    replay.resolution = replace_resolution(replay.resolution, next_index=replay.resolution.next_index + 1)
 
 
 def _take_row(replay: _Replay, player_id: str, captured: list[int], heads: int) -> None:
@@ -235,12 +239,12 @@ def _apply(replay: _Replay, event: Event) -> None:  # noqa: C901
             data = event.data
             replay.phase = Phase.AWAITING_ROW_CHOICE
             if replay.resolution is not None:
-                replay.resolution = replay.resolution.model_copy(update={"awaiting_player": data["player_id"]})
+                replay.resolution = replace_resolution(replay.resolution, awaiting_player=data["player_id"])
         case "row_choice_made":
             data = event.data
             replay.phase = Phase.RESOLVING
             if replay.resolution is not None:
-                replay.resolution = replay.resolution.model_copy(update={"awaiting_player": None})
+                replay.resolution = replace_resolution(replay.resolution, awaiting_player=None)
         case "hand_ended":
             data = event.data
             _end_hand(replay, data["totals"])

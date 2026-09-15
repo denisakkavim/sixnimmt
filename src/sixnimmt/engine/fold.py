@@ -10,6 +10,7 @@ from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
+from sixnimmt.engine.actions import ActionType
 from sixnimmt.engine.audience import Viewer, addressed_player, visible_events
 from sixnimmt.engine.cards import bull_heads
 from sixnimmt.engine.events import (
@@ -24,6 +25,7 @@ from sixnimmt.engine.events import (
 from sixnimmt.engine.rules import MatchProtocol, protocol_from_recording, rules_from_recording
 from sixnimmt.engine.state import Phase
 from sixnimmt.engine.views import (
+    MatchStatus,
     MatchView,
     MessageHistoryView,
     MessageView,
@@ -61,7 +63,7 @@ class _Seat:
 @dataclass
 class _Fold:
     match_id: str = ""
-    status: str = "pending"
+    status: MatchStatus = "pending"
     phase: Phase = Phase.SETUP
     hand_number: int = 1
     play_number: int = 1
@@ -311,12 +313,12 @@ def _apply(state: _Fold, event: Event, viewer: Viewer) -> None:  # noqa: C901
             pass
 
 
-def _legal_actions(state: _Fold, viewer: Viewer) -> tuple[str, ...]:
+def _legal_actions(state: _Fold, viewer: Viewer) -> tuple[ActionType, ...]:
     """Advisory only. The engine revalidates every action regardless."""
     if viewer.role != ViewRole.PLAYER:
         return ()
     if state.phase == Phase.AWAITING_ROW_CHOICE:
-        return ("choose_row",) if state.awaiting == viewer.player_id else ()
+        return (ActionType.CHOOSE_ROW,) if state.awaiting == viewer.player_id else ()
     if state.phase != Phase.SELECTING:
         return ()
     seat = state.seats.get(viewer.player_id if viewer.player_id is not None else "")
@@ -324,13 +326,13 @@ def _legal_actions(state: _Fold, viewer: Viewer) -> tuple[str, ...]:
         return ()
     if state.max_actions_per_play is not None and state.own_actions >= state.max_actions_per_play:
         return ()
-    actions = ["select_card"]
+    actions = [ActionType.SELECT_CARD]
     if state.communication_enabled:
         if state.own_selection is not None and not seat.committed:
-            actions.append("commit")
+            actions.append(ActionType.COMMIT)
         if seat.committed and not all(other.committed for other in state.seats.values()):
-            actions.append("uncommit")
-        actions.append("send_message")
+            actions.append(ActionType.UNCOMMIT)
+        actions.append(ActionType.SEND_MESSAGE)
     return tuple(actions)
 
 

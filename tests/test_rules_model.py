@@ -1,7 +1,7 @@
 """GameRules, MatchProtocol, and InformationPolicy defaults and validation."""
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, JsonValue, ValidationError
 
 from sixnimmt.engine.rules import (
     CardSelectionPolicy,
@@ -57,7 +57,7 @@ def test_match_protocol_defaults_play_to_66_without_communication() -> None:
         ({"min_players": 6, "max_players": 4}, "min above max"),
     ],
 )
-def test_game_rules_rejects_player_counts_outside_2_to_10(kwargs: dict, description: str) -> None:
+def test_game_rules_rejects_player_counts_outside_2_to_10(kwargs: dict[str, int], description: str) -> None:
     with pytest.raises(ValidationError):
         GameRules(**kwargs)
 
@@ -117,7 +117,7 @@ def test_game_rules_allows_a_target_score_the_engine_honours() -> None:
 @pytest.mark.parametrize(
     "model,settings", [(GameRules, {"target_socre": 30}), (InformationPolicy, {"private_message_existnce": "hidden"})]
 )
-def test_configuration_rejects_misspelled_settings(model, settings: dict) -> None:
+def test_configuration_rejects_misspelled_settings(model: type[BaseModel], settings: dict[str, JsonValue]) -> None:
     with pytest.raises(ValidationError, match="Extra inputs"):
         model.model_validate(settings)
 
@@ -144,3 +144,43 @@ def test_recorded_configuration_retains_public_model_equality() -> None:
     protocol = MatchProtocol(max_message_length=73)
     assert rules_from_recording(rules.model_dump()) == rules
     assert protocol_from_recording(protocol.model_dump()) == protocol
+
+
+@pytest.mark.parametrize("value", [True, "2", 2.0])
+@pytest.mark.parametrize("field_name", ["min_players", "max_players", "target_score"])
+def test_rule_integer_inputs_reject_coercion(field_name: str, value: JsonValue) -> None:
+    with pytest.raises(ValidationError, match="must be integers"):
+        GameRules.model_validate({field_name: value})
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [("cards_per_hand", 10.0), ("row_count", 4.0), ("row_capacity", 5.0), ("deck_size", 104.0)],
+)
+def test_fixed_rule_numbers_require_integer_types(field_name: str, value: float) -> None:
+    with pytest.raises(ValidationError, match="must be integers"):
+        GameRules.model_validate({field_name: value})
+
+
+@pytest.mark.parametrize("value", [True, "2", 2.0])
+@pytest.mark.parametrize("field_name", ["hands", "max_actions_per_play", "max_message_length"])
+def test_protocol_integer_inputs_reject_coercion(field_name: str, value: JsonValue) -> None:
+    with pytest.raises(ValidationError, match="must be integers"):
+        MatchProtocol.model_validate({field_name: value})
+
+
+@pytest.mark.parametrize("value", [1, "true"])
+@pytest.mark.parametrize("field_name", ["communication_enabled", "allow_direct_messages", "anonymise_display_names"])
+def test_protocol_boolean_inputs_reject_coercion(field_name: str, value: JsonValue) -> None:
+    with pytest.raises(ValidationError, match="must be booleans"):
+        MatchProtocol.model_validate({field_name: value})
+
+
+def test_recorded_configuration_preserves_legacy_scalar_decoding() -> None:
+    rules = rules_from_recording({"target_score": "0", "cards_per_hand": 10.0})
+    protocol = protocol_from_recording({"max_message_length": "-1", "communication_enabled": "false"})
+
+    assert rules.target_score == 0
+    assert rules.cards_per_hand == 10
+    assert protocol.max_message_length == -1
+    assert protocol.communication_enabled is False

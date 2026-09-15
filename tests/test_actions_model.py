@@ -1,12 +1,11 @@
 """Typed actions: envelope fields and dispatch on the type field."""
 
-from typing import Literal
-
 import pytest
-from pydantic import TypeAdapter, ValidationError
+from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from sixnimmt.engine.actions import (
     Action,
+    ActionType,
     ChooseRowAction,
     CommitAction,
     MessageVisibility,
@@ -56,17 +55,19 @@ def test_table_message_rejects_recipient() -> None:
 @pytest.mark.parametrize(
     ("payload", "expected_type"),
     [
-        ({"type": "select_card", "card": 62}, "select_card"),
-        ({"type": "commit"}, "commit"),
-        ({"type": "uncommit"}, "uncommit"),
+        ({"type": "select_card", "card": 62}, ActionType.SELECT_CARD),
+        ({"type": "commit"}, ActionType.COMMIT),
+        ({"type": "uncommit"}, ActionType.UNCOMMIT),
         (
             {"type": "send_message", "visibility": "table", "body": "hi"},
-            "send_message",
+            ActionType.SEND_MESSAGE,
         ),
-        ({"type": "choose_row", "row_index": 0}, "choose_row"),
+        ({"type": "choose_row", "row_index": 0}, ActionType.CHOOSE_ROW),
     ],
 )
-def test_action_union_dispatches_on_type_discriminator(payload: dict, expected_type: Literal["select_card"]) -> None:
+def test_action_union_dispatches_on_type_discriminator(
+    payload: dict[str, JsonValue], expected_type: ActionType
+) -> None:
     adapter: TypeAdapter[Action] = TypeAdapter(Action)
 
     action = adapter.validate_python(payload)
@@ -88,3 +89,26 @@ def test_actions_round_trip_through_json() -> None:
     restored = adapter.validate_json(adapter.dump_json(action))
 
     assert restored == action
+
+
+@pytest.mark.parametrize("value", [True, "2", 2.0])
+@pytest.mark.parametrize(
+    ("action_type", "field_name"),
+    [
+        ("select_card", "card"),
+        ("choose_row", "row_index"),
+        ("commit", "expected_view_version"),
+    ],
+)
+def test_action_integer_fields_reject_scalar_coercion(action_type: str, field_name: str, value: JsonValue) -> None:
+    adapter: TypeAdapter[Action] = TypeAdapter(Action)
+
+    with pytest.raises(ValidationError):
+        adapter.validate_python({"type": action_type, field_name: value})
+
+
+@pytest.mark.parametrize("row_index", [-1, 4])
+def test_row_indices_remain_unbounded_until_the_engine_checks_them(row_index: int) -> None:
+    action = ChooseRowAction(row_index=row_index)
+
+    assert action.row_index == row_index

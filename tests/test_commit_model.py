@@ -1,7 +1,7 @@
 """Classic commit model: select commits atomically, unanimity starts resolution."""
 
 import pytest
-from pydantic import TypeAdapter
+from pydantic import JsonValue, TypeAdapter
 
 from sixnimmt.engine.actions import (
     Action,
@@ -14,18 +14,18 @@ from sixnimmt.engine.errors import EngineRejection, ErrorCode
 from sixnimmt.engine.events import Event
 from sixnimmt.engine.rules import GameRules, MatchProtocol
 from sixnimmt.engine.setup import create_match
-from sixnimmt.engine.state import Phase
+from sixnimmt.engine.state import MatchState, Phase
 from sixnimmt.engine.transition import transition
 
 ACTION_ADAPTER: TypeAdapter[Action] = TypeAdapter(Action)
 EVENT_ADAPTER: TypeAdapter[Event] = TypeAdapter(Event)
 
 
-def _parse(data: dict) -> Action:
+def _parse(data: dict[str, JsonValue]) -> Action:
     return ACTION_ADAPTER.validate_python(data)
 
 
-def _two_player_match() -> tuple:
+def _two_player_match() -> tuple[MatchState, list[Event]]:
     return create_match("m_01", ["alice", "bob"], match_seed=12345)
 
 

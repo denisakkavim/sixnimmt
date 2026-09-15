@@ -1,12 +1,15 @@
 """Per-role projections of match state. A viewer sees only their own view."""
 
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from sixnimmt.engine.actions import MessageVisibility
+from sixnimmt.engine.actions import ActionType, MessageVisibility
 from sixnimmt.engine.rules import MatchProtocol
 from sixnimmt.engine.state import Phase
+
+type MatchStatus = Literal["pending", "in_progress", "finished", "abandoned"]
 
 
 class ViewRole(StrEnum):
@@ -105,7 +108,7 @@ class MatchView(BaseModel):
     # Opaque identifier for this exact projection. Must not encode anything
     # (global counters, timestamps) that would leak hidden activity.
     view_id: str
-    status: str
+    status: MatchStatus
     phase: Phase
     hand_number: int
     play_number: int
@@ -120,7 +123,7 @@ class MatchView(BaseModel):
     awaiting: str | None = None
     awaiting_card: int | None = None
     # Advisory presentation hint. The action runner revalidates everything.
-    legal_actions: tuple[str, ...] = ()
+    legal_actions: tuple[ActionType, ...] = ()
     target_score: int = 66
     protocol: MatchProtocol = Field(default_factory=MatchProtocol)
     messages: tuple[MessageView, ...] = ()

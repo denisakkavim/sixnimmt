@@ -1,5 +1,7 @@
 """The only mutator: apply one player's action and return new state plus events."""
 
+from typing import Unpack
+
 from sixnimmt.engine.actions import (
     Action,
     ChooseRowAction,
@@ -28,7 +30,11 @@ from sixnimmt.engine.lifecycle import end_play
 from sixnimmt.engine.resolution import advance_resolution
 from sixnimmt.engine.resolution import choose_row as resolve_row_choice
 from sixnimmt.engine.rules import GameRules, MatchProtocol, PrivateMessageExistence
-from sixnimmt.engine.state import MatchState, Phase, ResolutionState
+from sixnimmt.engine.state import MatchState, Phase, PlayerChanges, ResolutionState, replace_match, replace_player
+
+type PublicPlayerEvent = (
+    SelectionClearedEvent | SelectionRegisteredEvent | PlayerCommittedEvent | PlayerUncommittedEvent
+)
 
 
 def _find_player(state: MatchState, player_id: str) -> int:
@@ -39,10 +45,10 @@ def _find_player(state: MatchState, player_id: str) -> int:
     raise EngineRejection(ErrorCode.UNKNOWN_PLAYER, msg)
 
 
-def _replace_player(state: MatchState, player_index: int, **updates: object) -> MatchState:
-    updated = state.players[player_index].model_copy(update=updates)
+def _replace_player(state: MatchState, player_index: int, **updates: Unpack[PlayerChanges]) -> MatchState:
+    updated = replace_player(state.players[player_index], **updates)
     players = tuple(updated if index == player_index else player for index, player in enumerate(state.players))
-    return state.model_copy(update={"players": players})
+    return replace_match(state, players=players)
 
 
 def _check_action_budget(state: MatchState, player_index: int, protocol: MatchProtocol) -> None:
@@ -89,7 +95,7 @@ def _selection_event(state: MatchState, player_id: str, card: int) -> Event:
     )
 
 
-def _public_player_event(state: MatchState, event_type: type[Event], player_id: str) -> Event:
+def _public_player_event(state: MatchState, event_type: type[PublicPlayerEvent], player_id: str) -> PublicPlayerEvent:
     return event_type(
         match_id=state.match_id,
         hand=state.hand_number,
@@ -111,31 +117,19 @@ def _begin_resolution(state: MatchState) -> tuple[MatchState, list[Event]]:
             raise EngineRejection(ErrorCode.NO_SELECTION_TO_COMMIT, msg)
         hand = list(player.hand)
         hand.remove(player.selection)
-        players.append(
-            player.model_copy(
-                update={
-                    "hand": tuple(hand),
-                    "selection": None,
-                    "committed": False,
-                }
-            )
-        )
+        players.append(replace_player(player, hand=tuple(hand), selection=None, committed=False))
         ordered_pairs.append((player.selection, player.player_id))
         revealed[player.player_id] = player.selection
         scores_before_play.append((player.player_id, player.score_this_hand))
 
     ordered = tuple(sorted(ordered_pairs))
     revealed_cards = tuple(card for card, _ in ordered)
-    resolving = state.model_copy(
-        update={
-            "phase": Phase.RESOLVING,
-            "players": tuple(players),
-            "resolution": ResolutionState(
-                ordered_cards=ordered,
-                scores_before_play=tuple(scores_before_play),
-            ),
-            "revealed_this_hand": (*state.revealed_this_hand, revealed_cards),
-        }
+    resolving = replace_match(
+        state,
+        phase=Phase.RESOLVING,
+        players=tuple(players),
+        resolution=ResolutionState(ordered_cards=ordered, scores_before_play=tuple(scores_before_play)),
+        revealed_this_hand=(*state.revealed_this_hand, revealed_cards),
     )
     events: list[Event] = [
         PlayCommittedEvent(

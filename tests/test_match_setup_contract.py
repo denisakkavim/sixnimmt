@@ -1,6 +1,7 @@
 """Match creation rejects malformed line-ups, and sequencing numbers a batch."""
 
 import pytest
+from pydantic import ValidationError
 
 from sixnimmt.engine.errors import EngineRejection, ErrorCode
 from sixnimmt.engine.events import assign_sequence
@@ -119,3 +120,9 @@ def test_a_player_id_outside_the_wire_safe_grammar_is_rejected(player_id: str, d
         open_match("m_01", [player_id, "bob"], match_seed=1)
 
     assert caught.value.code == ErrorCode.INVALID_PLAYER_ID
+
+
+@pytest.mark.parametrize("value", [object(), float("nan"), float("inf")])
+def test_player_metadata_rejects_non_json_values_at_construction(value: object) -> None:
+    with pytest.raises(ValidationError):
+        PlayerSeat.model_validate({"player_id": "alice", "agent_metadata": {"unsupported": value}})

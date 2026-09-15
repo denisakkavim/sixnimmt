@@ -4,6 +4,7 @@ import pytest
 from pydantic import TypeAdapter
 
 from sixnimmt.engine.actions import Action
+from sixnimmt.engine.events import Event
 from sixnimmt.engine.rules import EndCondition, GameRules, MatchProtocol
 from sixnimmt.engine.setup import create_match
 from sixnimmt.engine.state import MatchState, Phase, PlayerState, RowState
@@ -163,9 +164,9 @@ def test_fixed_hands_match_ends_at_the_configured_hand_limit() -> None:
 def _play_full_play_collecting_events(
     state: MatchState,
     protocol: MatchProtocol | None = None,
-) -> tuple[MatchState, list]:
+) -> tuple[MatchState, list[Event]]:
     current = state
-    collected: list = []
+    collected: list[Event] = []
     for player in state.players:
         action = _ACTION_ADAPTER.validate_python({"type": "select_card", "card": player.hand[0]})
         current, events = transition(
