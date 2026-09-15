@@ -12,11 +12,13 @@ import tempfile
 from collections import Counter
 from pathlib import Path
 
+import typer
 from pydantic import BaseModel, TypeAdapter
 
 type DiagnosticKey = tuple[str, int, str]
 
 EXPECTATION = re.compile(r"# expect: ([a-z][a-z-]*(?:, [a-z][a-z-]*)*)\s*$")
+app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 
 
 class Position(BaseModel):
@@ -105,15 +107,15 @@ def check_contracts(project: Path) -> tuple[list[str], int, int]:
     return failures, len(fixtures), expected.total()
 
 
-def main() -> int:
+@app.command(help=__doc__)
+def main() -> None:
     project = Path(__file__).resolve().parents[1]
     failures, fixture_count, diagnostic_count = check_contracts(project)
     if len(failures) > 0:
-        print("\n".join(failures), file=sys.stderr)
-        return 1
-    print(f"Typing contracts passed ({fixture_count} fixtures, {diagnostic_count} expected diagnostics).")
-    return 0
+        typer.echo("\n".join(failures), err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"Typing contracts passed ({fixture_count} fixtures, {diagnostic_count} expected diagnostics).")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    app()

@@ -6,7 +6,6 @@ boolean. Checks run on temporary source copies, which are never executed.
 
 from __future__ import annotations
 
-import argparse
 import ast
 import json
 import re
@@ -16,8 +15,12 @@ import sys
 import tempfile
 import tokenize
 from pathlib import Path
+from typing import Annotated
+
+import typer
 
 HELPER = "__sixnimmt_boolean_condition__"
+app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 
 
 def condition_values(tree: ast.AST) -> list[ast.expr]:
@@ -276,33 +279,33 @@ def check_staged(project: Path) -> list[str]:
         return check_snapshot(snapshot, sorted(changed), changed)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("paths", nargs="*", type=Path)
-    parser.add_argument(
-        "--all-files", action="store_true", help="Audit all working-tree Python files instead of the staged diff"
-    )
-    arguments = parser.parse_args()
+@app.command(help=__doc__)
+def main(
+    paths: Annotated[list[Path] | None, typer.Argument(help="Working-tree Python files to check.")] = None,
+    all_files: Annotated[
+        bool, typer.Option("--all-files", help="Audit all working-tree Python files instead of the staged diff")
+    ] = False,
+) -> None:
     project = Path(__file__).resolve().parents[1]
-    if arguments.all_files and len(arguments.paths) > 0:
-        parser.error("Use either --all-files or explicit paths")
+    if all_files and paths is not None and len(paths) > 0:
+        message = "Use either --all-files or explicit paths"
+        raise typer.BadParameter(message)
     try:
-        if arguments.all_files:
+        if all_files:
             failures = check_paths(project, python_files(project))
-        elif len(arguments.paths) > 0:
-            failures = check_paths(project, arguments.paths)
+        elif paths is not None and len(paths) > 0:
+            failures = check_paths(project, paths)
         else:
             failures = check_staged(project)
     except (OSError, ValueError, RuntimeError, SyntaxError, subprocess.SubprocessError) as error:
-        print(f"explicit-truthiness: {error}", file=sys.stderr)
-        return 2
+        typer.echo(f"explicit-truthiness: {error}", err=True)
+        raise typer.Exit(code=2) from error
     for failure in failures:
-        print(failure)
+        typer.echo(failure)
     if len(failures) > 0:
-        print('Use an explicit comparison, such as `is not None`, `len(value) > 0`, or `value != ""`.')
-        return 1
-    return 0
+        typer.echo('Use an explicit comparison, such as `is not None`, `len(value) > 0`, or `value != ""`.')
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    app()

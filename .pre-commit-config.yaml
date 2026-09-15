@@ -39,3 +39,10 @@ repos:
         files: '\.(py|pyi)$|(^|/)(pyproject\.toml|uv\.lock)$'
         pass_filenames: false
         require_serial: true
+      - id: typing-contracts
+        name: typing contracts
+        entry: uv run python scripts/check_typing.py
+        language: system
+        files: '\.(py|pyi|py\.txt)$|(^|/)(pyproject\.toml|uv\.lock)$'
+        pass_filenames: false
+        require_serial: true

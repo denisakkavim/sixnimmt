@@ -88,6 +88,9 @@ checks positive/negative static API fixtures. The fixtures under `tests/typing`
 use `.py.txt` names so intentional errors do not enter the normal type check.
 Each negative case must produce the expected diagnostic on its marked line;
 missing and unexpected diagnostics both fail.
+The `typing-contracts` pre-commit hook runs these fixtures when Python files,
+typing fixtures, or dependency files change; `make check` includes it through
+pre-commit. Run it directly with `uv run pre-commit run typing-contracts --all-files`.
 Some hooks format files automatically; review their changes before committing.
 To run formatting, linting, and type checks individually:
 
@@ -97,6 +100,8 @@ uv run ruff check . --no-fix
 uv run ty check
 uv run python scripts/check_typing.py
 ```
+
+Both repository check scripts accept `--help` for their command-line usage.
 
 `make test` runs the default suite with coverage. Both it and `uv run pytest`
 exclude `arena_slow`. For changes affecting gameplay, scheduling, determinism,
