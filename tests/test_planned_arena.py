@@ -394,6 +394,7 @@ def test_stop_on_failure_persists_every_submitted_outcome_and_unstarted_job(
 
 def test_crashed_process_preserves_lost_and_unstarted_jobs(audit_registry: None, tmp_path: Path) -> None:
     directory = tmp_path / "run"
+    config = RunConfig(backend="process", concurrency=2)
     plan = build_arena_plan(
         RunSettings(
             catalogue=(CandidateConfig(bot="audit", options={"output_directory": str(directory), "crash": True}),),
@@ -403,12 +404,16 @@ def test_crashed_process_preserves_lost_and_unstarted_jobs(audit_registry: None,
         )
     )
     with pytest.raises(RunExecutionError, match="saved run") as captured:
-        run_plan(plan, output_dir=directory, config=RunConfig(backend="process", concurrency=2))
+        run_plan(plan, output_dir=directory, config=config)
     run = load_run(directory)
     assert run == captured.value.run
     assert run.status.state == "failed"
-    assert len(run.status.lost_job_ids) == 2
-    assert len(run.status.unstarted_job_ids) == 8
+    # The pool may break before the parent submits work to every slot.
+    started = len(run.status.started_job_ids)
+    assert 1 <= started <= config.concurrency
+    assert run.status.lost_job_ids == run.status.started_job_ids
+    assert run.status.unstarted_job_ids == tuple(job.job_id for job in plan.jobs[started:])
+    assert run.status.completed_job_ids == ()
     assert run.results == ()
 
 
@@ -427,16 +432,18 @@ def test_timeout_limit_retains_returned_failures_and_unavailable_resources(
             rotations=False,
         )
     )
-    with pytest.raises(RunExecutionError, match="max_abandoned_decisions"):
-        run_plan(
-            plan,
-            output_dir=directory,
-            config=RunConfig(backend=backend, concurrency=2, decision_timeout_seconds=0.01, max_abandoned_decisions=0),
-        )
+    config = RunConfig(backend=backend, concurrency=2, decision_timeout_seconds=0.01, max_abandoned_decisions=0)
+    with pytest.raises(RunExecutionError, match="max_abandoned_decisions") as captured:
+        run_plan(plan, output_dir=directory, config=config)
     run = load_run(directory)
-    assert run.status.decisions_abandoned == len(run.results) == 2
+    assert run == captured.value.run
+    # A timeout can stop submission before every worker slot is filled.
+    started = len(run.status.started_job_ids)
+    assert 1 <= started <= config.concurrency
+    assert run.status.completed_job_ids == run.status.started_job_ids == tuple(record.job_id for record in run.results)
+    assert run.status.decisions_abandoned == started
     assert run.status.lost_job_ids == ()
-    assert len(run.status.unstarted_job_ids) == 8
+    assert run.status.unstarted_job_ids == tuple(job.job_id for job in plan.jobs[started:])
     for record in run.results:
         assert record.reason == "decision_timeout"
         assert record.scores is None

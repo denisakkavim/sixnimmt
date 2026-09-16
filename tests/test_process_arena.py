@@ -300,6 +300,7 @@ def test_process_stop_on_failure_drains_submitted_matches(fault_registry: None) 
 
 def test_crashed_process_reports_run_error_and_writes_manifest(fault_registry: None, tmp_path: Path) -> None:
     directory = tmp_path / "trace"
+    config = RunConfig(backend="process", concurrency=2)
     with pytest.raises(ArenaError, match="arena execution failed"):
         run_fixed(
             [PlayerConfig(bot="fault", options={"mode": "crash"}), PlayerConfig(bot="random")],
@@ -307,10 +308,14 @@ def test_crashed_process_reports_run_error_and_writes_manifest(fault_registry: N
             123,
             output_dir=directory,
             trace=True,
-            config=RunConfig(backend="process", concurrency=2),
+            config=config,
         )
     status = load_run(directory).status
-    assert len(status.started_job_ids) == len(status.lost_job_ids) == 2
+    # A process can crash before the next job is submitted.
+    started = len(status.started_job_ids)
+    assert 1 <= started <= config.concurrency
+    assert status.lost_job_ids == status.started_job_ids
+    assert status.unstarted_job_ids == status.planned_job_ids[started:]
     assert status.completed_job_ids == ()
     assert status.error is not None and "BrokenProcessPool" in status.error
 
@@ -332,6 +337,7 @@ def test_process_timeouts_are_counted_across_workers(fault_registry: None, tmp_p
 
 def test_process_abandoned_bound_stops_new_matches(fault_registry: None, tmp_path: Path) -> None:
     directory = tmp_path / "trace"
+    config = RunConfig(backend="process", concurrency=2, decision_timeout_seconds=0.05, max_abandoned_decisions=0)
     with pytest.raises(ArenaError, match="max_abandoned_decisions"):
         run_fixed(
             [PlayerConfig(bot="fault", options={"mode": "blocked"}), PlayerConfig(bot="random")],
@@ -339,13 +345,17 @@ def test_process_abandoned_bound_stops_new_matches(fault_registry: None, tmp_pat
             123,
             output_dir=directory,
             trace=True,
-            config=RunConfig(
-                backend="process", concurrency=2, decision_timeout_seconds=0.05, max_abandoned_decisions=0
-            ),
+            config=config,
         )
-    status = load_run(directory).status
-    assert len(status.started_job_ids) == len(status.completed_job_ids) == 2
-    assert status.decisions_abandoned == 2
+    run = load_run(directory)
+    status = run.status
+    # Process startup and manifest writes can allow a timeout before the next submission.
+    started = len(status.started_job_ids)
+    assert 1 <= started <= config.concurrency
+    assert status.completed_job_ids == status.started_job_ids == tuple(record.job_id for record in run.results)
+    assert status.decisions_abandoned == started
+    assert status.lost_job_ids == ()
+    assert status.unstarted_job_ids == status.planned_job_ids[started:]
 
 
 def test_late_process_decisions_release_active_slots(fault_registry: None) -> None:

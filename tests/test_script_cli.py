@@ -6,8 +6,22 @@ import sys
 from pathlib import Path
 
 import pytest
+from rich.text import Text
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+
+
+@pytest.fixture(params=[False, True], ids=["plain", "github-color"])
+def colored_output(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> bool:
+    enabled = request.param is True
+    for name in ("GITHUB_ACTIONS", "FORCE_COLOR", "PY_COLORS", "NO_COLOR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TTY_COMPATIBLE", "1" if enabled else "0")
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("COLUMNS", "120")
+    if enabled:
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    return enabled
 
 
 @pytest.fixture
@@ -33,12 +47,14 @@ def invoke_script(project: Path, name: str, *arguments: str) -> subprocess.Compl
 
 
 @pytest.mark.parametrize("name", ["check_typing.py", "precommit_truthiness_check.py"])
-def test_script_help_succeeds_without_running_checks(script_project: Path, name: str) -> None:
+def test_script_help_succeeds_without_running_checks(script_project: Path, name: str, colored_output: bool) -> None:
     result = invoke_script(script_project, name, "--help")
+    help_text = Text.from_ansi(result.stdout).plain
 
     assert result.returncode == 0
-    assert "Usage:" in result.stdout
-    assert "--help" in result.stdout
+    assert ("\x1b[" in result.stdout) is colored_output
+    assert "Usage:" in help_text
+    assert "--help" in help_text
     assert result.stderr == ""
 
 
@@ -74,11 +90,13 @@ def test_truthiness_script_defaults_to_staged_changes(script_project: Path) -> N
     assert result.stdout == result.stderr == ""
 
 
-def test_truthiness_script_rejects_conflicting_selection_modes(script_project: Path) -> None:
+def test_truthiness_script_rejects_conflicting_selection_modes(script_project: Path, colored_output: bool) -> None:
     result = invoke_script(script_project, "precommit_truthiness_check.py", "--all-files", "example.py")
+    error_text = Text.from_ansi(result.stderr).plain
 
     assert result.returncode == 2
-    assert "Use either --all-files or explicit paths" in result.stderr
+    assert ("\x1b[" in result.stderr) is colored_output
+    assert "Use either --all-files or explicit paths" in error_text
     assert result.stdout == ""
 
 
