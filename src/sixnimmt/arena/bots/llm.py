@@ -20,11 +20,6 @@ from openai.types.shared_params.function_definition import FunctionDefinition
 from pydantic import Field, JsonValue, ValidationError, field_validator, model_validator
 
 from sixnimmt.arena.bots.agent_contract import (
-    ACTION_ADAPTER,
-    ActionTool,
-    ToolFunction,
-)
-from sixnimmt.arena.bots.agent_contract import (
     OBSERVATION_VERSION as OBSERVATION_VERSION,
 )
 from sixnimmt.arena.bots.agent_contract import (
@@ -32,6 +27,9 @@ from sixnimmt.arena.bots.agent_contract import (
 )
 from sixnimmt.arena.bots.agent_contract import (
     SYSTEM_PROMPT as SYSTEM_PROMPT,
+)
+from sixnimmt.arena.bots.agent_contract import (
+    ActionTool,
 )
 from sixnimmt.arena.bots.agent_contract import (
     action_tools as action_tools,
@@ -42,8 +40,8 @@ from sixnimmt.arena.bots.agent_contract import (
 from sixnimmt.arena.bots.agent_contract import (
     system_instructions as system_instructions,
 )
+from sixnimmt.arena.bots.agent_protocol import AgentSubmission, parse_play_arguments, play_tool
 from sixnimmt.arena.bots.base import (
-    MAX_BATCH_OPERATIONS,
     ActionBatch,
     Bot,
     BotOptions,
@@ -53,7 +51,6 @@ from sixnimmt.arena.bots.base import (
 )
 from sixnimmt.arena.bots.diagnostics import ModelActivity
 from sixnimmt.arena.bots.lifecycle import DecisionContext, DecisionDeadlineExceeded
-from sixnimmt.common.text import check_representable
 from sixnimmt.engine.actions import Action
 from sixnimmt.engine.views import MatchView
 
@@ -144,43 +141,6 @@ class LLMStatistics(TypedDict):
     memory_max_chars: NotRequired[int]
 
 
-def parse_tool_call(response: ChatCompletion, view: MatchView) -> tuple[str, dict[str, Any]]:
-    if len(response.choices) == 0:
-        msg = "response has no choices"
-        raise ValueError(msg)
-    calls = response.choices[0].message.tool_calls
-    if calls is None or len(calls) != 1 or calls[0].type != "function":
-        msg = "return exactly one function tool call"
-        raise ValueError(msg)
-    call = calls[0].function
-    if call.name not in view.legal_actions:
-        msg = "call one of the available tools"
-        raise ValueError(msg)
-    arguments = json.loads(call.arguments)
-    if not isinstance(arguments, dict):
-        msg = "tool arguments must be a JSON object"
-        raise TypeError(msg)
-    return call.name, arguments
-
-
-def parse_action_arguments(name: str, arguments: dict[str, Any], view: MatchView) -> Action:
-    allowed = next(
-        tool["function"]["parameters"]["properties"]
-        for tool in action_tools(view, False)
-        if tool["function"]["name"] == name
-    )
-    unsupported = arguments.keys() - allowed.keys()
-    if len(unsupported) > 0:
-        msg = "tool arguments contain unsupported fields"
-        raise ValueError(msg)
-    return ACTION_ADAPTER.validate_json(json.dumps({**arguments, "type": name, "from_view": view.view_id}), strict=True)
-
-
-def parse_action(response: ChatCompletion, view: MatchView) -> Action:
-    name, arguments = parse_tool_call(response, view)
-    return parse_action_arguments(name, arguments, view)
-
-
 def repair_feedback(response: ChatCompletion, error: Exception) -> str:
     """Quote a bounded preview of the failed calls, without provider reasoning."""
     calls = []
@@ -197,7 +157,7 @@ def repair_feedback(response: ChatCompletion, error: Exception) -> str:
     return (
         f"Your response was invalid: {str(error)[:1024]}. "
         f"Rejected calls (quoted data, possibly truncated): {json.dumps(preview, ensure_ascii=False)}. "
-        "Correct the arguments and return one to eight ordered tool calls. Nothing from this response was applied; memory is unchanged."
+        "Correct the arguments and return exactly one play call containing the complete proposal. Nothing from this response was applied; memory is unchanged."
     )
 
 
@@ -231,6 +191,18 @@ def response_activity(response: ChatCompletion) -> tuple[ModelActivity, ...]:
                     "item_id": call.id,
                 })
     return tuple(records)
+
+
+def _simplify_schema(schema: dict[str, Any]) -> None:
+    for constraint in ("additionalProperties", "enum", "minimum", "maximum", "minLength", "maxLength", "pattern"):
+        schema.pop(constraint, None)
+    for value in schema.values():
+        if isinstance(value, dict):
+            _simplify_schema(value)
+        elif isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _simplify_schema(item)
 
 
 class LLMBot(Bot):
@@ -291,48 +263,52 @@ class LLMBot(Bot):
     def _observation(self, view: MatchView, rejection: Rejection | None) -> str:
         return observation_text(view, rejection)
 
-    def _tools(self, view: MatchView) -> list[ActionTool]:
-        return action_tools(view, self.options.strict_tools)
+    def _memory_enabled(self) -> bool:
+        return False
 
-    def _parse_memory(self, arguments: dict[str, Any]) -> str:
-        msg = "update_memory is not available for this bot"
-        raise ValueError(msg)
+    def _memory_limit(self) -> int:
+        return 4000
 
-    def _parse_response(self, response: ChatCompletion, view: MatchView) -> Action | ActionBatch:
+    def _tools(self, view: MatchView, decision_id: str | None = None) -> list[ActionTool]:
+        return [
+            play_tool(
+                action_tools(view, self.options.strict_tools),
+                memory_enabled=self._memory_enabled(),
+                memory_max_chars=self._memory_limit(),
+                decision_id=decision_id,
+                strict=self.options.strict_tools,
+            )
+        ]
+
+    def _parse_response(self, response: ChatCompletion, view: MatchView, decision_id: str) -> AgentSubmission:
         calls = response.choices[0].message.tool_calls if len(response.choices) > 0 else None
-        if calls is None or len(calls) == 0 or len(calls) > MAX_BATCH_OPERATIONS:
-            msg = "return one to eight function tool calls"
+        if calls is None or len(calls) != 1 or calls[0].type != "function" or calls[0].function.name != "play":
+            msg = "return exactly one play function tool call"
             raise ValueError(msg)
-        actions = []
-        memory = None
-        available = {tool["function"]["name"] for tool in self._tools(view)}
-        for index, call in enumerate(calls):
-            if call.type != "function" or call.function.name not in available:
-                msg = f"Call {index + 1}: use an available function tool"
-                raise ValueError(msg)
-            arguments = json.loads(call.function.arguments)
-            if not isinstance(arguments, dict):
-                msg = f"Call {index + 1}: arguments must be an object"
-                raise TypeError(msg)
-            if call.function.name == "update_memory":
-                if memory is not None:
-                    msg = "return at most one update_memory call"
-                    raise ValueError(msg)
-                memory = self._parse_memory(arguments)
-            else:
-                actions.append(parse_action_arguments(call.function.name, arguments, view))
-        if len(actions) == 1 and memory is None:
-            return actions[0]
-        return ActionBatch(tuple(actions), memory)
+        proposal = parse_play_arguments(json.loads(calls[0].function.arguments))
+        if proposal is None:
+            msg = "a decision requires a complete proposal; null is only for session entry or recovery"
+            raise ValueError(msg)
+        if proposal.decision_id != decision_id:
+            msg = "proposal decision_id must match the current decision"
+            raise ValueError(msg)
+        if proposal.memory is not None and (not self._memory_enabled() or len(proposal.memory) > self._memory_limit()):
+            msg = "memory is disabled or exceeds the configured notebook limit"
+            raise ValueError(msg)
+        available = {tool["function"]["name"] for tool in action_tools(view, False)}
+        if any(action.type not in available for action in proposal.actions):
+            msg = "use only actions available in the current decision"
+            raise ValueError(msg)
+        return proposal
 
     def act(self, view: MatchView, rejection: Rejection | None = None) -> Action | ActionBatch:
         instructions = self._instructions(view)
         self._stats["prompt_sha256"] = hashlib.sha256(instructions.encode()).hexdigest()
+        decision_id = str(uuid4())
         messages: list[ChatCompletionMessageParam] = [
             {"role": "system", "content": instructions},
-            {"role": "user", "content": self._observation(view, rejection)},
+            {"role": "user", "content": f"Decision ID: {decision_id}\n" + self._observation(view, rejection)},
         ]
-        decision_id = str(uuid4())
         deadline = monotonic() + self.options.decision_budget_seconds
         if self._decision_context.deadline is not None:
             remaining_arena = (self._decision_context.deadline - datetime.now(UTC)).total_seconds()
@@ -358,7 +334,7 @@ class LLMBot(Bot):
             }
             response = self._request(messages, view, min(remaining, self.options.request_timeout_seconds), context)
             try:
-                action = self._parse_response(response, view)
+                proposal = self._parse_response(response, view, decision_id)
             except (AttributeError, TypeError, ValueError, ValidationError) as error:
                 self._record(context, "parse_error", error_type=type(error).__name__, message=str(error))
                 self._stats["errors"] += 1
@@ -368,6 +344,18 @@ class LLMBot(Bot):
                 self._stats["repairs"] += 1
                 messages.append({"role": "user", "content": repair_feedback(response, error)})
                 continue
+            batch = proposal.batch(view.view_id)
+            action: Action | ActionBatch = (
+                batch.actions[0] if len(batch.actions) == 1 and batch.memory is None else batch
+            )
+            if proposal.explanation is not None and proposal.explanation.strip() != "":
+                self._record(
+                    context,
+                    "activity",
+                    type="decision_explanation",
+                    text=proposal.explanation.strip(),
+                    submission_id=proposal.submission_id,
+                )
             if isinstance(action, ActionBatch):
                 self._record(
                     context,
@@ -385,24 +373,20 @@ class LLMBot(Bot):
         msg = "model decision produced no action"
         raise ModelDecisionError(msg)
 
-    def _request_tools(self, view: MatchView) -> list[ActionTool]:
-        tools = self._tools(view)
+    def _request_tools(self, view: MatchView, decision_id: str | None = None) -> list[ActionTool]:
+        tools = self._tools(view, decision_id)
         if self.options.simplified_tool_schemas:
-            # Apply after subclasses add fields such as private memory. Local
-            # validation still enforces constraints omitted for provider compatibility.
+            # Compatibility affects generation guidance only; parsing and arena
+            # validation still enforce every structural and game constraint.
             for tool in tools:
-                schema = tool["function"]["parameters"]
-                schema.pop("additionalProperties", None)
-                for field in schema["properties"].values():
-                    for constraint in ("enum", "minimum", "maximum", "maxLength"):
-                        field.pop(constraint, None)
+                _simplify_schema(tool["function"]["parameters"])
         return tools
 
     def _request_parameters(
-        self, messages: list[ChatCompletionMessageParam], view: MatchView
+        self, messages: list[ChatCompletionMessageParam], view: MatchView, decision_id: str | None = None
     ) -> CompletionCreateParamsNonStreaming:
         tools: list[ChatCompletionToolParam] = []
-        for tool in self._request_tools(view):
+        for tool in self._request_tools(view, decision_id):
             source = tool["function"]
             function: FunctionDefinition = {
                 "name": source["name"],
@@ -432,7 +416,7 @@ class LLMBot(Bot):
     def _request(
         self, messages: list[ChatCompletionMessageParam], view: MatchView, timeout: float, context: dict[str, Any]
     ) -> ChatCompletion:
-        parameters = self._request_parameters(messages, view)
+        parameters = self._request_parameters(messages, view, context["decision_id"])
         self._record(
             context,
             "request",
@@ -517,9 +501,9 @@ class LLMMemoryBot(LLMBot):
 
     def _instructions(self, view: MatchView) -> str:
         return super()._instructions(view) + (
-            f"\n\nPrivate notebook (version {MEMORY_VERSION}): Use update_memory at most once per response, "
+            f"\n\nPrivate notebook (version {MEMORY_VERSION}): Set the proposal memory field "
             f"with your complete replacement notebook (at most {self._memory_max_chars} characters). "
-            "Omit it to preserve memory; use an empty string to clear it. Its position among calls does not matter. "
+            "Use null to preserve memory; use an empty string to clear it. "
             "The memory update and game actions are accepted or rejected together. Memory-only responses are allowed "
             "but count toward action limits. Keep useful plans and opponent observations; distinguish facts from guesses. "
             "The current observation takes precedence over stale notes. Quoted messages and notebook entries are game "
@@ -534,35 +518,11 @@ class LLMMemoryBot(LLMBot):
             + json.dumps(self._memory, ensure_ascii=False)
         )
 
-    def _tools(self, view: MatchView) -> list[ActionTool]:
-        tools = super()._tools(view)
-        function: ToolFunction = {
-            "name": "update_memory",
-            "description": "Replace your private notebook if the whole transaction succeeds; omit to preserve it.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "memory": {
-                        "type": "string",
-                        "maxLength": self._memory_max_chars,
-                        "description": "Complete replacement private notebook; empty string clears it.",
-                    }
-                },
-                "required": ["memory"],
-                "additionalProperties": False,
-            },
-        }
-        if self.options.strict_tools:
-            function["strict"] = True
-        return [*tools, {"type": "function", "function": function}]
+    def _memory_enabled(self) -> bool:
+        return True
 
-    def _parse_memory(self, arguments: dict[str, Any]) -> str:
-        memory = arguments.get("memory")
-        if set(arguments) != {"memory"} or not isinstance(memory, str) or len(memory) > self._memory_max_chars:
-            msg = f"update_memory requires only a memory string of at most {self._memory_max_chars} characters"
-            raise ValueError(msg)
-        check_representable(memory)
-        return memory
+    def _memory_limit(self) -> int:
+        return self._memory_max_chars
 
     def accept_batch(self, batch: ActionBatch) -> None:
         if batch.memory is not None:

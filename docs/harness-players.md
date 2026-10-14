@@ -24,8 +24,8 @@ runs/watched-table/matches/MATCH_ID/seats/player_1/launch.sh
 
 Each script opens the actual harness in its private game workspace, loads its MCP
 configuration, and supplies the starting prompt. Complete any native trust or
-tool-approval prompts there. The agent calls `get_game_info`, then waits in
-`play` to mark its seat ready. Once every external seat is ready, the controller
+tool-approval prompts there. The agent calls `get_game_info()`, then waits in
+`play(proposal=null)` to mark its seat ready. Once every external seat is ready, the controller
 asks you to start the game. Use `--auto-start` to start immediately at that point.
 
 Setup prints native launch instructions when needed. Once the seats are ready,
@@ -70,12 +70,11 @@ updates.
 An **operator commentary** panel is enabled by default. It can contain private
 card analysis or planned moves. Headless Codex and Claude sessions stream
 assistant text, tool activity, and reasoning summaries when their CLI exposes
-them. Managed proposals also request a short explanation of the proposed move,
-shown when the completed response arrives. This provides useful commentary even
-when a CLI emits only structured output. An explanation describes a proposed
+them. Every model player's `play` proposal can include a short explanation of
+the proposed move, shown when submitted. An explanation describes a proposed
 move; the seat's status separately reports whether the arena accepts it.
-Existing LLM bots supply their response text after the provider response
-completes; simulation and Lookahead bots report candidate values after accepted
+Existing LLM bots supply their response text and explanation after the provider
+response completes; simulation and Lookahead bots report candidate values after accepted
 card selections. Native sessions keep their transcripts in their own terminal or UI.
 The controller does not request or reconstruct hidden reasoning.
 
@@ -204,7 +203,7 @@ Seats appear in command-line order; each gets a distinct identity.
 | Seat value | Execution and context |
 | --- | --- |
 | `codex`, `claude` | User-opened native session, MCP, one conversation for the match |
-| `codex-headless`, `claude-headless` | Managed CLI process for each decision, final JSON output |
+| `codex-headless`, `claude-headless` | One managed CLI process and MCP conversation for the match |
 | A registered bot, such as `lowest_fitting_card` | Existing in-process arena bot |
 | `llm:/absolute/path/options.json` | Existing LLM player with its normal options |
 | `command:/absolute/path/options.json` | Managed custom command using the JSON contract below |
@@ -230,10 +229,10 @@ They accept these options; unknown keys are rejected:
 | Option | Default | Behavior |
 | --- | --- | --- |
 | `model` | Unset | Requested model ID, passed to the harness's `--model` flag; when omitted, the CLI chooses its configured default |
-| `reasoning_effort` | Unset | Requested thinking effort for every invocation, including repairs; omitted or null preserves normal client defaults |
+| `reasoning_effort` | Unset | Requested thinking effort for the match; omitted or null preserves normal client defaults |
 | `command` | `["codex"]` or `["claude"]` | Optional executable and argument prefix |
-| `timeout_seconds` | `--managed-timeout` (120 seconds) | Positive deadline for a managed decision, including format repair |
-| `max_output_bytes` | 1,048,576 | Positive output size limit |
+| `timeout_seconds` | `--managed-timeout` (120 seconds) | Positive deadline for each actionable decision; waiting for other seats does not consume this budget |
+| `max_output_bytes` | 1,048,576 | Positive combined stdout/stderr size limit per decision |
 
 `options.model` takes precedence over the harness's configured default. Use this
 field to select models for headless seats; the controller supplies the required
@@ -281,43 +280,48 @@ across models. Existing LLM bots pass the same request field through
 Custom `command` seats reject `reasoning_effort`; configure a custom process
 through its own command arguments instead.
 
-Codex uses `exec --ephemeral --json`, a supplied output schema, and its designated
-final message file. Claude uses print mode with streamed JSON, no session
-persistence, and its final `structured_output` result. The controller displays
-available intermediate text and tool activity; only the completed final proposal
-can become a move. Each invocation has its own temporary working directory,
-removed afterward.
+Codex uses `exec --ephemeral --json`; Claude uses print mode with streamed JSON
+and no saved session persistence. Each process stays alive for the entire match,
+uses the same seat-bound MCP tools as a native session, and retains conversation
+context across decisions. Its workspace belongs to that match's seat. Final
+stdout is commentary, not a game submission: only authenticated `play` tool
+calls can submit moves. The controller streams available text and tool activity
+and terminates/reaps the process when the match ends, fails, or is stopped.
 
-Each decision gets a schema built from its offered action tools: the current
-hand's card values, available rows, permitted message recipients and lengths,
-and the configured notebook limit. With memory disabled, `memory` must be null.
-The invocation's `game_info.proposal_schema` contains the same decision-specific
-constraints supplied to the harness's structured-output mode. In classic mode,
-the only card-selection action is `select_card`; selection commits immediately,
-so a separate `commit` is unavailable. The broker and arena remain authoritative
-even when a process ignores the schema.
+Managed Codex configures per-tool approval for `sixnimmt.get_game_info` and
+`sixnimmt.play`, allowing its noninteractive process to play the authorized game.
+Native sessions retain their normal approval policy. The MCP descriptors mark
+`play` as state-changing, potentially destructive because it commits moves and
+replaces notebook contents, and limited to one local game seat. Retry IDs make
+repeated submissions idempotent. See Codex's
+[per-tool approval configuration](https://learn.chatgpt.com/docs/config-file/config-reference).
+
+Headless mode therefore has the same game interface as native mode. The level of
+decision-specific schema guidance depends on the client's refresh support, as
+described under [Timing and compatibility](#timing-and-compatibility). The separate custom
+`command` adapter retains its per-decision JSON interface for existing programs.
 
 `--memory` enables an arena-accepted notebook for external seats. Its default
 limit is 4,000 characters; `--memory-max-chars` accepts 1–16,000. A proposal's
 `memory: null` preserves it, an empty string clears it, and a string replaces it.
 The update is applied only after the entire proposal passes game validation.
-Native conversation history and files are separate from this notebook.
+Harness conversation history and workspace files are separate from this notebook.
 
-These profiles currently run through the single-table controller. Managed
-profiles in sampled arena comparisons, persistent headless sessions, and process
-scaling are not yet supported.
+External profiles require a fixed lineup and the thread backend. Sampled arena
+comparisons and process-worker scaling for external profiles are not supported.
 
 ## The two MCP tools
 
 The bridge implements **stateless MCP `2026-07-28` over stdio**. The live arena
 broker owns game state, offers, deadlines, and receipts independently of the
-bridge process. A random credential authorizes one seat; every game tool also
-requires its explicit `session_id`.
+bridge process. A random credential authorizes one seat. The bridge binds that
+seat's identity, so model-facing calls do not supply a session ID, protocol
+version, or engine view ID.
 
 | Tool | Result |
 | --- | --- |
-| `get_game_info(session_id)` | Seat identity, rules, instructions, proposal schema, and notebook configuration. Does not mark the seat ready or reveal a deal. |
-| `play(session_id, proposal=None)` | Enter/recover with no proposal; otherwise submit immediately. Wait for a decision or terminal result and return the relevant receipt. |
+| `get_game_info()` | Seat identity, rules, instructions, proposal schema, and notebook configuration. Does not mark the seat ready or reveal a deal. |
+| `play(proposal)` | Use null to enter/recover; otherwise submit immediately. Wait for a decision or terminal result and return the relevant receipt. |
 
 There is no separate submission-status or turn-wait tool. After choosing a move,
 the agent calls `play` with a proposal. The arena receives it immediately and
@@ -330,36 +334,75 @@ Every response contains `status`, `offer`, `receipt`, and `result`:
 | --- | --- |
 | `decision` | An unsubmitted offer is available. Inspect its filtered view, observation, action schemas, rejection feedback, notebook, and deadline. |
 | `terminal` | The match ended. `result` contains its outcome, public scores/winners, safe reason, and this seat's final view. |
-| `wait_expired` | The configured delivery wait ended. Recover with `play(session_id)`; this does not reset a decision deadline. |
+| `wait_expired` | The configured delivery wait ended. Recover with `play(proposal=null)`; this does not reset a decision deadline. |
 | `already_waiting` | Another delivery wait for this seat remains active. No new proposal was staged. |
 
 Schema, identity, stale-decision, and conflicting-retry errors are immediate tool
 errors. Illegal game moves receive an arena rejection receipt and a corrective
 offer, unless the arena's rejection limit ends the match.
 
-Use the returned offer's identifiers to construct a proposal. All seven fields
-are required; this example assumes communication mode and card 42 in hand:
+Use the returned offer's `decision_id` and choose a new `submission_id`. The
+following complete `play` arguments assume communication mode and card 42 in hand:
 
 ```json
 {
-  "protocol_version": 1,
-  "session_id": "session-example",
-  "decision_id": "decision-example",
-  "submission_id": "unique-submission-example",
-  "view_id": "view-example",
-  "actions": [
-    {"type": "select_card", "card": 42},
-    {"type": "commit"}
-  ],
-  "memory": null
+  "proposal": {
+    "decision_id": "decision-example",
+    "submission_id": "unique-submission-example",
+    "actions": [
+      {"type": "select_card", "card": 42},
+      {"type": "commit"}
+    ],
+    "memory": null,
+    "explanation": "I will commit this card before the rows change."
+  }
 }
 ```
 
-The action types, filtered observations, and action hints match the existing LLM
-players. The broker accepts one to eight operations, counting a non-null notebook
-update as one. It supplies action metadata; callers cannot supply `action_id`,
-`from_view`, or `expected_view_version`. The engine still validates move legality
-and the arena preflights the entire batch before publishing it.
+This is the same atomic tool payload used by API LLM players. `actions` contains
+typed action variants rather than arbitrary JSON. Every client receives the
+current legal actions, hand, rows, message permissions, and notebook limits in
+its offer. How those decision-specific constraints reach the registered tool
+schema differs by client, as explained below. With memory disabled, `memory`
+must be null. In classic mode, card selection commits immediately, so no
+separate `commit` should be submitted.
+
+The broker accepts one to eight operations, counting a non-null notebook update
+as one. It binds the proposal to the offered engine view and supplies action
+metadata; callers cannot supply `action_id`, `from_view`, or
+`expected_view_version`. The engine validates legality and the arena preflights
+the entire batch before publishing it.
+
+`explanation` is a nullable operator summary, limited to 1,000 characters. It
+consumes no action or notebook budget and never becomes a table message. The
+shared parser permits its omission; strict tool schemas require the field,
+using null when unused. It may reveal the player's own cards or plans, so it
+belongs in private operator commentary and traces.
+
+### Decision-specific schemas
+
+API LLM bots rebuild the `play` tool for each model request. Claude sessions use
+dynamic MCP schemas: before returning a new decision, the bridge publishes a
+tools-list change and waits for the corresponding list response to be written
+to the client. The nested action schemas contain only available actions, the
+current hand's card enum, available row indices, permitted message recipients
+and lengths, and the notebook limit. A missing refresh fails explicitly with
+`schema_refresh_required`; the bridge does not deliver the decision under an
+old schema.
+
+Codex sessions use a stable, fully typed action union because the verified client
+does not refresh these tools during a pending call. Argument types, action tags,
+required fields, unknown-field rejection, general card bounds, and the configured
+notebook limit remain in the schema. Current-hand enums and the removal of
+currently unavailable action variants are not in Codex's registered schema.
+Instead, its offer supplies the current observation and decision-specific action
+schemas as context; the broker and arena enforce legality when it submits.
+
+This preserves the common tool and transaction shape, but Codex receives less
+schema guidance during generation than API and dynamic Claude players. A legal
+move alone does not prove that a client installed an updated schema. See
+[Timing and compatibility](#timing-and-compatibility) for the observed client
+behavior and the limits of verification.
 
 Proposals are limited to 128 KiB. Eight proposal validation errors within one
 offered decision fail the session; arena game rejections have their own limit.
@@ -368,7 +411,7 @@ recovery period.
 
 ### Interrupted calls and retries
 
-Call `play(session_id)` after a lost response or bridge restart. It returns the
+Call `play(proposal=null)` after a lost response or bridge restart. It returns the
 same current unsubmitted offer, including its original deadline, or waits beyond
 a move already submitted. Alternatively retry the exact saved proposal with its
 original `submission_id`. A retry never applies another copy of that move.
@@ -401,7 +444,10 @@ The command runs without a shell. It reads one JSON object from stdin containing
 stdout and exits successfully. Stderr is diagnostic output. Duplicate JSON keys,
 partial output, code fences, and additional stdout text are rejected.
 
-Managed output may add an `explanation` field to the seven-field game proposal:
+Custom commands keep their existing seven-field transport envelope. This differs
+from the seat-bound API/MCP `play` payload: the command must copy the offer's
+`protocol_version`, `session_id`, and `view_id` too. Output may add an
+`explanation` field:
 
 ```json
 {
@@ -419,8 +465,7 @@ Managed output may add an `explanation` field to the seven-field game proposal:
 The instructions request one or two concise sentences grounded in the current
 game situation, with a maximum of 1,000 characters. This is a short decision
 summary for the operator. It does not ask for detailed private deliberation.
-Codex and Claude's strict output schemas require the field but allow `null`.
-Existing custom commands can omit it; null, empty, or whitespace-only values
+Custom commands can omit it; null, empty, or whitespace-only values
 produce no commentary. A wrong type or excessive length triggers the same repair
 path as other malformed proposal fields.
 
@@ -428,9 +473,9 @@ The controller validates and saves the explanation with the proposal, then
 removes it before submitting game operations to the broker. It never becomes a
 table message or notebook entry, uses no action or memory budget, and requires
 no additional model call. It can expose private cards or plans, so it appears
-only in operator commentary and the private model trace. The native MCP
-`play` contract remains the seven-field proposal shown above; it does not accept
-`explanation`.
+only in operator commentary and the private model trace. Native and headless
+MCP proposals accept the same optional commentary through their shared `play`
+contract.
 
 The controller permits one format/protocol repair using the same offer and
 schema. Error feedback identifies unavailable action types and the allowed
@@ -448,7 +493,7 @@ its process group on success, failure, or cancellation.
 | --- | --- |
 | `--setup-timeout` | 600 seconds for external seats to enter `play`; no decision clock runs yet |
 | `--decision-timeout` | Unset; supply seconds to bound every decision |
-| `--managed-timeout` | 120 seconds for a managed decision, including format repair; a profile can override it |
+| `--managed-timeout` | 120 seconds per managed decision; a profile can override it. Custom-command format repairs share that decision budget |
 | `--wait-timeout` | 600 seconds per pending `play`; independent of decision time |
 | `--retain-seconds` | 30 seconds of read-only terminal recovery before closing the controller |
 | `--match-action-limit` | 10,000 arena attempts |
@@ -463,11 +508,36 @@ The terminal recovery window also applies after operator stop; a second Ctrl-C
 closes it immediately. Tables with only managed/in-process seats skip retention
 because they have no attached MCP listener.
 
-Local discovery of the actual bridge was verified with Codex CLI **0.153.4** and
-Claude Code **2.1.261** on 2026-09-15, without making model requests. Offline tests
-exercise complete games, the MCP wire protocol, replay, cancellation, and process
-cleanup. Full games in native interfaces and long-call continuation with live
-models still need a manual smoke test; native UI attachment is not yet verified.
+Tool discovery alone is insufficient for decision-specific schemas. Local probes
+on 2026-10-14 found that Claude Code **2.1.261** subscribes to tool-list changes
+and fetches the updated schema while `play` is still pending; all ten requests
+in the probe used the expected updated schema. The installed Codex CLI
+**0.153.4** did not subscribe or refresh during that flow. The official
+[Codex 0.162.1 source](https://raw.githubusercontent.com/openai/codex/rust-v0.162.1/codex-rs/rmcp-client/src/logging_client_handler.rs)
+still logs tool-list changes without refreshing definitions; the related
+[refresh issue](https://github.com/openai/codex/issues/33266) remains open. We
+could not establish a released Codex version supporting the required ordering,
+so Codex uses the stable typed schema described above.
+
+This distinction applies to native and headless modes. The Claude probe
+establishes behavior for that tested version, not the first version supporting
+dynamic updates. The runtime refresh barrier checks the needed capability rather
+than guessing a minimum version. Inspect the next model request when validating
+another client or version; discovery or a legal move alone is insufficient.
+
+Offline tests exercise complete games, changing hand schemas, the MCP wire
+protocol, atomic proposals, replay, cancellation, and process cleanup. These do
+not establish compatibility with every live model or native UI.
+
+To repeat the installed CLI checks, with Codex and Claude available on `PATH`:
+
+```bash
+SIXNIMMT_TEST_HARNESS_CLIENTS=1 uv run pytest tests/test_harness_clients.py -q
+```
+
+These opt-in tests use local fake providers, capture the actual outgoing model
+requests, and run complete matches through the real bridge. They make no paid
+model calls. The default suite skips them.
 
 ## Information and artifacts
 
@@ -493,7 +563,7 @@ log. There is no separate watched-game `result.json`.
 Traces record game events, attempts, timing, safe seat metadata, and final
 statistics, including notebook settings and shared instruction/schema versions.
 Managed sessions also write `traces/<match_id>.model.jsonl`: filtered decision
-requests, proposal schemas, streamed output, final proposals, repair feedback,
+requests, proposal schemas, streamed output, submitted proposals, repair feedback,
 decision explanations, and bounded stdout/stderr diagnostics on failure. These
 records include seat, client, requested model, invocation, and decision identifiers.
 Known credential values are redacted; traces remain private gameplay and model
@@ -514,3 +584,5 @@ When supplied, a headless seat's requested model and effort are recorded in
 `agent_metadata.bot_options.reasoning_effort`, and in managed model-trace records.
 These fields record configuration; they do not verify which underlying model,
 version, or effective effort the provider actually served.
+`agent_metadata.tool_schema_mode` records the static or dynamic MCP schema policy;
+custom `command` seats record `decision` for their per-decision output schema.

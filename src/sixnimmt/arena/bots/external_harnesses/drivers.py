@@ -1,4 +1,4 @@
-"""Bounded, fresh-process JSON adapters for operator-selected commands."""
+"""Bounded managed processes for MCP harnesses and custom JSON commands."""
 
 import codecs
 import json
@@ -10,13 +10,13 @@ import tempfile
 import time
 from collections.abc import Callable, Mapping
 from contextlib import suppress
-from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import IO, Any, Literal
 
+from sixnimmt.arena.bots.external_harnesses.connection import codex_mcp_setting
 from sixnimmt.arena.bots.external_harnesses.streaming import VendorEvents
 from sixnimmt.arena.bots.lifecycle import DecisionDeadlineExceeded
 
@@ -37,7 +37,7 @@ class DriverDeadlineExceeded(DriverError, DecisionDeadlineExceeded):
 
 @dataclass(frozen=True)
 class CommandProfile:
-    """Execution settings for a fresh decision; commands never use a shell."""
+    """Execution settings and per-decision limits; commands never use a shell."""
 
     command: tuple[str, ...]
     kind: Literal["command", "codex", "claude"] = "command"
@@ -111,34 +111,6 @@ def parse_final_json(contents: bytes) -> dict[str, Any]:
     return result
 
 
-def _claude_proposal(contents: bytes) -> dict[str, Any]:
-    result: dict[str, Any] | None = None
-    for line in contents.splitlines():
-        if line.strip() == b"":
-            continue
-        record = parse_final_json(line)
-        # Accept the old single JSON envelope as well as stream-json. Other
-        # assistant, tool and trailing metadata records are never proposals.
-        is_result = record.get("type") == "result" or ("type" not in record and "subtype" in record)
-        if not is_result:
-            continue
-        if result is not None:
-            msg = "Claude invocation returned multiple final results"
-            raise DriverFormatError(msg)
-        result = record
-    if result is None:
-        msg = "Claude invocation omitted its final result"
-        raise DriverFormatError(msg)
-    if result.get("is_error") is True or result.get("subtype") != "success":
-        msg = "Claude invocation did not report successful completion"
-        raise DriverError(msg)
-    proposal = result.get("structured_output")
-    if not isinstance(proposal, dict):
-        msg = "Claude invocation omitted structured_output"
-        raise DriverFormatError(msg)
-    return proposal
-
-
 def _diagnostic_output(key: str, contents: bytes) -> dict[str, Any]:
     truncated = len(contents) > _DIAGNOSTIC_BYTES
     if truncated:
@@ -160,42 +132,21 @@ def _redact(value: Any, credentials: tuple[str, ...]) -> Any:
     return value
 
 
-def structured_proposal_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Use the vendors' strict structured-output subset without changing validation."""
-    result = deepcopy(schema)
-    _strict_schema_node(result)
-    return result
-
-
-def _strict_schema_node(node: Any) -> None:
-    if isinstance(node, list):
-        for value in node:
-            _strict_schema_node(value)
-        return
-    if not isinstance(node, dict):
-        return
-    node.pop("default", None)
-    node.pop("discriminator", None)
-    if "oneOf" in node:
-        node["anyOf"] = node.pop("oneOf")
-    if "const" in node:
-        node["enum"] = [node.pop("const")]
-    properties = node.get("properties")
-    if isinstance(properties, dict):
-        node["required"] = list(properties)
-        node["additionalProperties"] = False
-    for value in node.values():
-        _strict_schema_node(value)
-
-
 class _OutputBudget:
-    def __init__(self, limit: int) -> None:
+    def __init__(self, limit: int, decision_id: Callable[[], str | None] | None = None) -> None:
+        self.limit = limit
         self.remaining = limit
+        self.decision_id = decision_id
+        self.current_decision: str | None = None
         self.exceeded = Event()
         self.lock = Lock()
 
     def accept(self, chunk: bytes) -> bytes:
+        decision = None if self.decision_id is None else self.decision_id()
         with self.lock:
+            if decision is not None and decision != self.current_decision:
+                self.remaining = self.limit
+                self.current_decision = decision
             accepted = chunk[: self.remaining]
             self.remaining -= len(accepted)
             if len(accepted) < len(chunk):
@@ -205,11 +156,18 @@ class _OutputBudget:
 
 class _Capture:
     def __init__(
-        self, stream: IO[bytes], budget: _OutputBudget, receive: Callable[[bytes], None] | None = None
+        self,
+        stream: IO[bytes],
+        budget: _OutputBudget,
+        receive: Callable[[bytes], None] | None = None,
+        *,
+        capture_limit: int | None = None,
     ) -> None:
         self.stream = stream
         self.budget = budget
         self.receive = receive
+        self.capture_limit = capture_limit
+        self.truncated = False
         self.contents = bytearray()
         self.receive_error: Exception | None = None
 
@@ -223,6 +181,9 @@ class _Capture:
                     return
                 accepted = self.budget.accept(chunk)
                 self.contents.extend(accepted)
+                if self.capture_limit is not None and len(self.contents) > self.capture_limit:
+                    self.truncated = True
+                    del self.contents[: -self.capture_limit]
                 self._notify(accepted)
         finally:
             self.stream.close()
@@ -302,7 +263,7 @@ def _reap_and_join(process: subprocess.Popen[bytes], threads: list[Thread]) -> E
 
 
 class ManagedCommandDriver:
-    """Own one process tree per decision and accept only its final JSON result."""
+    """Own MCP process trees for a match, or fresh custom-command decisions."""
 
     def __init__(self, profile: CommandProfile, workspace: Path) -> None:
         self.profile = profile
@@ -312,12 +273,15 @@ class ManagedCommandDriver:
         self._trace_lock = Lock()
         self._last_stdout = b""
         self._last_stderr = b""
+        self._match_stdout_truncated = False
+        self._match_stderr_truncated = False
         self._stderr_decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._decision_id: str | None = None
         self._view_id: str | None = None
         self._credentials: tuple[str, ...] = ()
         self._pending_text: dict[tuple[str, str], dict[str, Any]] = {}
         self.invocations = 0
+        self._runtime_state: Callable[[], dict[str, Any]] | None = None
 
     def set_trace(self, callback: Callable[[dict[str, Any]], None] | None) -> None:
         """Attach the private model trace, including live progress and failures."""
@@ -387,11 +351,13 @@ class ManagedCommandDriver:
         self,
         offer: Mapping[str, Any],
         game_info: Mapping[str, Any],
-        schema: dict[str, Any],
         *,
         deadline: float | None = None,
     ) -> dict[str, Any]:
-        """Deliver the filtered offer and return a proposal for broker validation."""
+        """Run one custom JSON command and return its proposal for validation."""
+        if self.profile.kind != "command":
+            msg = "Codex and Claude submit moves through a persistent MCP session"
+            raise DriverError(msg)
         if self._cancelled.is_set():
             msg = "managed_invocation_cancelled"
             raise DriverError(msg)
@@ -414,7 +380,7 @@ class ManagedCommandDriver:
         deadline_utc = datetime.now(UTC) + timedelta(seconds=invocation_deadline - started)
         self.emit_trace({"type": "invocation_started", "deadline": deadline_utc.isoformat()})
         try:
-            proposal = self._invoke(offer, game_info, schema, invocation_deadline)
+            proposal = self._invoke(offer, game_info, invocation_deadline)
         except (DriverError, OSError) as error:
             message = str(error) if isinstance(error, DriverError) else "managed process I/O failed"
             # A failing observer cannot replace the original invocation error
@@ -435,48 +401,73 @@ class ManagedCommandDriver:
         self.emit_trace({"type": "invocation_completed", "elapsed_seconds": time.monotonic() - started})
         return proposal
 
-    def _invoke(
+    def run_match(
         self,
-        offer: Mapping[str, Any],
-        game_info: Mapping[str, Any],
-        schema: dict[str, Any],
-        deadline: float | None,
-    ) -> dict[str, Any]:
-        self.workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="decision-", dir=self.workspace) as directory:
-            scratch = Path(directory)
-            command, final_path = self._command(scratch, schema)
-            request = {"game_info": game_info, "offer": offer}
-            payload = json.dumps(request, ensure_ascii=False, allow_nan=False).encode() + b"\n"
-            if self.profile.kind != "command":
-                payload = (
-                    b"Play this 6 nimmt! decision using the supplied rules and observation. "
-                    b"You may give brief commentary while deciding. Your final response must contain "
-                    b"only the proposal matching the JSON schema. Copy the session, "
-                    b"decision and view IDs exactly; choose a fresh unique submission_id.\n" + payload
-                )
-            output = self._execute(command, payload, scratch, deadline)
-            if final_path is not None:
-                if not final_path.is_file():
-                    msg = "managed invocation omitted its final result file"
-                    raise DriverFormatError(msg)
-                if final_path.stat().st_size > self.profile.max_output_bytes:
-                    msg = "managed_output_limit"
-                    raise DriverError(msg)
-                output = final_path.read_bytes()
-            self.emit_trace({"type": "invocation_output", **_diagnostic_output("text", output)})
-            if self.profile.kind == "claude":
-                return _claude_proposal(output)
-            return parse_final_json(output)
+        workspace: Path,
+        environment: Mapping[str, str],
+        runtime_state: Callable[[], dict[str, Any]],
+        *,
+        wait_timeout_seconds: float,
+    ) -> None:
+        """Keep one harness alive; only its authenticated MCP calls can submit moves."""
+        if self.profile.kind == "command":
+            msg = "custom commands use the fresh JSON invocation contract"
+            raise DriverError(msg)
+        if self._cancelled.is_set():
+            msg = "managed_invocation_cancelled"
+            raise DriverError(msg)
+        self.invocations += 1
+        self._runtime_state = runtime_state
+        self._decision_id = None
+        self._view_id = None
+        self._last_stdout = b""
+        self._last_stderr = b""
+        self._match_stdout_truncated = False
+        self._match_stderr_truncated = False
+        self._stderr_decoder.reset()
+        self._pending_text.clear()
+        inherited = {**os.environ, **environment}
+        self._credentials = tuple(
+            value
+            for name in ("OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "SIXNIMMT_CREDENTIAL")
+            if (value := inherited.get(name)) is not None and value != ""
+        )
+        command = self._match_command(workspace, wait_timeout_seconds)
+        if self.profile.kind == "claude":
+            inherited.update({
+                "MCP_SDK_GENERATION": "v2",
+                "MCP_PROTOCOL_NEGOTIATION": "auto",
+                "CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS": "0",
+            })
+            if self.profile.reasoning_effort is not None:
+                inherited["CLAUDE_CODE_EFFORT_LEVEL"] = self.profile.reasoning_effort
+        started = time.monotonic()
+        self.emit_trace({"type": "invocation_started", "context": "match"})
+        try:
+            prompt = (workspace / "prompt.txt").read_bytes()
+            self._execute_match(command, prompt, workspace, inherited)
+        except (DriverError, OSError) as error:
+            message = str(error) if isinstance(error, DriverError) else "managed process I/O failed"
+            with suppress(Exception):
+                self._flush_text()
+                self.emit_trace({
+                    "type": "invocation_failed",
+                    "error": message,
+                    "elapsed_seconds": time.monotonic() - started,
+                    **_diagnostic_output("stdout", self._last_stdout),
+                    **_diagnostic_output("stderr", self._last_stderr),
+                    "stdout_truncated": self._match_stdout_truncated,
+                    "stderr_truncated": self._match_stderr_truncated,
+                })
+            if isinstance(error, DriverError):
+                raise
+            raise DriverError(message) from error
+        self._flush_text()
+        self.emit_trace({"type": "invocation_completed", "elapsed_seconds": time.monotonic() - started})
 
-    def _command(self, scratch: Path, schema: dict[str, Any]) -> tuple[list[str], Path | None]:
+    def _match_command(self, workspace: Path, wait_timeout_seconds: float) -> list[str]:
         command = list(self.profile.command)
-        if self.profile.kind != "command":
-            schema = structured_proposal_schema(schema)
         if self.profile.kind == "codex":
-            schema_path = scratch / "proposal.schema.json"
-            schema_path.write_text(json.dumps(schema), encoding="utf-8")
-            result_path = scratch / "proposal.json"
             command.append("exec")
             if self.profile.model is not None:
                 command.extend(["--model", self.profile.model])
@@ -485,46 +476,52 @@ class ManagedCommandDriver:
             command.extend([
                 "--ephemeral",
                 "--skip-git-repo-check",
-                "--output-schema",
-                str(schema_path),
-                "--output-last-message",
-                str(result_path),
+                "--enable",
+                "mcp_2026_07_28",
+                "-c",
+                codex_mcp_setting(wait_timeout_seconds, approve_game_tools=True),
                 "--json",
                 "-",
             ])
-            return command, result_path
-        if self.profile.kind == "claude":
-            command.extend([
-                "-p",
-                "--no-session-persistence",
-                "--output-format",
-                "stream-json",
-                "--verbose",
-                "--include-partial-messages",
-                "--json-schema",
-                json.dumps(schema),
-            ])
-            if self.profile.model is not None:
-                command.extend(["--model", self.profile.model])
-            if self.profile.reasoning_effort is not None:
-                command.extend(["--effort", self.profile.reasoning_effort])
-        return command, None
+            return command
+        command.extend([
+            "-p",
+            "--no-session-persistence",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--strict-mcp-config",
+            "--mcp-config",
+            str(workspace / "claude-mcp.json"),
+            "--allowedTools",
+            "mcp__sixnimmt__get_game_info",
+            "mcp__sixnimmt__play",
+        ])
+        if self.profile.model is not None:
+            command.extend(["--model", self.profile.model])
+        if self.profile.reasoning_effort is not None:
+            command.extend(["--effort", self.profile.reasoning_effort])
+        return command
 
-    def _execute(self, command: list[str], payload: bytes, scratch: Path, deadline: float | None) -> bytes:
-        invocation_deadline = time.monotonic() + self.profile.timeout_seconds
-        if deadline is not None:
-            invocation_deadline = min(invocation_deadline, deadline)
-        if invocation_deadline <= time.monotonic():
-            msg = "managed_decision_timeout"
-            raise DriverDeadlineExceeded(msg)
-        environment = None
-        if self.profile.kind == "claude" and self.profile.reasoning_effort is not None:
-            # Claude gives its environment effort setting precedence over saved
-            # choices. An explicit seat option must also override that default.
-            environment = {**os.environ, "CLAUDE_CODE_EFFORT_LEVEL": self.profile.reasoning_effort}
+    def _current_decision(self) -> str | None:
+        if self._runtime_state is None:
+            return None
+        state = self._runtime_state()
+        decision_id = state.get("decision_id")
+        if isinstance(decision_id, str):
+            self._decision_id = decision_id
+            view_id = state.get("view_id")
+            self._view_id = view_id if isinstance(view_id, str) else None
+            return decision_id
+        return None
+
+    def _execute_match(
+        self, command: list[str], payload: bytes, workspace: Path, environment: Mapping[str, str]
+    ) -> None:
         process = subprocess.Popen(  # noqa: S603 - operator-configured argument vector, no shell.
             command,
-            cwd=scratch,
+            cwd=workspace,
             env=environment,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -535,9 +532,111 @@ class ManagedCommandDriver:
             _reap(process)
             msg = "managed process pipes were not created"
             raise DriverError(msg)
-        budget = _OutputBudget(self.profile.max_output_bytes)
+        budget = _OutputBudget(self.profile.max_output_bytes, self._current_decision)
         events = VendorEvents(self.profile.kind, self.emit_trace)
-        stdout = _Capture(process.stdout, budget, events.feed if self.profile.kind != "command" else None)
+        stdout = _Capture(process.stdout, budget, events.feed, capture_limit=_DIAGNOSTIC_BYTES)
+        stderr = _Capture(process.stderr, budget, self._stderr, capture_limit=_DIAGNOSTIC_BYTES)
+        threads = [
+            Thread(target=stdout.drain, daemon=True),
+            Thread(target=stderr.drain, daemon=True),
+            Thread(target=_feed, args=(process.stdin, payload), daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        invocation_error: DriverError | None = None
+        try:
+            self._wait_match(process, budget.exceeded)
+        except DriverError as error:
+            invocation_error = error
+        finally:
+            cleanup_error = _reap_and_join(process, threads)
+            self._last_stdout = bytes(stdout.contents)
+            self._last_stderr = bytes(stderr.contents)
+            self._match_stdout_truncated = stdout.truncated
+            self._match_stderr_truncated = stderr.truncated
+            stdout.finish(events.finish)
+            stderr.finish(self._finish_stderr)
+        self._check_execution_errors(invocation_error, cleanup_error)
+        if budget.exceeded.is_set():
+            msg = "managed_output_limit"
+            raise DriverError(msg)
+        for name, capture in (("stdout", stdout), ("stderr", stderr)):
+            if capture.receive_error is not None:
+                msg = f"managed {name} progress callback failed ({type(capture.receive_error).__name__})"
+                raise DriverError(msg) from capture.receive_error
+
+    def _wait_match(self, process: subprocess.Popen[bytes], exceeded: Event) -> None:
+        if self._runtime_state is None:
+            msg = "managed MCP session has no runtime state"
+            raise DriverError(msg)
+        terminal_at: float | None = None
+        while True:
+            self._check_progress(exceeded)
+            state = self._runtime_state()
+            self._current_decision()
+            if state["status"] == "failed":
+                error = state.get("error")
+                msg = error if isinstance(error, str) else "managed MCP session failed"
+                raise DriverError(msg)
+            if state["status"] == "terminal":
+                if terminal_at is None:
+                    terminal_at = time.monotonic()
+                if time.monotonic() - terminal_at >= 2:
+                    return
+            status = process.poll()
+            if status is not None:
+                if status != 0:
+                    msg = f"managed process exited with status {status}"
+                    raise DriverError(msg)
+                if terminal_at is None and self._runtime_state()["status"] != "terminal":
+                    msg = "managed harness exited before the match reached a terminal result"
+                    raise DriverError(msg)
+                return
+            self._cancelled.wait(0.02)
+
+    def _check_progress(self, exceeded: Event) -> None:
+        if self._cancelled.is_set():
+            msg = "managed_invocation_cancelled"
+            raise DriverError(msg)
+        if exceeded.is_set():
+            msg = "managed_output_limit"
+            raise DriverError(msg)
+
+    def _invoke(
+        self,
+        offer: Mapping[str, Any],
+        game_info: Mapping[str, Any],
+        deadline: float,
+    ) -> dict[str, Any]:
+        self.workspace.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="decision-", dir=self.workspace) as directory:
+            request = {"game_info": game_info, "offer": offer}
+            payload = json.dumps(request, ensure_ascii=False, allow_nan=False).encode() + b"\n"
+            output = self._execute(list(self.profile.command), payload, Path(directory), deadline)
+            self.emit_trace({"type": "invocation_output", **_diagnostic_output("text", output)})
+            return parse_final_json(output)
+
+    def _execute(self, command: list[str], payload: bytes, scratch: Path, deadline: float | None) -> bytes:
+        invocation_deadline = time.monotonic() + self.profile.timeout_seconds
+        if deadline is not None:
+            invocation_deadline = min(invocation_deadline, deadline)
+        if invocation_deadline <= time.monotonic():
+            msg = "managed_decision_timeout"
+            raise DriverDeadlineExceeded(msg)
+        process = subprocess.Popen(  # noqa: S603 - operator-configured argument vector, no shell.
+            command,
+            cwd=scratch,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=os.name == "posix",
+        )
+        if process.stdin is None or process.stdout is None or process.stderr is None:
+            _reap(process)
+            msg = "managed process pipes were not created"
+            raise DriverError(msg)
+        budget = _OutputBudget(self.profile.max_output_bytes)
+        stdout = _Capture(process.stdout, budget)
         stderr = _Capture(process.stderr, budget, self._stderr)
         threads = [
             Thread(target=stdout.drain, daemon=True),
@@ -555,7 +654,6 @@ class ManagedCommandDriver:
             cleanup_error = _reap_and_join(process, threads)
             self._last_stdout = bytes(stdout.contents)
             self._last_stderr = bytes(stderr.contents)
-            stdout.finish(events.finish)
             stderr.finish(self._finish_stderr)
         self._check_execution_errors(invocation_error, cleanup_error)
         if budget.exceeded.is_set():

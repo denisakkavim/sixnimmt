@@ -92,6 +92,12 @@ def resolve_external_options(name: str, options: dict[str, JsonValue]) -> dict[s
     return HeadlessOptions.model_validate(options).model_dump(mode="json")
 
 
+def _tool_schema_mode(client: str) -> str:
+    if client == "command":
+        return "decision"
+    return "static" if client == "codex" else "dynamic"
+
+
 def resolve_external_seat(name: str, options: dict[str, JsonValue]) -> ResolvedExternalSeat:
     """Freeze external construction separately from seat identity and session limits."""
     validated = resolve_external_options(name, options)
@@ -100,7 +106,8 @@ def resolve_external_seat(name: str, options: dict[str, JsonValue]) -> ResolvedE
     metadata: dict[str, JsonValue] = {
         "harness": name,
         "ownership": descriptor.ownership,
-        "context": "match" if isinstance(descriptor, AttachedSeatDescriptor) else "fresh",
+        "context": "fresh" if descriptor.client == "command" else "match",
+        "tool_schema_mode": _tool_schema_mode(descriptor.client),
         "environment": "trusted_local",
     }
     if isinstance(descriptor, ManagedSeatDescriptor):
@@ -230,7 +237,8 @@ def _create_seat(
         **player.agent_metadata,
         "harness": name,
         "ownership": descriptor.ownership,
-        "context": "match" if isinstance(descriptor, AttachedSeatDescriptor) else "fresh",
+        "context": "fresh" if descriptor.client == "command" else "match",
+        "tool_schema_mode": _tool_schema_mode(descriptor.client),
         "environment": "trusted_local",
     }
     if profile is not None:
@@ -336,6 +344,9 @@ def wait_for_ready(seats: Sequence[PreparedSeat], timeout_seconds: float, stoppe
         if stopped.is_set():
             msg = "run stopped during setup"
             raise SetupTimeout(msg)
+        for seat in pending:
+            if seat.session is not None:
+                seat.session.raise_if_failed()
         pending = [seat for seat in pending if seat.session is not None and not seat.session.ready.is_set()]
         if len(pending) == 0:
             return
@@ -370,21 +381,41 @@ class SessionSupervisor:
         self.watch = watch
         self.connections = ExitStack()
 
-    def open(self) -> None:
-        attached = [seat.session for seat in self.seats if seat.session is not None and seat.native_client is not None]
-        if len(attached) > 0:
-            server = self.connections.enter_context(ControllerServer(attached))
-            for seat in self.seats:
-                if seat.native_client is not None and seat.session is not None:
-                    workspace = write_connection_bundle(
-                        seat.session, self.directory, server.endpoint, seat.native_client
-                    )
+    def _connect_mcp_seats(self) -> None:
+        bridged = [
+            seat
+            for seat in self.seats
+            if seat.session is not None
+            and (seat.native_client is not None or (seat.driver is not None and seat.driver.profile.kind != "command"))
+        ]
+        if len(bridged) > 0:
+            sessions = [seat.session for seat in bridged if seat.session is not None]
+            server = self.connections.enter_context(ControllerServer(sessions))
+            for seat in bridged:
+                if seat.session is None:
+                    continue
+                client = seat.native_client
+                if client is None and seat.driver is not None:
+                    client = "codex" if seat.driver.profile.kind == "codex" else "claude"
+                if client is None:
+                    continue
+                schema_mode = _tool_schema_mode(client)
+                workspace = write_connection_bundle(
+                    seat.session, self.directory, server.endpoint, client, schema_mode=schema_mode
+                )
+                if seat.worker is not None:
+                    seat.worker.configure_connection(server.endpoint, workspace, schema_mode=schema_mode)
+                else:
                     self.message(f"{seat.seat.name_or_id}: open a separate terminal and run {workspace / 'launch.sh'}")
+
+    def open(self) -> None:
+        self._connect_mcp_seats()
+        attached = any(seat.native_client is not None for seat in self.seats)
         for seat in self.seats:
             if seat.worker is not None:
                 seat.worker.start()
         wait_for_ready(self.seats, self.options.setup_timeout, self.stopped)
-        if (self.watch or len(attached) > 0) and not self.options.auto_start:
+        if (self.watch or attached) and not self.options.auto_start:
             if self.confirm_start is None:
                 msg = "interactive start requires a confirmation callback or session.auto_start=true"
                 raise ValueError(msg)

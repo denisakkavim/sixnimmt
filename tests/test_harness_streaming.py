@@ -304,3 +304,138 @@ def test_json_in_completed_assistant_text_remains_commentary() -> None:
     assert output[0]["type"] == "model_text"
     assert output[0]["text"] == text
     assert output[0]["complete"] is True
+
+
+@pytest.mark.parametrize("kind", ["codex", "claude"])
+def test_completed_text_history_is_bounded_and_recent_duplicates_stay_suppressed(kind: str) -> None:
+    output: list[dict[str, Any]] = []
+    events = VendorEvents(kind, output.append, history_limit=3)
+    records: list[dict[str, Any]] = []
+    for index in range(10):
+        if kind == "codex":
+            record = {
+                "type": "item.completed",
+                "item": {"id": str(index), "type": "agent_message", "text": f"Decision {index}"},
+            }
+        else:
+            record = {
+                "type": "assistant",
+                "message": {"id": str(index), "content": [{"type": "text", "text": f"Decision {index}"}]},
+            }
+        records.append(record)
+    _feed(events, records)
+    assert len(output) == 10
+    assert len(events.item_text) == 3
+    assert len(events.completed_text) == 3
+    assert len(events.block_kinds) <= 3
+    assert "Decision 0" not in events.item_text.values()
+    _feed(events, records[-3:])
+    assert len(output) == 10
+
+
+@pytest.mark.parametrize("kind", ["codex", "claude"])
+def test_completed_tool_history_does_not_accumulate_for_the_entire_match(kind: str) -> None:
+    output: list[dict[str, Any]] = []
+    events = VendorEvents(kind, output.append, history_limit=3)
+    records: list[dict[str, Any]] = []
+    for index in range(10):
+        if kind == "codex":
+            records.append({
+                "type": "item.completed",
+                "item": {"id": str(index), "type": "mcp_tool_call", "tool": "play", "status": "completed"},
+            })
+        else:
+            records.extend([
+                {
+                    "type": "assistant",
+                    "message": {
+                        "id": str(index),
+                        "content": [{"type": "tool_use", "id": f"call-{index}", "name": "play"}],
+                    },
+                },
+                {
+                    "type": "user",
+                    "message": {"content": [{"type": "tool_result", "tool_use_id": f"call-{index}"}]},
+                },
+            ])
+    _feed(events, records)
+    assert len(events.tool_statuses) == 3
+    assert len(events.tool_calls) <= 3
+    count = len(output)
+    _feed(events, records[-1:])
+    assert len(output) == count
+
+
+def test_history_eviction_preserves_pending_play_correlation_and_partial_text() -> None:
+    output: list[dict[str, Any]] = []
+    events = VendorEvents("claude", output.append, history_limit=2)
+    _feed(
+        events,
+        [
+            {"type": "stream_event", "event": {"type": "message_start", "message": {"id": "active"}}},
+            {
+                "type": "stream_event",
+                "event": {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": "My "}},
+            },
+            {
+                "type": "assistant",
+                "message": {"id": "waiting", "content": [{"type": "tool_use", "id": "pending", "name": "play"}]},
+            },
+        ],
+    )
+    _feed(
+        events,
+        [
+            {"type": "assistant", "message": {"id": str(index), "content": [{"type": "text", "text": "Commentary"}]}}
+            for index in range(10)
+        ],
+    )
+    output.clear()
+    result = {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "pending"}]}}
+    _feed(
+        events,
+        [
+            result,
+            result,
+            {
+                "type": "stream_event",
+                "event": {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "move"}},
+            },
+            {"type": "stream_event", "event": {"type": "content_block_stop", "index": 0}},
+            {"type": "assistant", "message": {"id": "active", "content": [{"type": "text", "text": "My move"}]}},
+        ],
+    )
+    assert [(record["type"], record["item_id"], record["text"]) for record in output] == [
+        ("tool_activity", "waiting:0", "play: completed"),
+        ("model_text", "active:0", "move"),
+        ("model_text", "active:0", ""),
+    ]
+    assert len(events.item_text) <= 2
+    assert len(events.block_kinds) <= 2
+    assert len(events.completed_text) <= 2
+    assert len(events.tool_statuses) <= 2
+    assert len(events.tool_calls) <= 2
+
+
+def test_claude_retains_streamed_blocks_until_the_complete_message_even_beyond_history_limit() -> None:
+    output: list[dict[str, Any]] = []
+    events = VendorEvents("claude", output.append, history_limit=2)
+    _feed(events, [{"type": "stream_event", "event": {"type": "message_start", "message": {"id": "long"}}}])
+    blocks = [{"type": "text", "text": f"Block {index}"} for index in range(5)]
+    for index, block in enumerate(blocks):
+        _feed(
+            events,
+            [
+                {
+                    "type": "stream_event",
+                    "event": {"type": "content_block_start", "index": index, "content_block": block},
+                },
+                {"type": "stream_event", "event": {"type": "content_block_stop", "index": index}},
+            ],
+        )
+    assert len(output) == 10
+    _feed(events, [{"type": "assistant", "message": {"id": "long", "content": blocks}}])
+    assert len(output) == 10
+    assert len(events.item_text) == 2
+    assert len(events.completed_text) == 2
+    assert len(events.block_kinds) == 2

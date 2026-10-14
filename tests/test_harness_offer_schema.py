@@ -1,4 +1,4 @@
-"""Managed models see schemas and repair feedback for their current decision."""
+"""Custom JSON commands receive schemas and repair feedback for the current decision."""
 
 import copy
 import sys
@@ -15,7 +15,6 @@ from sixnimmt.arena.bots.external_harnesses.broker import SeatSession
 from sixnimmt.arena.bots.external_harnesses.drivers import (
     CommandProfile,
     ManagedCommandDriver,
-    structured_proposal_schema,
 )
 from sixnimmt.arena.bots.external_harnesses.managed import ManagedSeatWorker
 from sixnimmt.arena.bots.external_harnesses.protocol import PROPOSAL_SCHEMA, decision_proposal_schema
@@ -59,8 +58,6 @@ def make_proposal(view: MatchView, actions: list[dict[str, Any]], memory: str | 
 
 def validator_for(view: MatchView, *, memory: bool = False, memory_max_chars: int = 12) -> Validator:
     schema = decision_proposal_schema(make_offer(view), memory_enabled=memory, memory_max_chars=memory_max_chars)
-    # Exercise the same normalization used by both vendor CLI profiles.
-    schema = structured_proposal_schema(schema)
     Draft202012Validator.check_schema(schema)
     return Draft202012Validator(schema)
 

@@ -34,6 +34,16 @@ class SeatEndpoint(Protocol):
 
     def get_game_info(self, session_id: str) -> GameInfo: ...
 
+    def get_agent_info(self, session_id: str) -> GameInfo: ...
+
+    def get_play_tool(self, session_id: str) -> dict[str, Any]: ...
+
+    def fail_schema_refresh(self, session_id: str) -> dict[str, Any]: ...
+
+    def play_submission(
+        self, session_id: str, proposal: dict[str, Any] | None = None, cancel: threading.Event | None = None
+    ) -> PlayReply: ...
+
     def play(
         self, session_id: str, proposal: dict[str, Any] | None = None, cancel: threading.Event | None = None
     ) -> PlayReply: ...
@@ -139,7 +149,32 @@ class _ControllerTCPServer(socketserver.ThreadingTCPServer):
                 self.connections.discard(request)
             self.capacity.release()
 
-    def dispatch(self, request: dict[str, Any], cancel: threading.Event) -> GameInfo | PlayReply:
+    def dispatch(self, request: dict[str, Any], cancel: threading.Event) -> GameInfo | PlayReply | dict[str, Any]:
+        session, session_id = self._authorized_seat(request)
+        method = request.get("method")
+        allowed = {"session_id", "credential", "method"}
+        if method in {"play", "play_submission"}:
+            allowed.add("proposal")
+        if len(request.keys() - allowed) > 0:
+            raise HarnessError("invalid_request", "The request contains unsupported fields.")
+        if method == "get_game_info":
+            return session.get_game_info(session_id)
+        if method == "get_agent_info":
+            return session.get_agent_info(session_id)
+        if method == "get_play_tool":
+            return session.get_play_tool(session_id)
+        if method == "fail_schema_refresh":
+            return session.fail_schema_refresh(session_id)
+        if method not in {"play", "play_submission"}:
+            raise HarnessError("invalid_request", "Unknown harness operation.")
+        proposal = request.get("proposal")
+        if proposal is not None and not isinstance(proposal, dict):
+            raise HarnessError("invalid_request", "The proposal must be an object or null.")
+        if method == "play_submission":
+            return session.play_submission(session_id, proposal, cancel)
+        return session.play(session_id, proposal, cancel)
+
+    def _authorized_seat(self, request: dict[str, Any]) -> tuple[SeatEndpoint, str]:
         session_id = request.get("session_id")
         credential = request.get("credential")
         if not isinstance(session_id, str) or not isinstance(credential, str):
@@ -147,20 +182,7 @@ class _ControllerTCPServer(socketserver.ThreadingTCPServer):
         session = self.sessions.get(session_id)
         if session is None or not hmac.compare_digest(credential.encode(), session.credential.encode()):
             raise HarnessError("unauthorized", "The seat credentials are invalid.")
-        method = request.get("method")
-        allowed = {"session_id", "credential", "method"}
-        if method == "play":
-            allowed.add("proposal")
-        if len(request.keys() - allowed) > 0:
-            raise HarnessError("invalid_request", "The request contains unsupported fields.")
-        if method == "get_game_info":
-            return session.get_game_info(session_id)
-        if method != "play":
-            raise HarnessError("invalid_request", "Unknown harness operation.")
-        proposal = request.get("proposal")
-        if proposal is not None and not isinstance(proposal, dict):
-            raise HarnessError("invalid_request", "The proposal must be an object or null.")
-        return session.play(session_id, proposal, cancel)
+        return session, session_id
 
     def close_connections(self) -> None:
         self.stopping.set()
@@ -299,6 +321,28 @@ class SeatClient:
         except ValidationError as error:
             raise HarnessError("invalid_response", "The controller returned invalid game information.") from error
 
+    def get_agent_info(self, session_id: str, cancel: threading.Event | None = None) -> GameInfo:
+        response = self._request("get_agent_info", session_id, None, cancel)
+        try:
+            return GAME_INFO_ADAPTER.validate_python(response, strict=True)
+        except ValidationError as error:
+            raise HarnessError("invalid_response", "The controller returned invalid game information.") from error
+
+    def get_play_tool(self, session_id: str, cancel: threading.Event | None = None) -> dict[str, Any]:
+        return self._request("get_play_tool", session_id, None, cancel)
+
+    def fail_schema_refresh(self, session_id: str, cancel: threading.Event | None = None) -> dict[str, Any]:
+        return self._request("fail_schema_refresh", session_id, None, cancel)
+
+    def play_submission(
+        self, session_id: str, proposal: dict[str, Any] | None = None, cancel: threading.Event | None = None
+    ) -> PlayReply:
+        response = self._request("play_submission", session_id, proposal, cancel)
+        try:
+            return PLAY_REPLY_ADAPTER.validate_python(response, strict=True)
+        except ValidationError as error:
+            raise HarnessError("invalid_response", "The controller returned an invalid play response.") from error
+
     def play(
         self, session_id: str, proposal: dict[str, Any] | None = None, cancel: threading.Event | None = None
     ) -> PlayReply:
@@ -315,7 +359,7 @@ class SeatClient:
         if cancellation.is_set():
             raise HarnessError("cancelled", "The harness request was cancelled.")
         request: dict[str, Any] = {"method": method, "session_id": session_id, "credential": self._credential}
-        if method == "play":
+        if method in {"play", "play_submission"}:
             request["proposal"] = proposal
         frame = _encode_frame(request)
         try:

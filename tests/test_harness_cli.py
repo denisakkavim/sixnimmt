@@ -123,10 +123,16 @@ def test_connection_bundles_are_private_scoped_and_select_modern_mcp(tmp_path: P
         assert stat.S_IMODE((workspace / "claude-mcp.json").stat().st_mode) == 0o600
         codex = tomllib.loads((workspace / "codex-settings.toml").read_text())
         assert codex["features"]["mcp_2026_07_28"] is True
+        assert "tools" not in codex["mcp_servers"]["sixnimmt"]
         environment = codex["mcp_servers"]["sixnimmt"]["env"]
         assert environment["CODEX_MCP_PROTOCOL_VERSION"] == "2026-07-28"
         assert "SIXNIMMT_CREDENTIAL" not in environment
-        assert codex["mcp_servers"]["sixnimmt"]["env_vars"] == ["SIXNIMMT_ENDPOINT", "SIXNIMMT_CREDENTIAL"]
+        assert codex["mcp_servers"]["sixnimmt"]["env_vars"] == [
+            "SIXNIMMT_ENDPOINT",
+            "SIXNIMMT_CREDENTIAL",
+            "SIXNIMMT_SESSION_ID",
+            "SIXNIMMT_SCHEMA_MODE",
+        ]
         assert seat.session.credential not in (workspace / "codex-settings.toml").read_text()
         claude = json.loads((workspace / "claude-mcp.json").read_text())
         assert claude["mcpServers"]["sixnimmt"]["timeout"] == 660000

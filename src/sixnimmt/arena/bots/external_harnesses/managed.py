@@ -1,13 +1,15 @@
-"""Own fresh harness invocations within the arena bot lifecycle."""
+"""Own persistent MCP harnesses and fresh custom commands within a bot lifecycle."""
 
 import json
 import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import Any
 
 from sixnimmt.arena.bots.external_harnesses.broker import SeatSession
+from sixnimmt.arena.bots.external_harnesses.connection import connection_environment
 from sixnimmt.arena.bots.external_harnesses.drivers import DriverError, DriverFormatError, ManagedCommandDriver
 from sixnimmt.arena.bots.external_harnesses.messages import DecisionOffer, GameInfo, PlayReply
 from sixnimmt.arena.bots.external_harnesses.protocol import (
@@ -18,7 +20,7 @@ from sixnimmt.arena.bots.external_harnesses.protocol import (
 
 
 class ManagedSeatWorker:
-    """Translate broker decisions into fresh CLI invocations off the match thread."""
+    """Keep external execution and cleanup off the arena match thread."""
 
     def __init__(self, session: SeatSession, driver: ManagedCommandDriver) -> None:
         self.session = session
@@ -26,7 +28,20 @@ class ManagedSeatWorker:
         self.stopped = Event()
         self._close_lock = Lock()
         self._closed = False
+        self._workspace: Path | None = None
+        self._environment: dict[str, str] | None = None
+        if self.driver.profile.kind != "command":
+            self.session.set_managed_timeout(self.driver.profile.timeout_seconds)
+            self.session.set_trace(self.driver.emit_trace)
         self.thread = Thread(target=self._run, name=f"harness-{session.player_id}", daemon=True)
+
+    def configure_connection(self, endpoint: str, workspace: Path, *, schema_mode: str = "dynamic") -> None:
+        """Supply the private MCP connection before launching a managed harness."""
+        if self.thread.ident is not None:
+            msg = "managed connection must be configured before startup"
+            raise DriverError(msg)
+        self._workspace = workspace
+        self._environment = connection_environment(self.session, endpoint, schema_mode=schema_mode)
 
     def start(self) -> None:
         self.thread.start()
@@ -36,6 +51,10 @@ class ManagedSeatWorker:
             if self._closed:
                 return
             self._closed = True
+        # Closing the seat first releases its blocking play call. Give the
+        # harness time to receive that terminal result and finish normally.
+        if self.driver.profile.kind != "command" and self.thread.ident is not None:
+            self.thread.join(timeout=2.5)
         self.stopped.set()
         self.driver.cancel()
         if self.thread.ident is not None:
@@ -46,11 +65,25 @@ class ManagedSeatWorker:
 
     def _run(self) -> None:
         try:
-            self._play_loop()
+            if self.driver.profile.kind == "command":
+                self._play_loop()
+            else:
+                self._run_mcp_match()
         except Exception as error:
             if self.stopped.is_set():
                 return
             self.session.fail(error)
+
+    def _run_mcp_match(self) -> None:
+        if self._workspace is None or self._environment is None:
+            msg = "managed MCP connection has not been configured"
+            raise DriverError(msg)
+        self.driver.run_match(
+            self._workspace,
+            self._environment,
+            self.session.runtime_state,
+            wait_timeout_seconds=self.session.wait_timeout_seconds,
+        )
 
     def _play_loop(self) -> None:
         info = self.session.get_game_info(self.session.session_id)
@@ -105,7 +138,7 @@ class ManagedSeatWorker:
             })
             proposal: dict[str, Any] | None = None
             try:
-                proposal = self.driver.invoke(request_offer, decision_info, schema, deadline=deadline)
+                proposal = self.driver.invoke(request_offer, decision_info, deadline=deadline)
                 self.driver.emit_trace({"type": "proposal", **context, **_bounded_data("proposal", proposal, 65_536)})
                 parsed = parse_managed_proposal(proposal)
                 if parsed.explanation is not None and parsed.explanation.strip() != "":

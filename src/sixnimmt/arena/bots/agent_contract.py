@@ -12,10 +12,10 @@ from sixnimmt.engine.cards import bull_heads
 from sixnimmt.engine.rules import MatchProtocol
 from sixnimmt.engine.views import MatchView, MessageView, PrivateMessageView
 
-PROMPT_VERSION = "8"
+PROMPT_VERSION = "9"
 
 
-OBSERVATION_VERSION = "3"
+OBSERVATION_VERSION = "4"
 
 
 GAME_INSTRUCTIONS = """You are playing 6 nimmt!, a simultaneous card-selection game. Finish with the fewest penalty points.
@@ -49,8 +49,12 @@ _DECISION_RULES = """Your decisions:
 def agent_instructions(response_format: Literal["tools", "proposal"]) -> str:
     """Compose shared rules with the transport's explicit transaction format."""
     if response_format == "tools":
-        response_instruction = "Return one to eight typed tool calls together."
-        memory_instruction = "A memory update may appear anywhere."
+        response_instruction = (
+            "Return exactly one play tool call with a complete proposal. Copy the current decision_id, "
+            "choose a fresh submission_id, and supply one to eight operations (game actions plus an optional memory update). "
+            "The actions array contains typed game actions; use memory null to preserve your notebook and explanation null to omit operator commentary."
+        )
+        memory_instruction = "The memory field is part of the same transaction."
     else:
         response_instruction = (
             "Submit a proposal containing one to eight operations (game actions plus an optional memory update)."

@@ -29,18 +29,23 @@ async def _play_through_mcp(endpoint: str, session: SeatSession, directory: Path
         command=sys.executable,
         args=["-m", "sixnimmt.arena.bots.external_harnesses.mcp"],
         cwd=directory,
-        env={"SIXNIMMT_ENDPOINT": endpoint, "SIXNIMMT_CREDENTIAL": session.credential},
+        env={
+            "SIXNIMMT_ENDPOINT": endpoint,
+            "SIXNIMMT_CREDENTIAL": session.credential,
+            "SIXNIMMT_SESSION_ID": session.session_id,
+            "SIXNIMMT_SCHEMA_MODE": "static",
+        },
     )
     with anyio.fail_after(15):
         async with Client(process, mode=MCP_PROTOCOL_VERSION, read_timeout_seconds=3) as client:
             assert client.protocol_version == MCP_PROTOCOL_VERSION
-            info = await client.call_tool("get_game_info", {"session_id": session.session_id})
+            info = await client.call_tool("get_game_info", {})
             assert not info.is_error
             assert info.structured_content["player_id"] == "external"
             strategy = LowestFittingCardBot()
             proposal: dict[str, Any] | None = None
             for index in range(100):
-                result = await client.call_tool("play", {"session_id": session.session_id, "proposal": proposal})
+                result = await client.call_tool("play", {"proposal": proposal})
                 assert not result.is_error, result.content
                 response = result.structured_content
                 assert isinstance(response, dict)
@@ -54,15 +59,13 @@ async def _play_through_mcp(endpoint: str, session: SeatSession, directory: Path
                 view = MatchView.model_validate(offer["view"])
                 action = strategy.act(view)
                 proposal = {
-                    "protocol_version": offer["protocol_version"],
-                    "session_id": offer["session_id"],
                     "decision_id": offer["decision_id"],
                     "submission_id": f"submission-{index}",
-                    "view_id": offer["view_id"],
                     "actions": [
                         action.model_dump(mode="json", exclude={"action_id", "from_view", "expected_view_version"})
                     ],
                     "memory": None,
+                    "explanation": None,
                 }
     pytest.fail("The MCP player did not finish within its decision bound")
 

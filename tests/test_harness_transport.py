@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 import pytest
 from pydantic import ValidationError
 
+from sixnimmt.arena.bots.agent_protocol import play_tool
 from sixnimmt.arena.bots.external_harnesses.messages import (
     GAME_INFO_ADAPTER,
     PLAY_REPLY_ADAPTER,
@@ -42,6 +43,20 @@ class BlockingSeat:
             "memory_enabled": False,
             "memory_max_chars": 4000,
         }
+
+    def get_agent_info(self, session_id: str) -> GameInfo:
+        return self.get_game_info(session_id)
+
+    def get_play_tool(self, session_id: str) -> dict[str, Any]:
+        return dict(play_tool(None, memory_enabled=False, memory_max_chars=4000)["function"])
+
+    def fail_schema_refresh(self, session_id: str) -> dict[str, Any]:
+        return {"code": "schema_refresh_required", "message": "Refresh is required"}
+
+    def play_submission(
+        self, session_id: str, proposal: dict[str, Any] | None = None, cancel: threading.Event | None = None
+    ) -> DecisionReply:
+        return self.play(session_id, proposal, cancel)
 
     def play(
         self, session_id: str, proposal: dict[str, Any] | None = None, cancel: threading.Event | None = None

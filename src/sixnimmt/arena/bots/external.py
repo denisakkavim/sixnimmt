@@ -21,7 +21,7 @@ class CommandOptions(BotOptions):
 
 
 class HeadlessOptions(BotOptions):
-    """Model and invocation settings shared by headless Codex and Claude seats."""
+    """Model and per-decision limits for persistent headless harness sessions."""
 
     model: str | None = Field(default=None, min_length=1)
     reasoning_effort: str | None = Field(default=None, min_length=1)
@@ -39,6 +39,9 @@ class HarnessBot(Bot):
 
     def lifecycle_identity(self) -> object:
         return self.session
+
+    def set_trace(self, callback: Callable[[dict[str, Any]], None] | None) -> None:
+        self.session.set_trace(callback)
 
     def start(self, context: BotContext) -> None:
         self.session.start(context)
@@ -90,7 +93,7 @@ class ManagedHarnessBot(HarnessBot):
         return {
             **super().stats(),
             "driver": self.worker.driver.profile.kind,
-            "context": "fresh",
+            "context": "fresh" if self.worker.driver.profile.kind == "command" else "match",
             "invocations": self.worker.driver.invocations,
             "managed_timeout_seconds": self.worker.driver.profile.timeout_seconds,
         }

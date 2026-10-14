@@ -10,6 +10,7 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletion
 from pydantic import JsonValue, ValidationError
 
+from sixnimmt.arena.bots.agent_protocol import parse_play_arguments, parse_submission
 from sixnimmt.arena.bots.base import ActionBatch
 from sixnimmt.arena.bots.heuristics import LowestFittingCardBot
 from sixnimmt.arena.bots.lifecycle import DecisionContext, DecisionDeadlineExceeded
@@ -20,7 +21,6 @@ from sixnimmt.arena.bots.llm import (
     LLMOptions,
     ModelDecisionError,
     action_tools,
-    parse_action,
     repair_feedback,
 )
 from sixnimmt.arena.config import RunConfig
@@ -42,6 +42,15 @@ def view() -> MatchView:
     return build_view(events, Viewer(ViewRole.PLAYER, "a"))
 
 
+def proposal_schema(payload: dict[str, Any]) -> dict[str, Any]:
+    return payload["tools"][0]["function"]["parameters"]["properties"]["proposal"]["anyOf"][0]
+
+
+def action_schemas(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    alternatives = proposal_schema(payload)["properties"]["actions"]["items"]["anyOf"]
+    return {schema["properties"]["type"]["const"]: schema for schema in alternatives}
+
+
 class Endpoint:
     def __init__(self) -> None:
         self.requests: list[dict[str, Any]] = []
@@ -54,6 +63,7 @@ class Endpoint:
         self.raw_body: str | None = None
         self.memory: Any = ""
         self.omit_memory = False
+        self.explanation: str | None = None
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         if self.timeout:
@@ -64,27 +74,36 @@ class Endpoint:
         self.urls.append(str(request.url))
         self.authorizations.append(request.headers["authorization"])
         if self.raw_body is not None:
-            return httpx.Response(200, text=self.raw_body)
+            decision_id = proposal_schema(payload)["properties"]["decision_id"]["const"]
+            return httpx.Response(200, text=self.raw_body.replace("__DECISION_ID__", decision_id))
         if self.status != 200:
             return httpx.Response(self.status, json={"error": {"message": "secret-provider-body"}})
-        tools = {tool["function"]["name"]: tool["function"] for tool in payload["tools"]}
+        tools = action_schemas(payload)
         if "choose_row" in tools:
             name, arguments = "choose_row", {"row_index": 0}
         elif "commit" in tools and "Your selection: none;" not in payload["messages"][1]["content"]:
             name, arguments = "commit", {}
         else:
-            hand = tools["select_card"]["parameters"]["properties"]["card"]["enum"]
+            hand = tools["select_card"]["properties"]["card"]["enum"]
             name, arguments = "select_card", {"card": min(hand)}
             if self.illegal_card_once:
                 arguments = {"card": next(card for card in range(1, 105) if card not in hand)}
                 self.illegal_card_once = False
-        calls = [{"id": "call_1", "type": "function", "function": {"name": name, "arguments": json.dumps(arguments)}}]
-        if "update_memory" in tools and not self.omit_memory:
-            calls.append({
-                "id": "memory",
+        memory_enabled = proposal_schema(payload)["properties"]["memory"].get("type") != "null"
+        proposal = {
+            "decision_id": proposal_schema(payload)["properties"]["decision_id"]["const"],
+            "submission_id": "endpoint-submission",
+            "actions": [{"type": name, **arguments}],
+            "memory": self.memory if memory_enabled and not self.omit_memory else None,
+            "explanation": self.explanation,
+        }
+        calls = [
+            {
+                "id": "call_1",
                 "type": "function",
-                "function": {"name": "update_memory", "arguments": json.dumps({"memory": self.memory})},
-            })
+                "function": {"name": "play", "arguments": json.dumps({"proposal": proposal})},
+            }
+        ]
         if self.invalid_responses > 0:
             self.invalid_responses -= 1
             calls = []
@@ -133,7 +152,12 @@ def test_calls_configured_endpoint_with_only_available_tools(endpoint: Endpoint,
     assert endpoint.urls == ["http://localhost:11434/v1/chat/completions"]
     payload = endpoint.requests[0]
     assert payload["model"] == "my-local-model"
-    assert [tool["function"]["name"] for tool in payload["tools"]] == ["select_card"]
+    assert [tool["function"]["name"] for tool in payload["tools"]] == ["play"]
+    assert set(action_schemas(payload)) == {"select_card"}
+    assert (
+        f"Decision ID: {proposal_schema(payload)['properties']['decision_id']['const']}"
+        in payload["messages"][1]["content"]
+    )
     assert "temperature" not in payload
     assert "parallel_tool_calls" not in payload
     observation = payload["messages"][1]["content"]
@@ -279,32 +303,13 @@ def test_view_carries_public_protocol_limits() -> None:
     ],
 )
 def test_parses_each_game_action(view: MatchView, name: str, arguments: dict[str, JsonValue]) -> None:
-    response = ChatCompletion.model_validate({
-        "id": "completion",
-        "object": "chat.completion",
-        "created": 0,
-        "model": "local",
-        "choices": [
-            {
-                "index": 0,
-                "finish_reason": "tool_calls",
-                "message": {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {
-                            "id": "call",
-                            "type": "function",
-                            "function": {
-                                "name": name,
-                                "arguments": json.dumps(arguments),
-                            },
-                        }
-                    ],
-                },
-            }
-        ],
+    proposal = parse_submission({
+        "decision_id": "decision",
+        "submission_id": "submission",
+        "actions": [{"type": name, **arguments}],
+        "memory": None,
     })
-    action = parse_action(response, view.model_copy(update={"legal_actions": (name,)}))
+    action = proposal.batch(view.view_id).actions[0]
     assert action.type == name
     assert (
         action.model_dump(
@@ -315,36 +320,40 @@ def test_parses_each_game_action(view: MatchView, name: str, arguments: dict[str
 
 
 @pytest.mark.parametrize(
-    "arguments", ['{"card": "1"}', '{"card": true}', '{"card": 1, "from_view": "fake"}', "[]", "{"]
-)
-def test_rejects_malformed_or_extra_tool_arguments(view: MatchView, arguments: str) -> None:
-    response = ChatCompletion.model_validate({
-        "id": "completion",
-        "object": "chat.completion",
-        "created": 0,
-        "model": "local",
-        "choices": [
-            {
-                "index": 0,
-                "finish_reason": "tool_calls",
-                "message": {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {
-                            "id": "call",
-                            "type": "function",
-                            "function": {
-                                "name": "select_card",
-                                "arguments": arguments,
-                            },
-                        }
-                    ],
-                },
+    "arguments",
+    [
+        {"proposal": None, "extra": "not allowed"},
+        {},
+        [],
+        {
+            "proposal": {
+                "decision_id": "decision",
+                "submission_id": "submission",
+                "actions": [{"type": "select_card", "card": "1"}],
+                "memory": None,
             }
-        ],
-    })
-    with pytest.raises((ValueError, TypeError)):
-        parse_action(response, view)
+        },
+        {
+            "proposal": {
+                "decision_id": "decision",
+                "submission_id": "submission",
+                "actions": [{"type": "select_card", "card": True}],
+                "memory": None,
+            }
+        },
+        {
+            "proposal": {
+                "decision_id": "decision",
+                "submission_id": "submission",
+                "actions": [{"type": "select_card", "card": 1, "from_view": "fake"}],
+                "memory": None,
+            }
+        },
+    ],
+)
+def test_rejects_malformed_or_extra_tool_arguments(arguments: object) -> None:
+    with pytest.raises(ValueError):
+        parse_play_arguments(arguments)
 
 
 def test_does_not_retry_after_decision_budget_expires(
@@ -512,9 +521,9 @@ def test_memory_bot_updates_private_notes_with_the_move_in_one_request(
     assert all("memory" not in item.model_dump() for item in action.actions)
     assert bot._memory == ""
     bot.accept_batch(action)
-    parameters = endpoint.requests[0]["tools"][-1]["function"]["parameters"]
+    parameters = proposal_schema(endpoint.requests[0])
     assert "memory" in parameters["required"]
-    assert parameters["properties"]["memory"]["maxLength"] == 4000
+    assert parameters["properties"]["memory"]["anyOf"][0]["maxLength"] == 4000
 
     endpoint.memory = "The plan changed: b kept the promise."
     proposal = bot.act(view.model_copy(update={"play_number": 2}))
@@ -559,7 +568,10 @@ def test_both_model_types_receive_the_same_shared_game_observation(endpoint: End
     with_memory = endpoint.requests[1]["messages"][1]["content"]
     assert "Recent public plays" in plain
     assert "player_2 played" in plain
-    assert with_memory.split("\n\nYour private notebook", maxsplit=1)[0] == plain
+    assert (
+        with_memory.split("\n\nYour private notebook", maxsplit=1)[0].split("\n", maxsplit=1)[1]
+        == plain.split("\n", maxsplit=1)[1]
+    )
 
 
 def test_repair_feedback_includes_bounded_rejected_arguments_without_reasoning() -> None:
@@ -618,7 +630,7 @@ def test_private_notes_are_isolated_by_bot_match_and_seat(endpoint: Endpoint, vi
     assert "Last proposed action" not in observation
 
 
-@pytest.mark.parametrize("memory", [None, True, 7, "x" * 11, "\ud800"])
+@pytest.mark.parametrize("memory", [True, 7, "x" * 11, "\ud800"])
 def test_invalid_memory_gets_bounded_repair(endpoint: Endpoint, view: MatchView, memory: Any) -> None:
     endpoint.memory = memory
     bot = LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1", memory_max_chars=10)
@@ -628,7 +640,7 @@ def test_invalid_memory_gets_bounded_repair(endpoint: Endpoint, view: MatchView,
     assert "Rejected calls (quoted data" in endpoint.requests[-1]["messages"][-1]["content"]
 
 
-def test_omitting_memory_preserves_notes(endpoint: Endpoint, view: MatchView) -> None:
+def test_null_memory_preserves_notes(endpoint: Endpoint, view: MatchView) -> None:
     bot = LLMMemoryBot(1, model="local", base_url="http://localhost:11434/v1")
     bot.act(view)
     bot.accept_batch(ActionBatch((), "Existing notes"))
@@ -742,46 +754,49 @@ class CommunicatingEndpoint(Endpoint):
         payload = self.requests[-1]
         model = payload["model"]
         observation = payload["messages"][1]["content"]
-        tools = {tool["function"]["name"]: tool["function"] for tool in payload["tools"]}
+        tools = action_schemas(payload)
         offer = self.offers[model]
         self.offers[model] += 1
         body = response.json()
         function = body["choices"][0]["message"]["tool_calls"][0]["function"]
+        arguments = json.loads(function["arguments"])
+        proposal = arguments["proposal"]
 
         if model == "alice" and offer == 0:
-            hand = tools["select_card"]["parameters"]["properties"]["card"]["enum"]
+            hand = tools["select_card"]["properties"]["card"]["enum"]
             self.alice_initial_card = min(hand)
             self.alice_revised_card = max(hand)
         elif model == "alice" and offer == 1:
             assert f"Your selection: {self.alice_initial_card}; committed: no." in observation
-            function.update(
-                name="send_message",
-                arguments=json.dumps({
+            proposal["actions"] = [
+                {
+                    "type": "send_message",
                     "visibility": "table",
                     "body": "Should I switch to my highest card?",
-                }),
-            )
+                }
+            ]
         elif model == "bob" and offer == 1:
             assert 'player_1 → table: "Should I switch to my highest card?"' in observation
-            function.update(
-                name="send_message",
-                arguments=json.dumps({
+            proposal["actions"] = [
+                {
+                    "type": "send_message",
                     "visibility": "direct",
                     "to_player": "player_1",
                     "body": "Yes, switch to your highest card.",
-                }),
-            )
+                }
+            ]
         elif model == "alice" and offer == 2:
             assert 'player_2 → player_1: "Yes, switch to your highest card."' in observation
             assert f"Your selection: {self.alice_initial_card}; committed: no." in observation
-            function.update(name="select_card", arguments=json.dumps({"card": self.alice_revised_card}))
+            proposal["actions"] = [{"type": "select_card", "card": self.alice_revised_card}]
         elif model == "bob" and offer == 2:
             assert "player_1: selected, not committed." in observation
-            assert function["name"] == "commit"
+            assert proposal["actions"][0]["type"] == "commit"
         elif model == "alice" and offer == 3:
             assert f"Your selection: {self.alice_revised_card}; committed: no." in observation
             assert "player_2: committed." in observation
-            assert function["name"] == "commit"
+            assert proposal["actions"][0]["type"] == "commit"
+        function["arguments"] = json.dumps(arguments)
         return httpx.Response(200, json=body)
 
 
@@ -838,7 +853,15 @@ def test_rejects_strict_and_simplified_schemas_together() -> None:
         LLMOptions(model="test", base_url="http://localhost/v1", strict_tools=True, simplified_tool_schemas=True)
 
 
-def atomic_response(calls: list[tuple[str, dict[str, Any]]]) -> str:
+def atomic_response(actions: list[dict[str, Any]], *, memory: object = None, **changes: Any) -> str:
+    proposal = {
+        "decision_id": "__DECISION_ID__",
+        "submission_id": "atomic-submission",
+        "actions": actions,
+        "memory": memory,
+        "explanation": None,
+        **changes,
+    }
     return json.dumps({
         "id": "atomic",
         "object": "chat.completion",
@@ -852,11 +875,10 @@ def atomic_response(calls: list[tuple[str, dict[str, Any]]]) -> str:
                     "role": "assistant",
                     "tool_calls": [
                         {
-                            "id": f"call_{index}",
+                            "id": "call",
                             "type": "function",
-                            "function": {"name": name, "arguments": json.dumps(arguments)},
+                            "function": {"name": "play", "arguments": json.dumps({"proposal": proposal})},
                         }
-                        for index, (name, arguments) in enumerate(calls)
                     ],
                 },
             }
@@ -864,12 +886,11 @@ def atomic_response(calls: list[tuple[str, dict[str, Any]]]) -> str:
     })
 
 
-@pytest.mark.parametrize("position", [0, 1, 2])
-def test_memory_tool_position_does_not_change_game_order(endpoint: Endpoint, view: MatchView, position: int) -> None:
+def test_atomic_proposal_preserves_action_order_and_private_notes(endpoint: Endpoint, view: MatchView) -> None:
     view = view.model_copy(update={"protocol": MatchProtocol(communication_enabled=True)})
-    calls = [("select_card", {"card": min(view.you.hand)}), ("commit", {})]
-    calls.insert(position, ("update_memory", {"memory": "new notes"}))
-    endpoint.raw_body = atomic_response(calls)
+    endpoint.raw_body = atomic_response(
+        [{"type": "select_card", "card": min(view.you.hand)}, {"type": "commit"}], memory="new notes"
+    )
     bot = LLMMemoryBot(1, model="test", base_url="http://localhost/v1")
     proposal = bot.act(view)
     assert isinstance(proposal, ActionBatch)
@@ -881,24 +902,26 @@ def test_memory_tool_position_does_not_change_game_order(endpoint: Endpoint, vie
 
 
 @pytest.mark.parametrize(
-    "calls",
+    "actions, memory",
     [
-        [],
-        [("update_memory", {"memory": "one"}), ("update_memory", {"memory": "two"})],
-        [("update_memory", {"memory": ""})] * 9,
-        [("update_memory", {"memory": "okay"}), ("select_card", {"card": "bad"})],
+        ([], None),
+        ([{"type": "select_card", "card": 1}] * 8, "one extra operation"),
+        ([{"type": "select_card", "card": 1}] * 9, None),
+        ([{"type": "select_card", "card": "bad"}], "okay"),
     ],
 )
-def test_invalid_transaction_is_rejected_without_memory_changes(endpoint: Endpoint, view: MatchView, calls) -> None:
-    endpoint.raw_body = atomic_response(calls)
+def test_invalid_transaction_is_rejected_without_memory_changes(
+    endpoint: Endpoint, view: MatchView, actions: list[dict[str, Any]], memory: str | None
+) -> None:
+    endpoint.raw_body = atomic_response(actions, memory=memory)
     bot = LLMMemoryBot(1, model="test", base_url="http://localhost/v1", repair_attempts=0)
     with pytest.raises(ModelDecisionError):
         bot.act(view)
     assert bot._memory == ""
 
 
-def test_simplified_memory_tool_retains_local_length_validation(endpoint: Endpoint, view: MatchView) -> None:
-    endpoint.raw_body = atomic_response([("update_memory", {"memory": "too long"})])
+def test_simplified_nested_memory_schema_retains_local_length_validation(endpoint: Endpoint, view: MatchView) -> None:
+    endpoint.raw_body = atomic_response([], memory="too long")
     bot = LLMMemoryBot(
         1,
         model="test",
@@ -909,10 +932,10 @@ def test_simplified_memory_tool_retains_local_length_validation(endpoint: Endpoi
     )
     with pytest.raises(ModelDecisionError):
         bot.act(view)
-    tools = {tool["function"]["name"]: tool["function"] for tool in endpoint.requests[0]["tools"]}
-    assert "memory" not in tools["select_card"]["parameters"]["properties"]
-    assert tools["update_memory"]["parameters"]["properties"]["memory"]["type"] == "string"
-    assert "maxLength" not in tools["update_memory"]["parameters"]["properties"]["memory"]
+    schema = proposal_schema(endpoint.requests[0])
+    assert schema["properties"]["memory"]["anyOf"][0]["type"] == "string"
+    assert "maxLength" not in schema["properties"]["memory"]["anyOf"][0]
+    assert "enum" not in action_schemas(endpoint.requests[0])["select_card"]["properties"]["card"]
 
 
 def test_expired_arena_deadline_skips_provider_request(endpoint: Endpoint, view: MatchView) -> None:
@@ -943,3 +966,63 @@ def test_provider_request_uses_the_shorter_deadline(
     bot.act(view)
     request = next(record for record in records if record["kind"] == "request")
     assert expected - 0.5 <= request["timeout_seconds"] <= expected
+
+
+def test_each_model_request_receives_the_current_hand_in_its_play_schema(endpoint: Endpoint, view: MatchView) -> None:
+    bot = LLMBot(1, model="local", base_url="http://localhost/v1")
+    bot.act(view)
+    updated = view.model_copy(update={"you": view.you.model_copy(update={"hand": view.you.hand[1:]})})
+    bot.act(updated)
+    first = action_schemas(endpoint.requests[0])["select_card"]["properties"]["card"]
+    second = action_schemas(endpoint.requests[1])["select_card"]["properties"]["card"]
+    assert first["enum"] == list(view.you.hand)
+    assert second["enum"] == list(updated.you.hand)
+    first_id = proposal_schema(endpoint.requests[0])["properties"]["decision_id"]["const"]
+    second_id = proposal_schema(endpoint.requests[1])["properties"]["decision_id"]["const"]
+    assert first_id != second_id
+
+
+def test_repair_preserves_the_decision_identifier_and_schema(endpoint: Endpoint, view: MatchView) -> None:
+    endpoint.invalid_responses = 1
+    LLMBot(1, model="local", base_url="http://localhost/v1").act(view)
+    assert endpoint.requests[0]["tools"] == endpoint.requests[1]["tools"]
+    assert endpoint.requests[0]["messages"][1] == endpoint.requests[1]["messages"][1]
+
+
+@pytest.mark.parametrize(
+    "failure", ["stale_decision", "extra_tool_call", "legacy_action_tool", "null_proposal", "disabled_memory"]
+)
+def test_rejects_invalid_play_calls_with_bounded_repair(endpoint: Endpoint, view: MatchView, failure: str) -> None:
+    response = json.loads(atomic_response([{"type": "select_card", "card": min(view.you.hand)}]))
+    calls = response["choices"][0]["message"]["tool_calls"]
+    arguments = json.loads(calls[0]["function"]["arguments"])
+    if failure == "stale_decision":
+        arguments["proposal"]["decision_id"] = "old-decision"
+    elif failure == "extra_tool_call":
+        calls.append(dict(calls[0]))
+    elif failure == "legacy_action_tool":
+        calls[0]["function"]["name"] = "select_card"
+    elif failure == "null_proposal":
+        arguments["proposal"] = None
+    else:
+        arguments["proposal"]["memory"] = "not enabled"
+    calls[0]["function"]["arguments"] = json.dumps(arguments)
+    endpoint.raw_body = json.dumps(response)
+    with pytest.raises(ModelDecisionError, match="bounded repair"):
+        LLMBot(1, model="local", base_url="http://localhost/v1").act(view)
+    assert len(endpoint.requests) == 2
+
+
+def test_move_explanation_reaches_operator_activity_without_changing_the_action(
+    endpoint: Endpoint, view: MatchView
+) -> None:
+    endpoint.explanation = "Keep the highest card for later."
+    records: list[dict[str, Any]] = []
+    bot = LLMBot(1, model="local", base_url="http://localhost/v1")
+    bot.set_trace(records.append)
+    action = bot.act(view)
+    assert isinstance(action, SelectCardAction)
+    assert "explanation" not in action.model_dump()
+    explanation = next(record for record in records if record.get("type") == "decision_explanation")
+    assert explanation["text"] == endpoint.explanation
+    assert explanation["submission_id"] == "endpoint-submission"

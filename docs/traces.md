@@ -195,7 +195,9 @@ When the runner creates its own sink, it closes it on completion.
 
 Existing LLM adapter logs associate attempts using `decision_id` and unique `request_id` values.
 Records include requests, responses/provider errors, parsing results, and repair
-attempts. `request.payload` holds messages, tools, and generation settings;
+attempts. Each request advertises one typed `play` tool; its nested action schemas
+contain the current decision's hand and other constraints. Repairs retain the
+decision ID and schema. `request.payload` holds messages, tools, and generation settings;
 `response.body` is a string containing the raw response body. It may include
 provider-specific reasoning or fields outside the SDK schema.
 
@@ -204,30 +206,43 @@ arena accepted the action. Consult action/event logs for acceptance. Late model
 calls can append diagnostics after game logs close, and interrupted requests can
 remain without response records.
 
-Managed external harnesses use the same model-log file. When tracing is enabled,
-each job writes `traces/<match_id>.model.jsonl`, alongside its event and action logs.
-Records carry `player_id`, `display_name`, `client`, configured `model` and
-`reasoning_effort`, `invocation`, `decision_id`, `view_id`, and a timestamp.
-Worker records additionally carry the attempt number.
+External harnesses use the same model-log file. When tracing is enabled, each
+job writes `traces/<match_id>.model.jsonl`, alongside its event and action logs.
+Broker records capture each filtered decision and submitted `play` proposal,
+including native sessions. Native terminal transcripts are not collected.
+Broker decision records include the fully constrained schema for the offer.
+Codex's registered MCP tool uses a stable typed union instead; consult the
+[harness schema notes](harness-players.md#decision-specific-schemas) when comparing
+model guidance. A recorded broker schema alone does not prove what a client
+passed to its model.
+
+Managed records additionally carry the client, configured model and effort,
+invocation number, and available streamed output. Headless Codex and Claude use
+one invocation for the match, with decision and view IDs changing as play
+progresses. Generic custom commands retain one invocation per decision or repair.
+Records include seat identity and timestamps; command repair records also carry
+the attempt number.
 
 | Record type | Contents |
 | --- | --- |
-| `decision_request` | This seat's filtered offer and decision-specific proposal schema |
+| `decision_request` | This seat's filtered offer and decision-specific `play` tool schema; custom commands record their final-proposal schema. The offered schema is not proof that a harness installed it |
 | `invocation_started`, `invocation_completed` | Managed process activity |
 | `model_text`, `reasoning_summary`, `tool_activity`, `stderr` | Available CLI output while the process runs |
 | `invocation_output` | Bounded completed output for diagnosis |
-| `proposal` | Parsed final proposal, before broker or arena acceptance |
-| `decision_explanation` | Optional short model explanation from completed managed output, still awaiting acceptance |
+| `proposal` | Submitted MCP proposal or parsed custom-command output, before arena acceptance |
+| `decision_explanation` | Optional short model explanation from an API/MCP proposal or completed custom-command output, still awaiting acceptance |
 | `proposal_rejected`, `protocol_repair` | Validation error, previous proposal or bounded excerpt, and retry context |
 | `delivery_cancelled` | Delivery stopped while waiting for the next offer; this does not reject a move already accepted |
 | `invocation_failed` | Process failure with bounded stdout/stderr diagnostics |
 | `cleanup_failed` | Process cleanup failure; an existing invocation error remains the reported cause of failure |
 
 The generic command contract still requires exactly one proposal on stdout;
-its stderr can supply live diagnostic text. Vendor stream records are never
-submissions. A repair retains the same decision identifiers, schema, and work
-deadline, while getting a new invocation number. Inspect the action log and
-receipts to determine whether a proposal was accepted.
+its stderr can supply live diagnostic text. For native and headless harnesses,
+only authenticated MCP `play` calls submit moves. Vendor stream records and
+final assistant text are never submissions. Custom-command format repair retains
+the decision identifiers, schema, and work deadline while getting a new
+invocation number. Inspect the action log and receipts to determine whether a
+proposal was accepted.
 
 Text and reasoning records preserve `item_id` and carry `complete` to mark a
 finished message. An empty text record can mark completion of text already
@@ -235,12 +250,12 @@ streamed; it is not a new message. Tool records preserve the tool item's ID and
 expose `tool_name` and `status`, allowing a display to update an existing entry.
 Completion of streamed tool input is separate from completion of tool execution.
 
-Managed output may include an optional `explanation`. It is validated and removed
-before the proposal reaches the broker, and consumes no action or notebook
-budget. The corresponding explanation record is operator commentary; accepted
-actions and rejected attempts remain determined by arena settlement. Completed
-output is retained privately for diagnosis, including explanations that fail
-validation.
+The common API/MCP proposal and custom-command output can include an optional
+`explanation`. It is validated as operator metadata and consumes no action or
+notebook budget. It never enters engine actions or public messages. The
+corresponding explanation record is commentary; accepted actions and rejected
+attempts remain determined by arena settlement. Available provider output is
+retained privately for diagnosis, including explanations that fail validation.
 
 When tracing is enabled, these diagnostics survive failed games and are saved
 even when the operator uses `--quiet` or `--no-commentary`. Large output is bounded and truncation is

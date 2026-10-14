@@ -15,7 +15,6 @@ from sixnimmt.arena.bots.external_harnesses.broker import SeatSession
 from sixnimmt.arena.bots.external_harnesses.drivers import (
     CommandProfile,
     ManagedCommandDriver,
-    structured_proposal_schema,
 )
 from sixnimmt.arena.bots.external_harnesses.managed import ManagedSeatWorker
 from sixnimmt.arena.bots.external_harnesses.messages import DecisionOffer
@@ -85,7 +84,7 @@ def test_explanation_alone_cannot_satisfy_the_game_operation_requirement(proposa
         parse_managed_proposal(proposal)
 
 
-def test_native_proposal_schema_and_parser_do_not_accept_managed_commentary(proposal: dict[str, Any]) -> None:
+def test_legacy_proposal_schema_excludes_custom_command_commentary(proposal: dict[str, Any]) -> None:
     assert "explanation" not in PROPOSAL_SCHEMA["properties"]
     assert parse_proposal(proposal).batch().size == 1
     with pytest.raises(HarnessError, match="explanation"):
@@ -94,7 +93,7 @@ def test_native_proposal_schema_and_parser_do_not_accept_managed_commentary(prop
     assert "explanation" not in session.get_game_info(session.session_id)["proposal_schema"]["properties"]
 
 
-def test_managed_schema_adds_nullable_explanation_without_extending_native_fields() -> None:
+def test_custom_command_schema_adds_optional_nullable_explanation() -> None:
     _, events = create_match("explanation-schema", ["a", "b"], 123)
     view = build_view(events, Viewer(ViewRole.PLAYER, "a"))
     offer = {
@@ -106,10 +105,8 @@ def test_managed_schema_adds_nullable_explanation_without_extending_native_field
     }
     schema = managed_proposal_schema(offer, memory_enabled=False, memory_max_chars=4000)
     assert "explanation" not in schema["required"]
-    strict = structured_proposal_schema(schema)
-    Draft202012Validator.check_schema(strict)
-    assert "explanation" in strict["required"]
-    assert strict["properties"]["explanation"]["anyOf"] == [
+    Draft202012Validator.check_schema(schema)
+    assert schema["properties"]["explanation"]["anyOf"] == [
         {"maxLength": MAX_EXPLANATION_CHARS, "type": "string"},
         {"type": "null"},
     ]

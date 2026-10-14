@@ -2,9 +2,9 @@
 
 import hashlib
 import pickle
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Executor, Future, ProcessPoolExecutor, ThreadPoolExecutor, wait
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from functools import partial
 from multiprocessing import get_context
@@ -26,7 +26,15 @@ from sixnimmt.arena.config import (
     resolved_abandoned_limit,
 )
 from sixnimmt.arena.decisions import AbandonedDecisions, DecisionMetrics, SharedAbandonedState, StopSignal
-from sixnimmt.arena.match import ActivityObserver, ArenaError, Observer, _BotLifecycle, _Match, _run_match
+from sixnimmt.arena.match import (
+    ActivityObserver,
+    ArenaError,
+    Observer,
+    _attach_bot_traces,
+    _BotLifecycle,
+    _Match,
+    _run_match,
+)
 from sixnimmt.arena.planning import ArenaPlan, PlannedMatch, with_execution
 from sixnimmt.arena.players import PlayerConfig, ResolvedPlayer, ResolvedStrategy, resolve_players, resolve_strategy
 from sixnimmt.arena.results import MatchOutcome, MatchResult
@@ -90,6 +98,7 @@ def execute_match_job(
     construction_failure: ConstructionFailure | None = None,
     recording: RecordingPolicy | None = None,
     _lifecycle: _BotLifecycle | None = None,
+    _sink: EventSink | None = None,
 ) -> ExecutedMatch:
     """Own one trace and one match lifecycle for every execution mode."""
     if construction_failure is None and initial_bots is None and len(job.assignments) != len(job.seats):
@@ -101,13 +110,14 @@ def execute_match_job(
     recording = resolve_settings(config, protocol).recording if recording is None else recording
     config = replace(config, trace_dir=recording.trace_dir)
     trace_name = job.match_id if job.trace_name is None else job.trace_name
-    sink: EventSink = NullEventSink()
+    sink: EventSink = NullEventSink() if _sink is None else _sink
+    owns_sink = _sink is None
     lifecycle = _BotLifecycle() if _lifecycle is None else _lifecycle
     metrics = DecisionMetrics(tuple(seat.player_id for seat in job.seats), recording.retain_decision_samples)
     bots = list(initial_bots) if initial_bots is not None else []
     started = monotonic()
     try:
-        if config.trace_dir is not None:
+        if owns_sink and config.trace_dir is not None:
             sink = JsonlEventSink(config.trace_dir, trace_name)
         build_error = None if construction_failure is None else construction_failure.cause
         if initial_bots is None and construction_failure is None:
@@ -146,7 +156,8 @@ def execute_match_job(
         return ExecutedMatch(result, tuple(bots), metrics, monotonic() - started)
     finally:
         lifecycle.close_unstarted(bots, job.seats)
-        sink.close()
+        if owns_sink:
+            sink.close()
 
 
 def derive_seed(seed: int, domain: str, game_index: int, seat_index: int | None = None) -> int:
@@ -332,6 +343,25 @@ def _play_process_job(job: PlannedMatch) -> MatchRecord:
     return _play_job(_worker_settings, _worker_abandoned, _RunHooks(stopped, Event()), job)
 
 
+@contextmanager
+def _session_trace(
+    bots: Sequence[Bot],
+    seats: Sequence[PlayerSeat],
+    recording: RecordingPolicy,
+    match_id: str,
+    on_activity: ActivityObserver | None,
+) -> Iterator[EventSink]:
+    """Keep one trace sink alive from external startup through match cleanup."""
+    sink: EventSink = NullEventSink()
+    if recording.trace_dir is not None:
+        sink = JsonlEventSink(recording.trace_dir, match_id)
+    try:
+        _attach_bot_traces(bots, seats, sink, on_activity)
+        yield sink
+    finally:
+        sink.close()
+
+
 def _play_job(
     settings: _WorkerSettings, abandoned: AbandonedDecisions, hooks: _RunHooks, job: PlannedMatch
 ) -> MatchRecord:
@@ -383,17 +413,20 @@ def _play_job(
         for index, seat in enumerate(prepared)
     )
     lifecycle = _BotLifecycle()
-    with supervise_sessions(
-        prepared,
-        directory,
-        settings.session,
-        lifecycle,
-        hooks.stopped,
-        report=hooks.report,
-        confirm_start=hooks.confirm_start,
-        watch=settings.watch,
-        closed=hooks.closed,
-    ) as supervisor:
+    with (
+        _session_trace([seat.bot for seat in prepared], seats, recording, job.match_id, hooks.on_activity) as sink,
+        supervise_sessions(
+            prepared,
+            directory,
+            settings.session,
+            lifecycle,
+            hooks.stopped,
+            report=hooks.report,
+            confirm_start=hooks.confirm_start,
+            watch=settings.watch,
+            closed=hooks.closed,
+        ) as supervisor,
+    ):
         executed = execute_match_job(
             MatchJob(job.match_id, job.match_seed, seats),
             settings.rules,
@@ -406,6 +439,7 @@ def _play_job(
             initial_bots=[seat.bot for seat in prepared],
             recording=recording,
             _lifecycle=lifecycle,
+            _sink=sink,
         )
         record = _record_result(
             job, executed.result, executed.bots, executed.metrics, executed.duration_seconds, settings

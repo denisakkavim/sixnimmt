@@ -393,29 +393,8 @@ def test_watch_can_present_a_sampled_schedule(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("bot", ["codex-headless", "claude-headless"])
-def test_cli_preserves_catalogue_model_and_effort_through_headless_repair_and_records_acceptance(
-    tmp_path: Path, bot: str
-) -> None:
-    script = tmp_path / "fake_harness.py"
-    script.write_text(
-        "import json, pathlib, sys, tomllib, uuid\n"
-        "assert sys.argv[sys.argv.index('--model') + 1] == 'configured-model'\n"
-        "request = json.loads(sys.stdin.read().splitlines()[-1])\n"
-        "offer = request['offer']\n"
-        "proposal = {key: offer[key] for key in ('protocol_version', 'session_id', 'decision_id', 'view_id')}\n"
-        "proposal.update(submission_id=uuid.uuid4().hex, memory=None, "
-        "actions=[{'type': 'select_card', 'card': min(offer['view']['you']['hand'])}])\n"
-        "if 'protocol_error' not in offer:\n"
-        "    proposal['actions'] = [{'type': 'commit'}]\n"
-        "if '--output-last-message' in sys.argv:\n"
-        "    assert tomllib.loads(sys.argv[sys.argv.index('-c') + 1])['model_reasoning_effort'] == 'high'\n"
-        "    path = pathlib.Path(sys.argv[sys.argv.index('--output-last-message') + 1])\n"
-        "    path.write_text(json.dumps(proposal))\n"
-        "else:\n"
-        "    assert sys.argv[sys.argv.index('--effort') + 1] == 'high'\n"
-        "    print(json.dumps({'subtype': 'success', 'is_error': False, 'structured_output': proposal}))\n",
-        encoding="utf-8",
-    )
+def test_cli_preserves_catalogue_model_and_effort_through_mcp_and_records_acceptance(tmp_path: Path, bot: str) -> None:
+    script = Path(__file__).parent / "fixtures" / "fake_mcp_harness.py"
     settings = {
         "catalogue": [
             {
@@ -449,7 +428,7 @@ def test_cli_preserves_catalogue_model_and_effort_through_headless_repair_and_re
     assert catalogue[record.seats[0].config_id].options["reasoning_effort"] == "high"
     stats = record.seat_stats[0]
     assert stats is not None
-    assert stats["invocations"] == 2
+    assert stats["invocations"] == 1
 
 
 def test_explicit_cli_settings_override_table_file(table_settings: dict[str, Any], tmp_path: Path) -> None:

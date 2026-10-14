@@ -110,28 +110,62 @@ the same public play history, own hand, permitted messages, and action budget.
 The basic `llm` adapter starts fresh at each decision rather than retaining a
 growing conversation.
 
-Responses contain one to eight function calls. The adapter parses a proposal;
-the arena then validates it as an [atomic batch](bots.md#atomic-proposals).
-Commitment and row choice must end the game-action sequence. A malformed or
-missing tool call can trigger bounded repair; an engine rejection is returned
-through the arena's rejection feedback. Provider errors fail the match without
-SDK retries or a fallback move.
+Responses contain exactly one `play` function call. Its `proposal` has the same
+shape used by native and headless harnesses over MCP. For a classic decision with
+card 42 in hand, the arguments look like this:
+
+```json
+{
+  "proposal": {
+    "decision_id": "COPY_THE_CURRENT_DECISION_ID",
+    "submission_id": "A_NEW_UNIQUE_SUBMISSION_ID",
+    "actions": [{"type": "select_card", "card": 42}],
+    "memory": null,
+    "explanation": "This card fits the current row."
+  }
+}
+```
+
+The adapter supplies the decision ID in the observation and constrains it in the
+tool schema. Each request rebuilds the nested action schemas: `select_card.card`
+is an enum of the current hand, row indices and message recipients are limited
+to the current decision, and unavailable action variants are absent. Required
+fields, types, and unknown-field rejection remain enforced. Strict schemas also
+require optional values such as `explanation` to be present as null when unused.
+The explicit `simplified_tool_schemas` option removes compatibility constraints
+recursively; it does not disable parsing or game validation.
+
+A proposal contains one to eight operations, counting a non-null notebook update
+as one. The arena validates the complete proposal as an
+[atomic batch](bots.md#atomic-proposals). Commitment and row choice must end the
+game-action sequence. A malformed, missing, or multiple tool call can trigger
+bounded repair with the same decision ID and schema. An engine rejection is
+returned through the arena's rejection feedback. Provider errors fail the match
+without SDK retries or a fallback move.
+
+`explanation` is optional operator commentary, limited to 1,000 characters. It
+never becomes a game message or notebook update. Use null when no commentary is
+available. API bots must supply a proposal during a decision; `play` with a null
+proposal is reserved for MCP session entry and recovery.
 
 Use `strategy_prompt` to compare personalities while retaining shared rules.
 Use `system_prompt` to replace those rules. Active mode and match settings are
 still injected, and validation remains enforced by code. Shared rules and decision
 instructions are composed explicitly with the adapter's delivery instructions;
-LLM tool calls and harness JSON proposals use the same rule text.
+API and MCP players use the same rule text and typed atomic `play` contract.
+API bots still receive fresh context at each decision; native and headless
+harnesses retain their own conversation for the match.
 
 ## Private memory
 
 Choose `llm_memory` to retain a notebook within a match. Its extra option,
 `memory_max_chars`, defaults to 4,000 and accepts 1–16,000.
 
-The `update_memory` tool supplies a complete replacement notebook. It can occur
-at most once per response, anywhere among the game calls. Omitting it preserves
-the notebook; an empty string clears it. Memory-only batches are allowed and
-count toward arena limits. A rejected batch leaves memory unchanged.
+The proposal's `memory` field supplies a complete replacement notebook. Null
+preserves the notebook; an empty string clears it. `llm` requires this field to
+be null. `llm_memory` permits memory-only proposals with an empty `actions` array;
+the update counts as one operation toward arena limits. A rejected proposal
+leaves memory unchanged. There is no separate memory tool.
 
 Each new arena match gets new bot instances and empty notebooks. Memory is a
 bounded model-written summary, not guaranteed factual recall. It is absent from
@@ -147,7 +181,8 @@ repairs, errors, and latency; the project does not calculate monetary costs.
 
 Trace files may contain private hands, messages, notebook contents, and raw
 provider output. Alongside private raw response records, the LLM adapter emits
-normalized `model_text`, `reasoning_summary`, and `tool_activity` records for
+normalized `model_text`, `reasoning_summary`, `tool_activity`, and
+`decision_explanation` records for
 operator display. Terminal renderers consume those records without parsing the
 provider response. Tool activity describes a requested call; arena acceptance is
 reported separately. Authentication headers are not recorded and the configured key
@@ -156,7 +191,8 @@ publish. See [Traces and replay](traces.md).
 
 Sources: [LLM options and adapter](../src/sixnimmt/arena/bots/llm.py),
 [memory adapter](../src/sixnimmt/arena/bots/llm.py), and
-[prompt/tool construction](../src/sixnimmt/arena/bots/llm.py).
+[shared rules and action schemas](../src/sixnimmt/arena/bots/agent_contract.py), and
+[shared play contract](../src/sixnimmt/arena/bots/agent_protocol.py).
 
 Python callers with validated `LLMOptions` or `LLMMemoryOptions` can pass them as
 `validated_options=` to the corresponding bot constructor. Supply either that

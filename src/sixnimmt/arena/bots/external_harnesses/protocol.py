@@ -3,26 +3,23 @@
 import json
 from collections.abc import Mapping
 from copy import deepcopy
-from typing import Annotated, Any
+from typing import Any
 from uuid import uuid4
 
 from pydantic import (
     BaseModel,
-    BeforeValidator,
     ConfigDict,
     Field,
-    JsonValue,
-    PlainSerializer,
     ValidationError,
     field_validator,
     model_validator,
 )
 
 from sixnimmt.arena.bots.agent_contract import ACTION_ADAPTER
+from sixnimmt.arena.bots.agent_protocol import ActionPayload, Identifier, submission_schema
 from sixnimmt.arena.bots.base import MAX_BATCH_OPERATIONS, ActionBatch, Rejection
 from sixnimmt.arena.bots.external_harnesses.messages import ProtocolVersion, RejectionData
 from sixnimmt.common.text import check_representable
-from sixnimmt.engine.actions import Action
 
 PROTOCOL_VERSION = 1
 MAX_PROPOSAL_BYTES = 131_072
@@ -43,40 +40,6 @@ class _Payload(BaseModel):
 
 
 _ENVELOPE_FIELDS = {"action_id", "from_view", "expected_view_version"}
-
-
-def _action_payload_fields() -> dict[str, frozenset[str]]:
-    fields: dict[str, frozenset[str]] = {}
-    for schema in ACTION_ADAPTER.json_schema()["$defs"].values():
-        properties = schema.get("properties", {})
-        name = properties.get("type", {}).get("const")
-        if isinstance(name, str):
-            fields[name] = frozenset(properties) - _ENVELOPE_FIELDS
-    return fields
-
-
-_ACTION_FIELDS = _action_payload_fields()
-
-
-def _parse_action_payload(value: object) -> Action:
-    """Keep the harness envelope strict while sharing the engine's payload rules."""
-    if not isinstance(value, dict):
-        msg = "game action must be an object"
-        raise ValueError(msg)  # noqa: TRY004 -- Pydantic wraps ValueError as a validation failure.
-    name = value.get("type")
-    allowed = _ACTION_FIELDS.get(name) if isinstance(name, str) else None
-    if allowed is None or len(value.keys() - allowed) > 0:
-        msg = "game action has an unknown type or unsupported fields"
-        raise ValueError(msg)
-    return ACTION_ADAPTER.validate_json(json.dumps(value, allow_nan=False), strict=True)
-
-
-def _action_payload_json(action: Action) -> dict[str, JsonValue]:
-    return action.model_dump(mode="json", exclude=_ENVELOPE_FIELDS)
-
-
-ActionPayload = Annotated[Action, BeforeValidator(_parse_action_payload), PlainSerializer(_action_payload_json)]
-Identifier = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")]
 
 
 class Proposal(_Payload):
@@ -119,8 +82,7 @@ def _proposal_schema(model: type[Proposal]) -> dict[str, Any]:
     schema = model.model_json_schema()
     for definition in schema.get("$defs", {}).values():
         properties = definition.get("properties", {})
-        name = properties.get("type", {}).get("const")
-        if name not in _ACTION_FIELDS:
+        if "action_id" not in properties:
             continue
         for field in _ENVELOPE_FIELDS:
             properties.pop(field, None)
@@ -162,55 +124,25 @@ def decision_proposal_schema(
     offer: Mapping[str, Any], *, memory_enabled: bool, memory_max_chars: int
 ) -> dict[str, Any]:
     """Constrain model output to the same actions and values offered to LLM bots."""
-    schema = deepcopy(PROPOSAL_SCHEMA)
-    schema.pop("$defs", None)
-    alternatives: list[dict[str, Any]] = []
-    for tool in offer["action_tools"]:
-        function = tool["function"]
-        parameters = deepcopy(function["parameters"])
-        parameters["properties"] = {"type": {"type": "string", "const": function["name"]}, **parameters["properties"]}
-        parameters["required"] = ["type", *parameters["required"]]
-        if function["name"] == "send_message":
-            alternatives.extend(_message_schemas(parameters))
-        else:
-            alternatives.append(parameters)
-    actions = schema["properties"]["actions"]
-    actions["items"] = {"anyOf": alternatives}
-    if not memory_enabled:
-        actions["minItems"] = 1
-        schema["properties"]["memory"] = {"type": "null", "description": "Notebook updates are disabled."}
-    else:
-        schema["properties"]["memory"] = {
-            "anyOf": [{"type": "string", "maxLength": memory_max_chars}, {"type": "null"}],
-            "description": "Null preserves the notebook. An update counts as one of the eight allowed operations.",
-        }
-    for field in ("protocol_version", "session_id", "decision_id", "view_id"):
-        schema["properties"][field]["const"] = offer[field]
+    schema = submission_schema(
+        offer["action_tools"],
+        memory_enabled=memory_enabled,
+        memory_max_chars=memory_max_chars,
+        decision_id=offer["decision_id"],
+        strict=False,
+    )
+    schema["properties"].pop("explanation")
+    for field in ("protocol_version", "session_id", "view_id"):
+        schema["properties"][field] = {**PROPOSAL_SCHEMA["properties"][field], "const": offer[field]}
+        schema["required"].append(field)
     return schema
 
 
 def managed_proposal_schema(offer: Mapping[str, Any], *, memory_enabled: bool, memory_max_chars: int) -> dict[str, Any]:
-    """Add optional commentary without extending the native MCP proposal contract."""
+    """Preserve the custom-command envelope and its optional commentary."""
     schema = decision_proposal_schema(offer, memory_enabled=memory_enabled, memory_max_chars=memory_max_chars)
     schema["properties"]["explanation"] = deepcopy(MANAGED_PROPOSAL_SCHEMA["properties"]["explanation"])
     return schema
-
-
-def _message_schemas(parameters: dict[str, Any]) -> list[dict[str, Any]]:
-    """Keep table and direct recipient constraints aligned with their visibility."""
-    alternatives: list[dict[str, Any]] = []
-    properties = parameters["properties"]
-    recipients = [recipient for recipient in properties["to_player"]["enum"] if recipient is not None]
-    for visibility in properties["visibility"]["enum"]:
-        message = deepcopy(parameters)
-        message["properties"]["visibility"] = {"type": "string", "const": visibility}
-        message["properties"]["to_player"] = (
-            {"type": "null"} if visibility == "table" else {"type": "string", "enum": recipients}
-        )
-        if visibility == "direct" and "to_player" not in message["required"]:
-            message["required"].append("to_player")
-        alternatives.append(message)
-    return alternatives
 
 
 def parse_proposal(value: object) -> Proposal:

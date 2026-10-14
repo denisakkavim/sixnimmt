@@ -22,6 +22,7 @@ path. The CLI translates arguments and supplies terminal callbacks.
 | `arena/results.py`, `tracing.py` | Individual match outcomes, public summaries, and standalone trace/diagnostic projection |
 | `arena/artifacts.py` | Compact evidence models, shared identity validation, provenance, saved-run loading, and report publication |
 | `arena/bots/` | Strategies, adapters, normalized diagnostics, and shared agent contracts |
+| `arena/bots/agent_contract.py`, `agent_protocol.py` | Filtered observations, action schemas, and the common typed atomic `play` payload |
 | `arena/bots/external_harnesses/` | Seat protocol, MCP transport, connection bundles, provider streams, and managed processes |
 | `engine/cards.py`, `rules.py`, `state.py`, `actions.py`, `events.py` | Game configuration, deterministic dealing, state, and typed actions/events |
 | `engine/setup.py`, `transition.py`, `resolution.py`, `lifecycle.py` | Match setup and legal game transitions |
@@ -60,16 +61,32 @@ Hiding commentary or board output does not disable enabled tracing.
 
 Commentary is grouped by per-seat decision numbers and managed decision,
 invocation, and item identifiers. Only settled actions mark acceptance. Provider
-stream parsers extract displayable text and tool activity; only the designated
-final output is submitted. Managed proposals use the shared action schema, while
-the broker parser and match preflight determine acceptance. Private model logs
-retain bounded diagnostic output when tracing is enabled.
+stream parsers extract displayable text and tool activity. Native and headless
+harnesses submit through MCP; stdout cannot submit a move. Custom `command`
+players retain their final-JSON invocation contract. All proposals reach broker
+validation and match preflight before acceptance. Private model logs retain
+bounded diagnostic output when tracing is enabled.
+
+API model bots and MCP harnesses use the same atomic `play` arguments: a typed
+proposal with decision and submission IDs, action variants, nullable memory,
+and optional operator explanation. Transport adapters bind engine audit metadata
+and seat identity. The API adapter rebuilds its tool schema for each request;
+the dynamic MCP path updates its tools list and waits for the list response to
+be written before returning a decision. Claude uses this dynamic path. Codex
+uses a stable typed action union because its verified client does not refresh
+while `play` is pending; current legal values are supplied in offer context and
+checked by the broker and arena. The common payload remains the same, but schema
+guidance differs. Headless vendor processes keep one MCP conversation for the
+match; direct API bots retain their fresh per-decision context. Neither lifecycle changes the arena's atomicity or
+information boundaries.
 
 Bot implementations live directly in `arena/bots/`, with external support in
 `external_harnesses/` and probabilistic strategy support in `uncertainty/`.
 `ResolvedStrategy` owns reusable options, provenance, and a seed factory;
 `ResolvedPlayer` adds seat identity. Shared instructions and action schemas belong
-in `bots/agent_contract.py`. Optional `CandidateEvaluation` diagnostics describe
+in `bots/agent_contract.py`; the transport-independent submission model, strict
+parser, and nested `play` schema belong in `bots/agent_protocol.py`. Optional
+`CandidateEvaluation` diagnostics describe
 one completed evaluation independently of cumulative `stats()`.
 
 ## Engine API

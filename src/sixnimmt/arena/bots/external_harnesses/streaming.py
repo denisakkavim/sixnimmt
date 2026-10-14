@@ -8,7 +8,10 @@ from typing import Any
 class VendorEvents:
     """Translate complete JSONL events into optional operator-facing activity."""
 
-    def __init__(self, kind: str, emit: Callable[[dict[str, Any]], None]) -> None:
+    def __init__(self, kind: str, emit: Callable[[dict[str, Any]], None], *, history_limit: int = 128) -> None:
+        if history_limit < 1:
+            msg = "Vendor event history limit must be positive"
+            raise ValueError(msg)
         self.kind = kind
         self.emit = emit
         self.pending = bytearray()
@@ -18,6 +21,8 @@ class VendorEvents:
         self.completed_text: set[tuple[str, str]] = set()
         self.tool_calls: dict[str, tuple[str, str]] = {}
         self.tool_statuses: dict[str, str] = {}
+        self.history_limit = history_limit
+        self._completed_items: dict[str, None] = {}
 
     def feed(self, chunk: bytes) -> None:
         self.pending.extend(chunk)
@@ -32,8 +37,8 @@ class VendorEvents:
             self.pending.clear()
 
     def _line(self, line: bytes) -> None:
-        # This path is display-only. Final-output parsing remains strict in
-        # the driver, including when a client emits malformed progress.
+        # This path is display-only. Malformed progress cannot become a
+        # game proposal; only authenticated MCP submissions change play.
         try:
             record = json.loads(line)
         except (ValueError, UnicodeError):
@@ -134,9 +139,19 @@ class VendorEvents:
         blocks = message.get("content")
         if not isinstance(blocks, list):
             return
+        completed_items: list[str] = []
         for index, block in enumerate(blocks):
-            if isinstance(block, dict):
-                self._claude_block(block, f"{message_id}:{index}", complete=True)
+            if not isinstance(block, dict):
+                continue
+            item_id = f"{message_id}:{index}"
+            self._claude_block(block, item_id, complete=True)
+            if block.get("type") in ("text", "thinking"):
+                completed_items.append(item_id)
+        # A complete assistant message repeats every streamed block. Keep all
+        # blocks until that replay is consumed, including messages longer than
+        # the recent-history window.
+        for item_id in completed_items:
+            self._remember_completed(item_id)
 
     def _claude_block(self, block: dict[str, Any], item_id: str, *, complete: bool) -> None:
         kind = block.get("type")
@@ -178,6 +193,8 @@ class VendorEvents:
         newly_complete = complete and key not in self.completed_text
         if complete:
             self.completed_text.add(key)
+            if self.kind == "codex":
+                self._remember_completed(item_id)
         if text != "" or newly_complete:
             self.emit({"type": kind, "text": text, "item_id": item_id, "delta": True, "complete": complete})
 
@@ -185,6 +202,8 @@ class VendorEvents:
         if self.tool_statuses.get(item_id) == status:
             return
         self.tool_statuses[item_id] = status
+        if status in ("completed", "failed", "cancelled"):
+            self._remember_completed(item_id)
         self.emit({
             "type": "tool_activity",
             "text": f"{name}: {status}",
@@ -192,6 +211,23 @@ class VendorEvents:
             "tool_name": name,
             "status": status,
         })
+
+    def _remember_completed(self, item_id: str) -> None:
+        # Keep recent completed payloads for vendor duplicate events. Active
+        # text and blocking tools remain until completion so a long-lived play
+        # still matches its eventual result after unrelated commentary arrives.
+        self._completed_items[item_id] = None
+        while len(self._completed_items) > self.history_limit:
+            oldest = next(iter(self._completed_items))
+            del self._completed_items[oldest]
+            self.item_text.pop(oldest, None)
+            self.block_kinds.pop(oldest, None)
+            self.completed_text.discard(("model_text", oldest))
+            self.completed_text.discard(("reasoning_summary", oldest))
+            self.tool_statuses.pop(oldest, None)
+            for call_id, (known_item, _) in list(self.tool_calls.items()):
+                if known_item == oldest:
+                    del self.tool_calls[call_id]
 
 
 def _codex_tool_status(item: dict[str, Any], event_type: str) -> str:

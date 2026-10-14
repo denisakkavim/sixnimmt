@@ -8,6 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from sixnimmt.arena.bots.agent_contract import action_tools, observation_text
 from sixnimmt.arena.bots.external import HarnessBot
@@ -39,6 +40,14 @@ def proposal_for(offer: DecisionOffer, actions: list[dict[str, Any]] | None = No
     }
 
 
+def agent_proposal_for(offer: DecisionOffer, actions: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    legacy = proposal_for(offer, actions)
+    return {
+        **{key: value for key, value in legacy.items() if key not in {"protocol_version", "session_id", "view_id"}},
+        "explanation": None,
+    }
+
+
 class RunningTable:
     def __init__(
         self,
@@ -47,6 +56,7 @@ class RunningTable:
         baseline_opponent: bool = False,
         memory: bool = False,
         decision_timeout: float = 5,
+        seed: int = 123,
     ) -> None:
         self.rules = GameRules()
         self.protocol = MatchProtocol(end_condition="fixed_hands", hands=1, communication_enabled=communication)
@@ -55,6 +65,7 @@ class RunningTable:
         self.bots = [HarnessBot(self.a), LowestFittingCardBot() if baseline_opponent else HarnessBot(self.b)]
         self.stopped = Event()
         self.decision_timeout = decision_timeout
+        self.seed = seed
         self.results: Queue[MatchResult | BaseException] = Queue()
         self.thread = Thread(target=self.run, daemon=True)
         self.thread.start()
@@ -63,7 +74,7 @@ class RunningTable:
         try:
             result = run_match(
                 self.bots,
-                seed=123,
+                seed=self.seed,
                 match_id="harness-test",
                 seats=[PlayerSeat(player_id="a"), PlayerSeat(player_id="b")],
                 rules=self.rules,
@@ -314,16 +325,22 @@ def test_accepted_notebook_is_in_next_offer() -> None:
         table.close()
 
 
-def play_to_end(session: SeatSession) -> TerminalReply:
-    response = session.play(session.session_id)
+def play_to_end(session: SeatSession, *, shared: bool = False) -> TerminalReply:
+    play = session.play_submission if shared else session.play
+    response = play(session.session_id)
     for _ in range(100):
         if response["status"] == "terminal":
             return response
         if response["status"] == "wait_expired":
-            response = session.play(session.session_id)
+            response = play(session.session_id)
             continue
         assert response["status"] == "decision"
-        response = session.play(session.session_id, proposal_for(response["offer"]))
+        proposal = agent_proposal_for(response["offer"]) if shared else proposal_for(response["offer"])
+        if shared:
+            Draft202012Validator(session.get_play_tool(session.session_id)["parameters"]).validate({
+                "proposal": proposal
+            })
+        response = play(session.session_id, proposal)
     pytest.fail("Harness did not finish within its decision bound")
 
 
@@ -377,3 +394,110 @@ def test_two_harnesses_finish_with_final_receipts_and_baseline_equivalent_state(
         assert result.final_state == baseline.final_state
     finally:
         table.close()
+
+
+@pytest.mark.parametrize("communication", [False, True])
+def test_shared_play_completes_a_match_with_exact_decision_schemas(communication: bool) -> None:
+    table = RunningTable(baseline_opponent=True, communication=communication)
+    try:
+        reply = table.a.play_submission(table.a.session_id)
+        decisions = 0
+        while reply["status"] == "decision":
+            offer = reply["offer"]
+            proposal = {**agent_proposal_for(offer), "explanation": "Choose the lowest fitting card."}
+            schema = table.a.get_play_tool(table.a.session_id)["parameters"]
+            Draft202012Validator(schema).validate({"proposal": proposal})
+            assert (
+                schema["properties"]["proposal"]["anyOf"][0]["properties"]["decision_id"]["const"]
+                == offer["decision_id"]
+            )
+            reply = table.a.play_submission(table.a.session_id, proposal)
+            assert reply["receipt"] is not None
+            assert reply["receipt"]["status"] == "accepted"
+            decisions += 1
+        assert reply["status"] == "terminal"
+        assert reply["result"]["outcome"] == "finished"
+        assert decisions >= 10
+    finally:
+        table.close()
+
+
+def test_shared_submission_retry_includes_explanation_and_does_not_reapply() -> None:
+    table = RunningTable(baseline_opponent=True)
+    trace: list[dict[str, Any]] = []
+    table.a.set_trace(trace.append)
+    try:
+        reply = table.a.play_submission(table.a.session_id)
+        assert reply["status"] == "decision"
+        proposal = {**agent_proposal_for(reply["offer"]), "explanation": "A small card."}
+        advanced = table.a.play_submission(table.a.session_id, proposal)
+        recovered = table.a.play_submission(table.a.session_id, proposal)
+        assert recovered == advanced
+        assert table.a.stats()["submissions"] == 1
+        explanations = [event for event in trace if event["type"] == "decision_explanation"]
+        assert len(explanations) == 1
+        assert explanations[0]["text"] == "A small card."
+        with pytest.raises(HarnessError) as conflict:
+            table.a.play_submission(table.a.session_id, {**proposal, "explanation": "A different reason."})
+        assert conflict.value.code == "submission_conflict"
+    finally:
+        table.close()
+
+
+def test_shared_submission_binds_view_and_rejects_stale_decision(table: RunningTable) -> None:
+    reply = table.a.play_submission(table.a.session_id)
+    assert reply["status"] == "decision"
+    proposal = agent_proposal_for(reply["offer"])
+    with pytest.raises(HarnessError) as stale:
+        table.a.play_submission(table.a.session_id, {**proposal, "decision_id": "old"})
+    assert stale.value.code == "stale_decision"
+    assert table.a.stats()["submissions"] == 0
+    with pytest.raises(HarnessError) as metadata:
+        table.a.play_submission(table.a.session_id, {**proposal, "view_id": reply["offer"]["view_id"]})
+    assert metadata.value.code == "invalid_proposal"
+
+
+def test_shared_rejection_keeps_memory_atomic_and_returns_current_schema() -> None:
+    table = RunningTable(memory=True)
+    try:
+        reply = table.a.play_submission(table.a.session_id)
+        assert reply["status"] == "decision"
+        hand = MatchView.model_validate(reply["offer"]["view"]).you.hand
+        missing = next(card for card in range(1, 105) if card not in hand)
+        proposal = agent_proposal_for(reply["offer"], [{"type": "select_card", "card": missing}])
+        proposal["memory"] = "Must not be saved."
+        correction = table.a.play_submission(table.a.session_id, proposal)
+        assert correction["status"] == "decision"
+        assert correction["receipt"] is not None
+        assert correction["receipt"]["status"] == "rejected"
+        assert correction["offer"]["memory"] is None
+        assert correction["offer"]["decision_id"] != reply["offer"]["decision_id"]
+        assert correction["offer"]["rejection"] is not None
+    finally:
+        table.close()
+
+
+@pytest.mark.arena_slow
+@pytest.mark.parametrize("communication", [False, True], ids=["classic", "communication"])
+def test_shared_play_matches_deterministic_baselines_at_volume(communication: bool) -> None:
+    for seed in range(50):
+        table = RunningTable(communication=communication, seed=seed)
+        try:
+            with ThreadPoolExecutor(max_workers=2) as workers:
+                futures = [workers.submit(play_to_end, session, shared=True) for session in (table.a, table.b)]
+                responses = [future.result(timeout=10) for future in futures]
+            result = table.results.get(timeout=2)
+            assert isinstance(result, MatchResult)
+            assert result.outcome == MatchOutcome.FINISHED
+            assert all(response["result"]["outcome"] == "finished" for response in responses)
+            baseline = run_match(
+                [LowestFittingCardBot(), LowestFittingCardBot()],
+                seed=seed,
+                match_id="harness-test",
+                seats=[PlayerSeat(player_id="a"), PlayerSeat(player_id="b")],
+                rules=table.rules,
+                protocol=table.protocol,
+            )
+            assert result.final_state == baseline.final_state
+        finally:
+            table.close()
